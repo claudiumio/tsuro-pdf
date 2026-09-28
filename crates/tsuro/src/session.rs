@@ -11202,4 +11202,204 @@ mod tests {
             other => panic!("esperava Ready, veio {other:?}"),
         }
     }
+
+    #[test]
+    fn palette_open_seeds_outline_and_recents() {
+        let Some(mut ready) = sample_ready() else {
+            return;
+        };
+        ready.outline = Some(outline_tree());
+        let current = ready.source.path().to_path_buf();
+        ready.recents = vec![
+            PathBuf::from("/tmp/outro.pdf"),
+            current.clone(),
+            PathBuf::from("/tmp/terceiro.pdf"),
+        ];
+        let mut session = Session::Ready(Tabs::single(ready));
+        apply(&mut session, Message::OpenPalette);
+        match &session {
+            Session::Ready(tabs) => {
+                let palette = tabs.palette().expect("aberta");
+                let titles: Vec<&str> = palette.items().iter().map(|item| item.title()).collect();
+                for expect in ["A", "A1", "A2", "B", "outro.pdf", "terceiro.pdf"] {
+                    assert!(titles.contains(&expect), "falta {expect} em {titles:?}");
+                }
+                let current_name = current
+                    .file_name()
+                    .and_then(|name| name.to_str())
+                    .expect("nome do fixture");
+                assert!(
+                    !titles.contains(&current_name),
+                    "atual vazou para recents: {titles:?}"
+                );
+                assert_eq!(
+                    palette
+                        .items()
+                        .iter()
+                        .filter(|item| matches!(item, PaletteItem::Recent { .. }))
+                        .count(),
+                    2
+                );
+            }
+            other => panic!("esperava Ready, veio {other:?}"),
+        }
+    }
+
+    #[test]
+    fn palette_query_filters_outline_and_recents() {
+        let Some(mut ready) = sample_ready() else {
+            return;
+        };
+        ready.outline = Some(outline_tree());
+        ready.recents = vec![PathBuf::from("/tmp/atas-reuniao.pdf")];
+        let mut session = Session::Ready(Tabs::single(ready));
+        apply(&mut session, Message::OpenPalette);
+        apply(&mut session, Message::PaletteQuery("a1".into()));
+        match &session {
+            Session::Ready(tabs) => {
+                let titles: Vec<&str> = tabs
+                    .palette()
+                    .expect("aberta")
+                    .items()
+                    .iter()
+                    .map(|item| item.title())
+                    .collect();
+                assert_eq!(titles, vec!["A1"]);
+            }
+            other => panic!("esperava Ready, veio {other:?}"),
+        }
+        apply(&mut session, Message::PaletteQuery("atas".into()));
+        match &session {
+            Session::Ready(tabs) => {
+                let titles: Vec<&str> = tabs
+                    .palette()
+                    .expect("aberta")
+                    .items()
+                    .iter()
+                    .map(|item| item.title())
+                    .collect();
+                assert_eq!(titles, vec!["atas-reuniao.pdf"]);
+            }
+            other => panic!("esperava Ready, veio {other:?}"),
+        }
+    }
+
+    #[test]
+    fn palette_sources_degrade_independently() {
+        let Some(mut ready) = sample_ready() else {
+            return;
+        };
+        assert!(ready.outline.is_none());
+        ready.recents = vec![PathBuf::from("/tmp/so-recente.pdf")];
+        let mut session = Session::Ready(Tabs::single(ready));
+        apply(&mut session, Message::OpenPalette);
+        match &session {
+            Session::Ready(tabs) => {
+                let items = tabs.palette().expect("aberta").items();
+                assert!(items
+                    .iter()
+                    .any(|item| matches!(item, PaletteItem::Action { .. })));
+                assert!(items
+                    .iter()
+                    .any(|item| matches!(item, PaletteItem::Recent { .. })));
+                assert!(!items
+                    .iter()
+                    .any(|item| matches!(item, PaletteItem::OutlineRow { .. })));
+            }
+            other => panic!("esperava Ready, veio {other:?}"),
+        }
+        let Some(mut ready) = sample_ready() else {
+            return;
+        };
+        ready.outline = Some(outline_tree());
+        assert!(ready.recents.is_empty());
+        let mut session = Session::Ready(Tabs::single(ready));
+        apply(&mut session, Message::OpenPalette);
+        match &session {
+            Session::Ready(tabs) => {
+                let items = tabs.palette().expect("aberta").items();
+                assert!(items
+                    .iter()
+                    .any(|item| matches!(item, PaletteItem::Action { .. })));
+                assert!(items
+                    .iter()
+                    .any(|item| matches!(item, PaletteItem::OutlineRow { .. })));
+                assert!(!items
+                    .iter()
+                    .any(|item| matches!(item, PaletteItem::Recent { .. })));
+            }
+            other => panic!("esperava Ready, veio {other:?}"),
+        }
+    }
+
+    #[test]
+    fn palette_confirm_outline_row_jumps_and_closes() {
+        let Some(mut ready) = sample_ready() else {
+            return;
+        };
+        let pos_file = std::env::temp_dir().join(format!(
+            "tsuro-positions-unit-{}-palette-jump",
+            std::process::id()
+        ));
+        let _ = std::fs::remove_file(&pos_file);
+        crate::positions::with_positions_path(pos_file.clone(), || {
+            ready.outline = Some(outline_tree());
+            let target = PageNo::from_index(2).index().min(ready.page_count() - 1);
+            assert_ne!(ready.visible.index(), target);
+            let mut session = Session::Ready(Tabs::single(ready));
+            apply(&mut session, Message::OpenPalette);
+            if let Session::Ready(tabs) = &mut session {
+                let palette = tabs.palette.as_mut().expect("paleta aberta");
+                let index = palette
+                    .items
+                    .iter()
+                    .position(|item| {
+                        matches!(item, PaletteItem::OutlineRow { title, .. } if title == "A1")
+                    })
+                    .expect("A1 na paleta");
+                palette.selected = Some(index);
+            }
+            apply(&mut session, Message::PaletteConfirm);
+            match &session {
+                Session::Ready(tabs) => {
+                    assert!(!tabs.palette_open());
+                    assert_eq!(tabs.visible.index(), target);
+                }
+                other => panic!("esperava Ready, veio {other:?}"),
+            }
+        });
+        let _ = std::fs::remove_file(&pos_file);
+    }
+
+    #[test]
+    fn palette_confirm_recent_opens_new_tab() {
+        isolated(|| {
+            let Some(mut ready) = sample_ready() else {
+                return;
+            };
+            let other = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+                .join("../../public/samples/sumario-folio.pdf");
+            ready.recents = vec![other.clone()];
+            let mut session = Session::Ready(Tabs::single(ready));
+            apply(&mut session, Message::OpenPalette);
+            if let Session::Ready(tabs) = &mut session {
+                let palette = tabs.palette.as_mut().expect("paleta aberta");
+                let index = palette
+                    .items
+                    .iter()
+                    .position(|item| matches!(item, PaletteItem::Recent { .. }))
+                    .expect("recente na paleta");
+                palette.selected = Some(index);
+            }
+            apply(&mut session, Message::PaletteConfirm);
+            match &session {
+                Session::Ready(tabs) => {
+                    assert!(!tabs.palette_open());
+                    let (_, source) = tabs.pending.clone().expect("aba pendente");
+                    assert_eq!(source.path(), other.as_path());
+                }
+                other => panic!("esperava Ready, veio {other:?}"),
+            }
+        });
+    }
 }
