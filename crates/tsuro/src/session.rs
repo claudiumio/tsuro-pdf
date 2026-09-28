@@ -546,8 +546,8 @@ impl PaletteAction {
     ];
 }
 
-/// Item da paleta. A fatia 2 preenche as ações; as demais variantes são o domínio.
-#[allow(dead_code)] // fatia 2: variantes das fatias 3-5 ainda sem produtores
+/// Item da paleta (#45). DocHit/GlobalHit ganham produtores nas fatias 4–5.
+#[allow(dead_code)]
 #[derive(Debug, Clone)]
 pub(crate) enum PaletteItem {
     Action {
@@ -634,17 +634,32 @@ pub(crate) struct PaletteState {
     query: String,
     items: Vec<PaletteItem>,
     selected: Option<usize>,
+    context: PaletteContext,
+}
+
+/// Fontes da paleta que dependem do documento aberto, como dados planos.
+/// Só `Tabs::palette_context` constrói — sempre sem o documento atual.
+#[derive(Debug, Clone, Default)]
+pub(crate) struct PaletteContext {
+    outline: Vec<(Vec<usize>, String, PageNo)>,
+    recents: Vec<PathBuf>,
 }
 
 impl PaletteState {
-    pub(crate) fn fresh() -> Self {
+    pub(crate) fn fresh(context: PaletteContext) -> Self {
         let mut state = Self {
             query: String::new(),
             items: Vec::new(),
             selected: None,
+            context,
         };
         state.retarget();
         state
+    }
+
+    pub(crate) fn set_query_with(&mut self, context: PaletteContext, query: String) {
+        self.context = context;
+        self.set_query(query);
     }
 
     pub(crate) fn query(&self) -> &str {
@@ -677,22 +692,72 @@ impl PaletteState {
         self.selected = Some((cur + step).rem_euclid(len) as usize);
     }
 
-    /// Seam das fatias 2–5: serve as ações do catálogo. As fatias 3–5
-    /// acrescentam fontes que precisam de contexto (documento, outline, recents).
+    /// Ordena por (score, fonte, título) e trunca. Fonte desempata mesmo
+    /// score: ações antes de outline, outline antes de recents.
     pub(crate) fn refresh(&mut self) {
         let query = self.query.as_str();
-        let mut scored: Vec<(u8, PaletteItem)> = PaletteAction::ALL
+        let mut scored: Vec<(u8, SourceRank, PaletteItem)> = PaletteAction::ALL
             .into_iter()
             .map(PaletteItem::action)
-            .filter_map(|item| palette_match(query, item.title()).map(|score| (score, item)))
+            .filter_map(|item| {
+                palette_match(query, item.title()).map(|score| (score, SourceRank::Action, item))
+            })
             .collect();
-        scored.sort_by_key(|(score, item)| (*score, item.title().to_lowercase()));
-        self.items = scored.into_iter().map(|(_, item)| item).collect();
+        scored.extend(self.context.outline_scored(query));
+        scored.extend(self.context.recents_scored(query));
+        scored.sort_by_key(|(score, rank, item)| (*score, *rank, item.title().to_lowercase()));
+        scored.truncate(PALETTE_ITEM_CAP);
+        self.items = scored.into_iter().map(|(_, _, item)| item).collect();
     }
 
     fn retarget(&mut self) {
         self.refresh();
         self.selected = (!self.items.is_empty()).then_some(0);
+    }
+}
+
+/// Teto de itens por query; a lista ordenada é truncada sem piedade.
+const PALETTE_ITEM_CAP: usize = 100;
+
+/// Ordem das fontes no desempate por score (a declaração é a ordem).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
+enum SourceRank {
+    Action,
+    Outline,
+    Recent,
+}
+
+impl PaletteContext {
+    /// Linhas do sumário casadas com a query.
+    fn outline_scored(&self, query: &str) -> Vec<(u8, SourceRank, PaletteItem)> {
+        self.outline
+            .iter()
+            .filter_map(|(path, title, page)| {
+                palette_match(query, title).map(|score| {
+                    (
+                        score,
+                        SourceRank::Outline,
+                        PaletteItem::OutlineRow {
+                            path: path.clone(),
+                            title: title.clone(),
+                            page: *page,
+                        },
+                    )
+                })
+            })
+            .collect()
+    }
+
+    /// Recents casados pelo nome do arquivo.
+    fn recents_scored(&self, query: &str) -> Vec<(u8, SourceRank, PaletteItem)> {
+        self.recents
+            .iter()
+            .filter_map(|path| {
+                let recent = PaletteItem::Recent { path: path.clone() };
+                palette_match(query, recent.title())
+                    .map(|score| (score, SourceRank::Recent, recent))
+            })
+            .collect()
     }
 }
 
@@ -909,6 +974,25 @@ impl Tabs {
     /// A aba ativa (a vista desenha esta).
     pub(crate) fn active(&self) -> &Ready {
         &self.docs[self.active]
+    }
+
+    /// Fontes da paleta na aba ativa, como dados planos. Exclui o documento
+    /// atual dos recents (reabrir o que está na tela não é navegação).
+    fn palette_context(&self) -> PaletteContext {
+        let ready = self.active();
+        let current = ready.source.path();
+        let outline = ready
+            .outline_rows()
+            .into_iter()
+            .map(|(path, _, title, page, _)| (path, title.to_owned(), page))
+            .collect();
+        let recents = ready
+            .recents()
+            .iter()
+            .filter(|entry| entry.as_path() != current)
+            .cloned()
+            .collect();
+        PaletteContext { outline, recents }
     }
 
     fn active_mut(&mut self) -> &mut Ready {
@@ -3427,14 +3511,16 @@ impl Session {
             return Task::none();
         };
         tabs.overflow_open = false;
-        tabs.palette = Some(PaletteState::fresh());
+        let context = tabs.palette_context();
+        tabs.palette = Some(PaletteState::fresh(context));
         iced::widget::text_input::focus(crate::view::palette_input_id())
     }
 
     fn palette_query(&mut self, query: String) -> Task<Message> {
         if let Session::Ready(tabs) = self {
+            let context = tabs.palette_context();
             if let Some(palette) = tabs.palette.as_mut() {
-                palette.set_query(query);
+                palette.set_query_with(context, query);
             }
         }
         Task::none()
@@ -10680,7 +10766,7 @@ mod tests {
 
     #[test]
     fn palette_query_resets_selection_via_retarget() {
-        let mut palette = PaletteState::fresh();
+        let mut palette = PaletteState::fresh(PaletteContext::default());
         palette.items = vec![
             palette_hit(0, "a"),
             palette_hit(1, "b"),
@@ -10696,7 +10782,7 @@ mod tests {
 
     #[test]
     fn palette_move_wraps_and_noops_when_empty() {
-        let mut palette = PaletteState::fresh();
+        let mut palette = PaletteState::fresh(PaletteContext::default());
         // "foo" não casa nada: lista vazia, move é no-op.
         palette.set_query("foo".into());
         palette.move_by(1);
@@ -10993,7 +11079,7 @@ mod tests {
                 other => panic!("esperava Action, veio {other:?}"),
             }
         }
-        let mut palette = PaletteState::fresh();
+        let mut palette = PaletteState::fresh(PaletteContext::default());
         let refreshed: HashSet<&str> = palette.items().iter().map(|item| item.title()).collect();
         assert_eq!(refreshed, titles);
         palette.set_query(String::new());
@@ -11010,7 +11096,7 @@ mod tests {
         assert_eq!(palette_match("  IM  ", "Diminuir zoom"), Some(0));
         assert_eq!(palette_match("", "qualquer"), Some(0));
         assert_eq!(palette_match("   ", "qualquer"), Some(0));
-        let mut palette = PaletteState::fresh();
+        let mut palette = PaletteState::fresh(PaletteContext::default());
         palette.set_query("im".into());
         let titles: Vec<&str> = palette.items().iter().map(|item| item.title()).collect();
         assert_eq!(
@@ -11024,7 +11110,7 @@ mod tests {
     fn fuzzy_no_match_empties() {
         assert_eq!(palette_match("xyzzy", "Aumentar zoom"), None);
         assert_eq!(palette_match("xyzzy", "Ir para página…"), None);
-        let mut palette = PaletteState::fresh();
+        let mut palette = PaletteState::fresh(PaletteContext::default());
         palette.set_query("xyzzy".into());
         assert!(palette.items().is_empty());
         assert_eq!(palette.selected(), None);
