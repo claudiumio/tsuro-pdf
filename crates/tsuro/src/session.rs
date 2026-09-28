@@ -3567,13 +3567,15 @@ impl Session {
         match item {
             None => self.palette_close(),
             Some(PaletteItem::Action { id, .. }) => self.run_action(id),
-            Some(
-                PaletteItem::DocHit { .. }
-                | PaletteItem::OutlineRow { .. }
-                | PaletteItem::Recent { .. }
-                | PaletteItem::GlobalHit { .. },
-            ) => {
-                // Inalcançável até as fatias 3–5 (fontes com contexto).
+            Some(PaletteItem::OutlineRow { page, .. }) => {
+                let _ = self.palette_close();
+                self.outline_jump(page)
+            }
+            Some(PaletteItem::Recent { path }) => {
+                let _ = self.palette_close();
+                self.update(Message::OpenRecent(path))
+            }
+            Some(PaletteItem::DocHit { .. } | PaletteItem::GlobalHit { .. }) => {
                 self.palette_close()
             }
         }
