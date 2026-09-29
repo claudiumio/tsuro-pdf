@@ -546,7 +546,7 @@ impl PaletteAction {
     ];
 }
 
-/// Item da paleta (#45). DocHit/GlobalHit ganham produtores nas fatias 4–5.
+/// Item da paleta (#45). GlobalHit ganha produtor na fatia 5.
 #[allow(dead_code)]
 #[derive(Debug, Clone)]
 pub(crate) enum PaletteItem {
@@ -557,6 +557,7 @@ pub(crate) enum PaletteItem {
     },
     DocHit {
         page: PageNo,
+        range: TextRange,
         excerpt: String,
     },
     OutlineRow {
@@ -639,10 +640,13 @@ pub(crate) struct PaletteState {
 
 /// Fontes da paleta que dependem do documento aberto, como dados planos.
 /// Só `Tabs::palette_context` constrói — sempre sem o documento atual.
+/// `dochits` carrega os hits já derivados da query da paleta; digitar só
+/// recalcula o contexto transitório, nunca o `Ready.search` do toolbar.
 #[derive(Debug, Clone, Default)]
 pub(crate) struct PaletteContext {
     outline: Vec<(Vec<usize>, String, PageNo)>,
     recents: Vec<PathBuf>,
+    dochits: Vec<(PageNo, TextRange, String)>,
 }
 
 impl PaletteState {
@@ -693,7 +697,8 @@ impl PaletteState {
     }
 
     /// Ordena por (score, fonte, título) e trunca. Fonte desempata mesmo
-    /// score: ações antes de outline, outline antes de recents.
+    /// score: ações antes de outline, outline antes de hits, hits antes de
+    /// recents.
     pub(crate) fn refresh(&mut self) {
         let query = self.query.as_str();
         let mut scored: Vec<(u8, SourceRank, PaletteItem)> = PaletteAction::ALL
@@ -704,6 +709,7 @@ impl PaletteState {
             })
             .collect();
         scored.extend(self.context.outline_scored(query));
+        scored.extend(self.context.docs_scored(query));
         scored.extend(self.context.recents_scored(query));
         scored.sort_by_key(|(score, rank, item)| (*score, *rank, item.title().to_lowercase()));
         scored.truncate(PALETTE_ITEM_CAP);
@@ -724,6 +730,7 @@ const PALETTE_ITEM_CAP: usize = 100;
 enum SourceRank {
     Action,
     Outline,
+    Doc,
     Recent,
 }
 
@@ -741,6 +748,26 @@ impl PaletteContext {
                             path: path.clone(),
                             title: title.clone(),
                             page: *page,
+                        },
+                    )
+                })
+            })
+            .collect()
+    }
+
+    /// Hits do documento atual casados com o trecho.
+    fn docs_scored(&self, query: &str) -> Vec<(u8, SourceRank, PaletteItem)> {
+        self.dochits
+            .iter()
+            .filter_map(|(page, range, excerpt)| {
+                palette_match(query, excerpt).map(|score| {
+                    (
+                        score,
+                        SourceRank::Doc,
+                        PaletteItem::DocHit {
+                            page: *page,
+                            range: *range,
+                            excerpt: excerpt.clone(),
                         },
                     )
                 })
@@ -779,6 +806,47 @@ fn palette_match(query: &str, title: &str) -> Option<u8> {
         }
     }
     Some(1)
+}
+
+/// Janela do trecho em torno do hit para o `DocHit` da paleta: ~40 chars de
+/// cada lado, colapso de whitespace, "…" onde cortou. Ranges do `derive` já
+/// caem em fronteira de char; o `slice` só confirma.
+fn hit_excerpt(pages: &[Option<TextLayer>], hit: &crate::search::Hit) -> String {
+    const RADIUS: usize = 40;
+    let Some(layer) = pages
+        .get(hit.page.index() as usize)
+        .and_then(|page| page.as_ref())
+    else {
+        return String::new();
+    };
+    let plain = &layer.plain;
+    let start_byte = hit.range.start.min(plain.len());
+    let end_byte = hit.range.end.min(plain.len());
+    let back = plain[..start_byte]
+        .chars()
+        .rev()
+        .take(RADIUS)
+        .map(|ch| ch.len_utf8())
+        .sum::<usize>();
+    let fwd = plain[end_byte..]
+        .chars()
+        .take(RADIUS)
+        .map(|ch| ch.len_utf8())
+        .sum::<usize>();
+    let start = start_byte.saturating_sub(back);
+    let end = end_byte + fwd;
+    let mut excerpt: String = layer
+        .slice(TextRange { start, end })
+        .split_whitespace()
+        .collect::<Vec<_>>()
+        .join(" ");
+    if start > 0 {
+        excerpt.insert(0, '…');
+    }
+    if end < plain.len() {
+        excerpt.push('…');
+    }
+    excerpt
 }
 
 /// Pilha de páginas visitadas, como um navegador: `current()` é onde o leitor
@@ -978,7 +1046,9 @@ impl Tabs {
 
     /// Fontes da paleta na aba ativa, como dados planos. Exclui o documento
     /// atual dos recents (reabrir o que está na tela não é navegação).
-    fn palette_context(&self) -> PaletteContext {
+    /// Deriva os hits na query da paleta sem tocar o `Ready.search` do
+    /// toolbar; query vazia rende zero hits (o `derive` já garante).
+    fn palette_context(&self, query: &str) -> PaletteContext {
         let ready = self.active();
         let current = ready.source.path();
         let outline = ready
@@ -992,7 +1062,16 @@ impl Tabs {
             .filter(|entry| entry.as_path() != current)
             .cloned()
             .collect();
-        PaletteContext { outline, recents }
+        let dochits = Search::derive(query, &ready.pages.text)
+            .hits()
+            .iter()
+            .map(|hit| (hit.page, hit.range, hit_excerpt(&ready.pages.text, hit)))
+            .collect();
+        PaletteContext {
+            outline,
+            recents,
+            dochits,
+        }
     }
 
     fn active_mut(&mut self) -> &mut Ready {
@@ -3511,14 +3590,14 @@ impl Session {
             return Task::none();
         };
         tabs.overflow_open = false;
-        let context = tabs.palette_context();
+        let context = tabs.palette_context("");
         tabs.palette = Some(PaletteState::fresh(context));
         iced::widget::text_input::focus(crate::view::palette_input_id())
     }
 
     fn palette_query(&mut self, query: String) -> Task<Message> {
         if let Session::Ready(tabs) = self {
-            let context = tabs.palette_context();
+            let context = tabs.palette_context(&query);
             if let Some(palette) = tabs.palette.as_mut() {
                 palette.set_query_with(context, query);
             }
@@ -10738,6 +10817,7 @@ mod tests {
     fn palette_hit(page: u32, excerpt: &str) -> PaletteItem {
         PaletteItem::DocHit {
             page: PageNo::from_index(page),
+            range: TextRange { start: 0, end: 0 },
             excerpt: excerpt.into(),
         }
     }
@@ -10930,11 +11010,14 @@ mod tests {
         if let Session::Ready(tabs) = &mut session {
             tabs.palette.as_mut().unwrap().selected = Some(2);
         }
-        apply(&mut session, Message::PaletteQuery("x".into()));
+        // "xqz" não aparece em ação, outline, trecho ou recente: a lista
+        // rederivada esvazia e o `selected` some com ela (fatia 4: a query
+        // agora também deriva os hits do documento).
+        apply(&mut session, Message::PaletteQuery("xqz".into()));
         match &session {
             Session::Ready(tabs) => {
                 let palette = tabs.palette().expect("aberta");
-                assert_eq!(palette.query(), "x");
+                assert_eq!(palette.query(), "xqz");
                 assert!(palette.items().is_empty());
                 assert_eq!(palette.selected(), None);
             }
