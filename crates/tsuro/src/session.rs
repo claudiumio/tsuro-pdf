@@ -11518,4 +11518,218 @@ mod tests {
             }
         });
     }
+
+    /// Planta `plain` nas páginas dadas, com um glifo por página (suficiente
+    /// para o `derive` achar ranges; quads não importam aqui).
+    fn plant_text(ready: &mut Ready, pages: &[(u32, &str)]) {
+        for (idx, plain) in pages {
+            let page = PageNo::from_index(*idx);
+            ready.pages.text[*idx as usize] = Some(TextLayer {
+                page,
+                plain: plain.to_string(),
+                glyphs: vec![Glyph {
+                    cluster: plain.to_string(),
+                    quad: Quad::from_rect(0.0, 0.0, 10.0, 10.0),
+                }],
+            });
+        }
+    }
+
+    #[test]
+    fn palette_query_lists_dochits_with_windowed_excerpts() {
+        let Some(mut ready) = sample_ready() else {
+            return;
+        };
+        let last = ready.page_count().saturating_sub(1);
+        if last < 1 {
+            return;
+        }
+        let body = ["preâmbulo longo antes do termo"; 4].join(" ")
+            + " bissexto "
+            + &["epílogo longo depois do termo"; 4].join(" ");
+        plant_text(&mut ready, &[(0, "página sem o termo"), (last, &body)]);
+        let mut session = Session::Ready(Tabs::single(ready));
+        apply(&mut session, Message::OpenPalette);
+        apply(&mut session, Message::PaletteQuery("bissexto".into()));
+        match &session {
+            Session::Ready(tabs) => {
+                let items = tabs.palette().expect("aberta").items();
+                let hits: Vec<&PaletteItem> = items
+                    .iter()
+                    .filter(|item| matches!(item, PaletteItem::DocHit { .. }))
+                    .collect();
+                assert_eq!(hits.len(), 1);
+                let PaletteItem::DocHit { page, excerpt, .. } = hits[0] else {
+                    unreachable!();
+                };
+                assert_eq!(*page, PageNo::from_index(last));
+                assert!(
+                    excerpt.len() < body.len(),
+                    "trecho não janelou: {excerpt:?}"
+                );
+                assert!(
+                    excerpt.contains("bissexto"),
+                    "trecho sem o match: {excerpt:?}"
+                );
+            }
+            other => panic!("esperava Ready, veio {other:?}"),
+        }
+    }
+
+    #[test]
+    fn palette_dochits_follow_rank_and_degrade() {
+        let Some(mut ready) = sample_ready() else {
+            return;
+        };
+        ready.outline = Some(outline_tree());
+        ready.recents = vec![PathBuf::from("/tmp/a1-atas.pdf")];
+        plant_text(&mut ready, &[(0, "texto com a1 aqui")]);
+        let mut session = Session::Ready(Tabs::single(ready));
+        // Query vazia: ações + outline + recents, zero hits.
+        apply(&mut session, Message::OpenPalette);
+        match &session {
+            Session::Ready(tabs) => {
+                let items = tabs.palette().expect("aberta").items();
+                assert!(
+                    !items
+                        .iter()
+                        .any(|item| matches!(item, PaletteItem::DocHit { .. })),
+                    "query vazia não lista hit"
+                );
+                assert!(items
+                    .iter()
+                    .any(|item| matches!(item, PaletteItem::OutlineRow { .. })));
+                assert!(items
+                    .iter()
+                    .any(|item| matches!(item, PaletteItem::Recent { .. })));
+            }
+            other => panic!("esperava Ready, veio {other:?}"),
+        }
+        // Sem match no texto, com match no recent: outras fontes intactas.
+        apply(&mut session, Message::PaletteQuery("atas".into()));
+        match &session {
+            Session::Ready(tabs) => {
+                let items = tabs.palette().expect("aberta").items();
+                assert!(!items
+                    .iter()
+                    .any(|item| matches!(item, PaletteItem::DocHit { .. })));
+                assert!(items
+                    .iter()
+                    .any(|item| matches!(item, PaletteItem::Recent { .. })));
+            }
+            other => panic!("esperava Ready, veio {other:?}"),
+        }
+        // "a1" casa as três fontes por substring (A1, o trecho, o recent):
+        // hit abaixo do outline, acima do recent no desempate.
+        apply(&mut session, Message::PaletteQuery("a1".into()));
+        match &session {
+            Session::Ready(tabs) => {
+                let items = tabs.palette().expect("aberta").items();
+                let mut kinds: Vec<&str> = items
+                    .iter()
+                    .map(|item| match item {
+                        PaletteItem::Action { .. } => "action",
+                        PaletteItem::OutlineRow { .. } => "outline",
+                        PaletteItem::DocHit { .. } => "doc",
+                        PaletteItem::Recent { .. } => "recent",
+                        PaletteItem::GlobalHit { .. } => "global",
+                    })
+                    .collect();
+                kinds.dedup();
+                let pos = |kind| kinds.iter().position(|k| *k == kind);
+                match (pos("outline"), pos("doc"), pos("recent")) {
+                    (Some(outline), Some(doc), Some(recent)) => {
+                        assert!(outline < doc, "hit acima do outline: {kinds:?}");
+                        assert!(doc < recent, "hit abaixo do recent: {kinds:?}");
+                    }
+                    _ => panic!("faltou fonte em {kinds:?}"),
+                }
+            }
+            other => panic!("esperava Ready, veio {other:?}"),
+        }
+    }
+
+    #[test]
+    fn palette_typing_leaves_toolbar_search_alone() {
+        let Some(mut ready) = sample_ready() else {
+            return;
+        };
+        plant_text(&mut ready, &[(0, "texto com bissexto aqui")]);
+        ready.set_query("toolbar".into());
+        assert_eq!(ready.search.query(), "toolbar");
+        let mut session = Session::Ready(Tabs::single(ready));
+        apply(&mut session, Message::OpenPalette);
+        apply(&mut session, Message::PaletteQuery("bissexto".into()));
+        match &session {
+            Session::Ready(tabs) => {
+                assert_eq!(tabs.active().search.query(), "toolbar");
+                assert!(tabs.active().search.hits().is_empty());
+                assert!(tabs
+                    .palette()
+                    .expect("aberta")
+                    .items()
+                    .iter()
+                    .any(|item| matches!(item, PaletteItem::DocHit { .. })));
+            }
+            other => panic!("esperava Ready, veio {other:?}"),
+        }
+    }
+
+    #[test]
+    fn palette_confirm_dochit_jumps_selects_and_closes() {
+        let Some(mut ready) = sample_ready() else {
+            return;
+        };
+        let last = ready.page_count().saturating_sub(1);
+        if last < 1 {
+            return;
+        }
+        let hit_page = PageNo::from_index(last);
+        plant_text(
+            &mut ready,
+            &[(0, "página sem o termo"), (last, "só aqui tem bissexto")],
+        );
+        assert_ne!(ready.visible, hit_page);
+        let pos_file = std::env::temp_dir().join(format!(
+            "tsuro-positions-unit-{}-palette-dochit",
+            std::process::id()
+        ));
+        let _ = std::fs::remove_file(&pos_file);
+        crate::positions::with_positions_path(pos_file.clone(), || {
+            let mut session = Session::Ready(Tabs::single(ready));
+            apply(&mut session, Message::OpenPalette);
+            apply(&mut session, Message::PaletteQuery("bissexto".into()));
+            if let Session::Ready(tabs) = &mut session {
+                let palette = tabs.palette.as_mut().expect("paleta aberta");
+                assert!(palette
+                    .items
+                    .iter()
+                    .any(|item| matches!(item, PaletteItem::DocHit { .. })));
+                let index = palette
+                    .items
+                    .iter()
+                    .position(|item| matches!(item, PaletteItem::DocHit { .. }))
+                    .expect("hit na paleta");
+                palette.selected = Some(index);
+            }
+            apply(&mut session, Message::PaletteConfirm);
+            match &session {
+                Session::Ready(tabs) => {
+                    assert!(!tabs.palette_open());
+                    assert_eq!(tabs.visible, hit_page);
+                    let doc = tabs.active();
+                    assert_eq!(doc.search.query(), "bissexto");
+                    let hit = doc.search.current_hit().expect("current ancorado");
+                    assert_eq!(hit.page, hit_page);
+                    let slice = doc.pages.text[last as usize]
+                        .as_ref()
+                        .map(|layer| layer.slice(hit.range));
+                    assert_eq!(slice.as_deref(), Some("bissexto"));
+                    assert!(doc.can_history_back(), "salto entra no histórico");
+                }
+                other => panic!("esperava Ready, veio {other:?}"),
+            }
+        });
+        let _ = std::fs::remove_file(&pos_file);
+    }
 }
