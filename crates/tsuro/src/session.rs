@@ -3636,27 +3636,32 @@ impl Session {
     }
 
     fn palette_confirm(&mut self) -> Task<Message> {
-        let item = if let Session::Ready(tabs) = self {
-            tabs.palette
-                .as_ref()
-                .and_then(|palette| palette.selected_item().cloned())
+        let confirmed = if let Session::Ready(tabs) = self {
+            tabs.palette.as_ref().and_then(|palette| {
+                palette
+                    .selected_item()
+                    .cloned()
+                    .map(|item| (item, palette.query().to_owned()))
+            })
         } else {
             None
         };
-        match item {
+        match confirmed {
             None => self.palette_close(),
-            Some(PaletteItem::Action { id, .. }) => self.run_action(id),
-            Some(PaletteItem::OutlineRow { page, .. }) => {
+            Some((PaletteItem::Action { id, .. }, _)) => self.run_action(id),
+            Some((PaletteItem::OutlineRow { page, .. }, _)) => {
                 let _ = self.palette_close();
                 self.outline_jump(page)
             }
-            Some(PaletteItem::Recent { path }) => {
+            Some((PaletteItem::Recent { path }, _)) => {
                 let _ = self.palette_close();
                 self.update(Message::OpenRecent(path))
             }
-            Some(PaletteItem::DocHit { .. } | PaletteItem::GlobalHit { .. }) => {
-                self.palette_close()
+            Some((PaletteItem::DocHit { page, range, .. }, query)) => {
+                let _ = self.palette_close();
+                self.doc_hit_jump(query, page, range)
             }
+            Some((PaletteItem::GlobalHit { .. }, _)) => self.palette_close(),
         }
     }
 
@@ -3739,6 +3744,34 @@ impl Session {
             if let Some(page) = ready.search.current_hit().map(|hit| hit.page) {
                 ready.navigate_to(page);
             }
+        }
+        Task::batch([self.schedule_work(), self.nav_follow_active()])
+    }
+
+    /// Confirmação do `DocHit` da paleta: transfere a query para o toolbar e
+    /// ancora o `current` no hit confirmado, depois salta pelo mesmo caminho
+    /// do Enter da busca (navegação com histórico + `nav_follow_active`).
+    fn doc_hit_jump(&mut self, query: String, page: PageNo, range: TextRange) -> Task<Message> {
+        if let Session::Ready(tabs) = self {
+            let ready = tabs.active_mut();
+            ready.set_query(query);
+            if let Some(index) = ready
+                .search
+                .hits()
+                .iter()
+                .position(|hit| hit.page == page && hit.range == range)
+            {
+                while ready.search.current() != Some(index) {
+                    ready.search.step(1);
+                }
+            }
+            ready.navigate_to(
+                ready
+                    .search
+                    .current_hit()
+                    .map(|hit| hit.page)
+                    .unwrap_or(page),
+            );
         }
         Task::batch([self.schedule_work(), self.nav_follow_active()])
     }
