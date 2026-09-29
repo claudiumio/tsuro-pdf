@@ -640,8 +640,7 @@ pub(crate) struct PaletteState {
 
 /// Fontes da paleta que dependem do documento aberto, como dados planos.
 /// Só `Tabs::palette_context` constrói — sempre sem o documento atual.
-/// `dochits` carrega os hits já derivados da query da paleta; digitar só
-/// recalcula o contexto transitório, nunca o `Ready.search` do toolbar.
+/// Transitório por query: digitar recalcula, nunca toca o `Ready.search`.
 #[derive(Debug, Clone, Default)]
 pub(crate) struct PaletteContext {
     outline: Vec<(Vec<usize>, String, PageNo)>,
@@ -696,9 +695,7 @@ impl PaletteState {
         self.selected = Some((cur + step).rem_euclid(len) as usize);
     }
 
-    /// Ordena por (score, fonte, título) e trunca. Fonte desempata mesmo
-    /// score: ações antes de outline, outline antes de hits, hits antes de
-    /// recents.
+    /// Ordena por (score, fonte, título) e trunca.
     pub(crate) fn refresh(&mut self) {
         let query = self.query.as_str();
         let mut scored: Vec<(u8, SourceRank, PaletteItem)> = PaletteAction::ALL
@@ -809,8 +806,7 @@ fn palette_match(query: &str, title: &str) -> Option<u8> {
 }
 
 /// Janela do trecho em torno do hit para o `DocHit` da paleta: ~40 chars de
-/// cada lado, colapso de whitespace, "…" onde cortou. Ranges do `derive` já
-/// caem em fronteira de char; o `slice` só confirma.
+/// cada lado, colapso de whitespace, "…" onde cortou.
 fn hit_excerpt(pages: &[Option<TextLayer>], hit: &crate::search::Hit) -> String {
     const RADIUS: usize = 40;
     let Some(layer) = pages
@@ -822,17 +818,18 @@ fn hit_excerpt(pages: &[Option<TextLayer>], hit: &crate::search::Hit) -> String 
     let plain = &layer.plain;
     let start_byte = hit.range.start.min(plain.len());
     let end_byte = hit.range.end.min(plain.len());
-    let back = plain[..start_byte]
-        .chars()
-        .rev()
-        .take(RADIUS)
-        .map(|ch| ch.len_utf8())
-        .sum::<usize>();
-    let fwd = plain[end_byte..]
-        .chars()
-        .take(RADIUS)
-        .map(|ch| ch.len_utf8())
-        .sum::<usize>();
+    // `get` em vez de fatiar: range fora de fronteira rende janela menor,
+    // nunca pânico.
+    let back = plain.get(..start_byte).map_or(0, |head| {
+        head.chars()
+            .rev()
+            .take(RADIUS)
+            .map(|ch| ch.len_utf8())
+            .sum()
+    });
+    let fwd = plain.get(end_byte..).map_or(0, |tail| {
+        tail.chars().take(RADIUS).map(|ch| ch.len_utf8()).sum()
+    });
     let start = start_byte.saturating_sub(back);
     let end = end_byte + fwd;
     let mut excerpt: String = layer
@@ -1046,8 +1043,7 @@ impl Tabs {
 
     /// Fontes da paleta na aba ativa, como dados planos. Exclui o documento
     /// atual dos recents (reabrir o que está na tela não é navegação).
-    /// Deriva os hits na query da paleta sem tocar o `Ready.search` do
-    /// toolbar; query vazia rende zero hits (o `derive` já garante).
+    /// Deriva os hits na query da paleta sem tocar o `Ready.search`.
     fn palette_context(&self, query: &str) -> PaletteContext {
         let ready = self.active();
         let current = ready.source.path();
@@ -3748,9 +3744,8 @@ impl Session {
         Task::batch([self.schedule_work(), self.nav_follow_active()])
     }
 
-    /// Confirmação do `DocHit` da paleta: transfere a query para o toolbar e
-    /// ancora o `current` no hit confirmado, depois salta pelo mesmo caminho
-    /// do Enter da busca (navegação com histórico + `nav_follow_active`).
+    /// Confirmação do `DocHit`: transfere a query para o toolbar e ancora o
+    /// `current` no hit confirmado, depois salta como o Enter da busca.
     fn doc_hit_jump(&mut self, query: String, page: PageNo, range: TextRange) -> Task<Message> {
         if let Session::Ready(tabs) = self {
             let ready = tabs.active_mut();
