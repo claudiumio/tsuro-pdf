@@ -3686,6 +3686,10 @@ impl Session {
         let Session::Ready(tabs) = self else {
             return Task::none();
         };
+        if tabs.palette_open() {
+            // Já aberta: só refoca (Ctrl+K repetido não apaga a query).
+            return iced::widget::text_input::focus(crate::view::palette_input_id());
+        }
         tabs.overflow_open = false;
         let context = tabs.palette_context("");
         tabs.palette = Some(PaletteState::fresh(context));
