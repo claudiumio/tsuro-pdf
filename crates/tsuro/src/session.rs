@@ -717,7 +717,8 @@ impl PaletteState {
         scored.extend(self.context.docs_scored(query));
         scored.extend(self.context.global_scored(query));
         scored.extend(self.context.recents_scored(query));
-        scored.sort_by_key(|(score, rank, item)| (*score, *rank, item.title().to_lowercase()));
+        scored
+            .sort_by_cached_key(|(score, rank, item)| (*score, *rank, item.title().to_lowercase()));
         scored.truncate(PALETTE_ITEM_CAP);
         self.items = scored.into_iter().map(|(_, _, item)| item).collect();
     }
@@ -730,6 +731,11 @@ impl PaletteState {
 
 /// Teto de itens por query; a lista ordenada é truncada sem piedade.
 const PALETTE_ITEM_CAP: usize = 100;
+
+/// Teto de hits por fonte da paleta: cada produtor entrega no máximo
+/// isto (o merge final ainda passa pelo `PALETTE_ITEM_CAP`). Sem teto
+/// por fonte, uma query curta varre o documento inteiro a cada tecla.
+const PALETTE_SOURCE_CAP: usize = 25;
 
 /// Altura estimada da linha da paleta (título 13px + padding 8+8); com
 /// hint soma a 2ª linha (11px + spacing 1). Estimativa: a fonte real
@@ -768,6 +774,7 @@ impl PaletteContext {
     fn outline_scored(&self, query: &str) -> Vec<(u8, SourceRank, PaletteItem)> {
         self.outline
             .iter()
+            .take(PALETTE_SOURCE_CAP)
             .filter_map(|(path, title, page)| {
                 palette_match(query, title).map(|score| {
                     (
@@ -1112,7 +1119,7 @@ impl Tabs {
             .filter(|entry| entry.as_path() != current)
             .cloned()
             .collect();
-        let dochits = Search::derive(query, &ready.pages.text)
+        let dochits = Search::derive_capped(query, &ready.pages.text, PALETTE_SOURCE_CAP)
             .hits()
             .iter()
             .map(|hit| (hit.page, hit.range, hit_excerpt(&ready.pages.text, hit)))
@@ -1124,7 +1131,7 @@ impl Tabs {
             }
             let path = doc.source.path().to_path_buf();
             global.extend(
-                Search::derive(query, &doc.pages.text)
+                Search::derive_capped(query, &doc.pages.text, PALETTE_SOURCE_CAP)
                     .hits()
                     .iter()
                     .map(|hit| {
@@ -12182,5 +12189,26 @@ mod tests {
         assert_eq!(palette_scroll_offset(&items, 2), 64.0);
         assert_eq!(palette_scroll_offset(&items, 3), 110.0);
         assert_eq!(palette_scroll_offset(&items, 99), 142.0);
+    }
+
+    #[test]
+    fn palette_outline_producer_caps_at_source_cap() {
+        let outline: Vec<(Vec<usize>, String, PageNo)> = (0..30usize)
+            .map(|i| (vec![i], format!("relato {i}"), PageNo::from_index(i as u32)))
+            .collect();
+        let context = PaletteContext {
+            outline,
+            recents: Vec::new(),
+            dochits: Vec::new(),
+            global: Vec::new(),
+        };
+        let mut palette = PaletteState::fresh(PaletteContext::default());
+        palette.set_query_with(context, "relato".into());
+        let rows = palette
+            .items()
+            .iter()
+            .filter(|item| matches!(item, PaletteItem::OutlineRow { .. }))
+            .count();
+        assert_eq!(rows, PALETTE_SOURCE_CAP);
     }
 }

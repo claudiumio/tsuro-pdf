@@ -50,7 +50,13 @@ impl Search {
     }
 
     pub(crate) fn derive(query: &str, pages: &[Option<TextLayer>]) -> Self {
-        if query.is_empty() {
+        Self::derive_capped(query, pages, usize::MAX)
+    }
+
+    /// Como `derive`, mas para após `cap` hits: a paleta lista com teto
+    /// por fonte, sem varrer o documento inteiro a cada tecla (F2).
+    pub(crate) fn derive_capped(query: &str, pages: &[Option<TextLayer>], cap: usize) -> Self {
+        if query.is_empty() || cap == 0 {
             return Search {
                 query: query.to_string(),
                 hits: Vec::new(),
@@ -60,6 +66,10 @@ impl Search {
         let mut hits = Vec::new();
         for layer in pages.iter().flatten() {
             hits.extend(find_hits(query, layer));
+            if hits.len() >= cap {
+                hits.truncate(cap);
+                break;
+            }
         }
         hits.sort_by_key(|hit| (hit.page.index(), hit.range.start));
         Search {
@@ -438,5 +448,26 @@ mod tests {
         };
         let hits = find_hits("e\u{301}", &layer);
         assert_eq!(hits.len(), 1, "NFD e+combining vs NFC é");
+    }
+
+    #[test]
+    fn derive_capped_stops_at_cap_in_page_order() {
+        let layer = |index: u32| TextLayer {
+            page: PageNo::from_index(index),
+            plain: "alvo e alvo".into(),
+            glyphs: vec![Glyph {
+                cluster: "alvo e alvo".into(),
+                quad: Quad::from_rect(0.0, 0.0, 10.0, 10.0),
+            }],
+        };
+        let pages = vec![Some(layer(0)), None, Some(layer(2)), Some(layer(3))];
+        let capped = Search::derive_capped("alvo", &pages, 5);
+        assert_eq!(capped.hits().len(), 5);
+        let order: Vec<u32> = capped.hits().iter().map(|hit| hit.page.index()).collect();
+        assert_eq!(order, vec![0, 0, 2, 2, 3]);
+        let full = Search::derive("alvo", &pages);
+        assert_eq!(full.hits().len(), 6);
+        assert!(Search::derive_capped("alvo", &pages, 0).hits().is_empty());
+        assert!(Search::derive_capped("", &pages, 5).hits().is_empty());
     }
 }
