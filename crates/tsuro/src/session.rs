@@ -3268,11 +3268,7 @@ impl Session {
     }
 
     pub fn subscription(&self) -> iced::Subscription<Message> {
-        // Esc fecha a paleta mesmo com o campo focado: o text_input
-        // captura o 1º Esc (só perde o foco) e o puro `keyboard_message`
-        // nunca o veria (auditoria F4).
-        let palette_open = matches!(self, Session::Ready(tabs) if tabs.palette_open());
-        let events = event::listen_with(move |event, status, id| match event {
+        let events = event::listen_with(|event, status, id| match event {
             Event::Window(window::Event::FileDropped(path)) => Some(Message::FileDropped(path)),
             Event::Window(window::Event::CloseRequested) => Some(Message::CloseWindow(id)),
             Event::Window(window::Event::Unfocused) => Some(Message::DragCancelled),
@@ -3285,9 +3281,6 @@ impl Session {
                 id,
             }),
             Event::Keyboard(keyboard::Event::KeyPressed { key, modifiers, .. }) => {
-                if palette_open && matches!(key.as_ref(), Key::Named(Named::Escape)) {
-                    return Some(Message::ClosePrintDialog);
-                }
                 keyboard_message(key, modifiers, status)
             }
             // Shift para o Shift+Enter: vale com foco ou sem (o submit lê).
