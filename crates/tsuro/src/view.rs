@@ -2822,6 +2822,14 @@ mod tests {
     }
 
     #[test]
+    fn outline_title_collapses_whitespace_to_one_line() {
+        assert_eq!(outline_title("Capítulo\nquebrado"), "Capítulo quebrado");
+        assert_eq!(outline_title("  antes\tdepois  "), "antes depois");
+        assert_eq!(outline_title("a\nb\nc"), "a b c");
+    }
+
+
+    #[test]
     fn recent_label_shows_parent_and_truncates() {
         use super::recent_label;
         use std::path::Path;
