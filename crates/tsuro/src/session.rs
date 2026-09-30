@@ -12051,6 +12051,41 @@ mod tests {
         let Some(mut first) = sample_ready() else {
             return;
         };
+        plant_text(&mut first, &[(0, "página sem o termo")]);
+        let mut session = Session::Ready(Tabs::single(first));
+        apply(&mut session, Message::OpenPalette);
+        apply(&mut session, Message::PaletteQuery("bissexto".into()));
+        // Item obsoleto injetado (na prática o retarget o removeria ao
+        // fechar a aba): confirmar reabre o arquivo, sem salto.
+        let stale = PathBuf::from("/tmp/tsuro-palette-fechada.pdf");
+        if let Session::Ready(tabs) = &mut session {
+            let palette = tabs.palette.as_mut().expect("paleta aberta");
+            palette.items.push(PaletteItem::GlobalHit {
+                path: stale.clone(),
+                page: PageNo::first(),
+                range: TextRange { start: 0, end: 8 },
+                excerpt: "bissexto obsoleto".into(),
+            });
+            palette.selected = Some(palette.items.len() - 1);
+        }
+        apply(&mut session, Message::PaletteConfirm);
+        match &session {
+            Session::Ready(tabs) => {
+                assert!(!tabs.palette_open());
+                assert_eq!(tabs.len(), 1);
+                assert!(tabs.pending_gen().is_some(), "reabre a aba fechada");
+                let (_, source) = tabs.pending.clone().expect("aba pendente");
+                assert_eq!(source.path(), stale.as_path());
+            }
+            other => panic!("esperava Ready, veio {other:?}"),
+        }
+    }
+
+    #[test]
+    fn palette_drops_stale_globalhit_when_other_tab_closes() {
+        let Some(mut first) = sample_ready() else {
+            return;
+        };
         let other_path = PathBuf::from("/tmp/tsuro-palette-outro.pdf");
         let Some(mut second) = second_tab_ready(other_path.clone()) else {
             return;
@@ -12063,23 +12098,17 @@ mod tests {
         let mut session = Session::Ready(tabs);
         apply(&mut session, Message::OpenPalette);
         apply(&mut session, Message::PaletteQuery("bissexto".into()));
-        if let Session::Ready(tabs) = &mut session {
-            let palette = tabs.palette.as_mut().expect("paleta aberta");
-            let index = palette
-                .items
-                .iter()
-                .position(|item| matches!(item, PaletteItem::GlobalHit { .. }))
-                .expect("hit global na paleta");
-            palette.selected = Some(index);
-        }
-        // Aba fechada entre a query e o Enter: confirmar reabre, sem salto.
         apply(&mut session, Message::CloseTab(1));
-        apply(&mut session, Message::PaletteConfirm);
         match &session {
             Session::Ready(tabs) => {
-                assert!(!tabs.palette_open());
-                assert_eq!(tabs.len(), 1);
-                assert!(tabs.pending_gen().is_some(), "reabre a aba fechada");
+                assert_eq!(tabs.active_index(), 0);
+                let items = tabs.palette().expect("paleta segue aberta").items();
+                assert!(
+                    !items
+                        .iter()
+                        .any(|item| matches!(item, PaletteItem::GlobalHit { .. })),
+                    "hit da aba fechada não sobrevive"
+                );
             }
             other => panic!("esperava Ready, veio {other:?}"),
         }
