@@ -59,6 +59,13 @@ pub fn palette_input_id() -> text_input::Id {
     text_input::Id::new("tsuro-palette")
 }
 
+pub fn palette_scroll_id() -> scrollable::Id {
+    scrollable::Id::new("tsuro-palette-list")
+}
+
+/// Altura máxima da lista da paleta (~10 linhas); além disso, scroll.
+const PALETTE_LIST_MAX_H: f32 = 420.0;
+
 pub fn chrome(session: &Session, theme: Theme) -> Element<'_, Message> {
     let t = Tokens::for_theme(theme);
     let body: Element<'_, Message> = match session {
@@ -1516,7 +1523,15 @@ fn palette_card(palette: &PaletteState, t: Tokens) -> Element<'_, Message> {
             );
         }
     }
-    container(column![query, rows].spacing(8))
+    let list = container(
+        scrollable(rows)
+            .id(palette_scroll_id())
+            .width(Length::Fill)
+            .height(Length::Shrink),
+    )
+    .max_height(PALETTE_LIST_MAX_H)
+    .width(Length::Fill);
+    container(column![query, list].spacing(8))
         .width(Length::Fixed(560.0))
         .padding(12)
         .style(kiri::menu_style(t))

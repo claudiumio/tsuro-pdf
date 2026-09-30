@@ -628,6 +628,12 @@ impl PaletteItem {
             Self::GlobalHit { .. } => "pages",
         }
     }
+
+    /// Segunda linha existe quando o hint sobrevive ao colapso.
+    fn has_sub_line(&self) -> bool {
+        self.subtitle()
+            .is_some_and(|sub| sub.split_whitespace().next().is_some())
+    }
 }
 
 /// Estado da paleta. `selected` é `Some` só com lista não vazia.
@@ -724,6 +730,28 @@ impl PaletteState {
 
 /// Teto de itens por query; a lista ordenada é truncada sem piedade.
 const PALETTE_ITEM_CAP: usize = 100;
+
+/// Altura estimada da linha da paleta (título 13px + padding 8+8); com
+/// hint soma a 2ª linha (11px + spacing 1). Estimativa: a fonte real
+/// arredonda — o follow aproxima a seleção, sem deriva garantida.
+const PALETTE_ROW_PLAIN: f32 = 32.0;
+const PALETTE_ROW_SUB: f32 = 46.0;
+
+/// Offset-y estimado da linha `selected`, para o follow do scroll.
+/// Espelha `palette_card` (view.rs): 2ª linha só com hint não vazio.
+fn palette_scroll_offset(items: &[PaletteItem], selected: usize) -> f32 {
+    items
+        .iter()
+        .take(selected)
+        .map(|item| {
+            if item.has_sub_line() {
+                PALETTE_ROW_SUB
+            } else {
+                PALETTE_ROW_PLAIN
+            }
+        })
+        .sum()
+}
 
 /// Ordem das fontes no desempate por score (a declaração é a ordem).
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
@@ -3668,12 +3696,21 @@ impl Session {
     }
 
     fn palette_move(&mut self, step: i32) -> Task<Message> {
-        if let Session::Ready(tabs) = self {
-            if let Some(palette) = tabs.palette.as_mut() {
-                palette.move_by(step);
-            }
-        }
-        Task::none()
+        let Session::Ready(tabs) = self else {
+            return Task::none();
+        };
+        let Some(palette) = tabs.palette.as_mut() else {
+            return Task::none();
+        };
+        palette.move_by(step);
+        let Some(selected) = palette.selected() else {
+            return Task::none();
+        };
+        let y = palette_scroll_offset(palette.items(), selected);
+        scrollable::scroll_to(
+            crate::view::palette_scroll_id(),
+            scrollable::AbsoluteOffset { x: 0.0, y },
+        )
     }
 
     fn run_action(&mut self, id: PaletteAction) -> Task<Message> {
@@ -12116,5 +12153,34 @@ mod tests {
             }
             other => panic!("esperava Ready, veio {other:?}"),
         }
+    }
+
+    #[test]
+    fn palette_scroll_offset_sums_plain_and_sub_rows() {
+        let items = vec![
+            PaletteItem::action(PaletteAction::TogglePages),
+            PaletteItem::DocHit {
+                page: PageNo::first(),
+                range: TextRange { start: 0, end: 1 },
+                excerpt: "hit".into(),
+            },
+            PaletteItem::GlobalHit {
+                path: PathBuf::from("/tmp/outro.pdf"),
+                page: PageNo::first(),
+                range: TextRange { start: 0, end: 1 },
+                excerpt: "vizinho".into(),
+            },
+            PaletteItem::OutlineRow {
+                path: vec![0],
+                title: "Cap".into(),
+                page: PageNo::first(),
+            },
+        ];
+        // Ação sem hint e hit sem subtítulo: 32px; global com nome: 46px.
+        assert_eq!(palette_scroll_offset(&items, 0), 0.0);
+        assert_eq!(palette_scroll_offset(&items, 1), 32.0);
+        assert_eq!(palette_scroll_offset(&items, 2), 64.0);
+        assert_eq!(palette_scroll_offset(&items, 3), 110.0);
+        assert_eq!(palette_scroll_offset(&items, 99), 142.0);
     }
 }
