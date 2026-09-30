@@ -12024,4 +12024,78 @@ mod tests {
             other => panic!("esperava Ready, veio {other:?}"),
         }
     }
+
+    #[test]
+    fn palette_retargets_when_cycling_tabs() {
+        let Some(mut first) = sample_ready() else {
+            return;
+        };
+        let other_path = PathBuf::from("/tmp/tsuro-palette-outro.pdf");
+        let Some(mut second) = second_tab_ready(other_path.clone()) else {
+            return;
+        };
+        plant_text(&mut first, &[(0, "só aqui tem bissexto")]);
+        plant_text(&mut second, &[(0, "página sem o termo")]);
+        let mut tabs = Tabs::single(first);
+        tabs.push(second);
+        tabs.select(0);
+        let mut session = Session::Ready(tabs);
+        apply(&mut session, Message::OpenPalette);
+        apply(&mut session, Message::PaletteQuery("bissexto".into()));
+        apply(&mut session, Message::CycleTab(1));
+        match &session {
+            Session::Ready(tabs) => {
+                assert_eq!(tabs.active_index(), 1);
+                let items = tabs.palette().expect("paleta segue aberta").items();
+                assert!(
+                    !items
+                        .iter()
+                        .any(|item| matches!(item, PaletteItem::DocHit { .. })),
+                    "hit da aba antiga não sobrevive à troca"
+                );
+                assert!(
+                    items.iter().any(|item| matches!(
+                        item,
+                        PaletteItem::GlobalHit { path, .. } if path == &sample_pdf()
+                    )),
+                    "aba antiga vira fonte global"
+                );
+            }
+            other => panic!("esperava Ready, veio {other:?}"),
+        }
+    }
+
+    #[test]
+    fn palette_retargets_when_closing_active_tab() {
+        let Some(mut first) = sample_ready() else {
+            return;
+        };
+        let other_path = PathBuf::from("/tmp/tsuro-palette-outro.pdf");
+        let Some(mut second) = second_tab_ready(other_path.clone()) else {
+            return;
+        };
+        plant_text(&mut first, &[(0, "só aqui tem bissexto")]);
+        plant_text(&mut second, &[(0, "página sem o termo")]);
+        let mut tabs = Tabs::single(first);
+        tabs.push(second);
+        tabs.select(0);
+        let mut session = Session::Ready(tabs);
+        apply(&mut session, Message::OpenPalette);
+        apply(&mut session, Message::PaletteQuery("bissexto".into()));
+        apply(&mut session, Message::CloseTab(0));
+        match &session {
+            Session::Ready(tabs) => {
+                assert_eq!(tabs.len(), 1);
+                assert_eq!(tabs.active_index(), 0);
+                let items = tabs.palette().expect("paleta segue aberta").items();
+                assert!(
+                    items
+                        .iter()
+                        .all(|item| matches!(item, PaletteItem::Action { .. })),
+                    "só ações restam numa aba sem fontes"
+                );
+            }
+            other => panic!("esperava Ready, veio {other:?}"),
+        }
+    }
 }
