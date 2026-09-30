@@ -546,7 +546,7 @@ impl PaletteAction {
     ];
 }
 
-/// Item da paleta (#45). GlobalHit ganha produtor na fatia 5.
+/// Item da paleta (#45).
 #[allow(dead_code)]
 #[derive(Debug, Clone)]
 pub(crate) enum PaletteItem {
@@ -571,6 +571,7 @@ pub(crate) enum PaletteItem {
     GlobalHit {
         path: PathBuf,
         page: PageNo,
+        range: TextRange,
         excerpt: String,
     },
 }
@@ -646,6 +647,7 @@ pub(crate) struct PaletteContext {
     outline: Vec<(Vec<usize>, String, PageNo)>,
     recents: Vec<PathBuf>,
     dochits: Vec<(PageNo, TextRange, String)>,
+    global: Vec<(PathBuf, PageNo, TextRange, String)>,
 }
 
 impl PaletteState {
@@ -707,6 +709,7 @@ impl PaletteState {
             .collect();
         scored.extend(self.context.outline_scored(query));
         scored.extend(self.context.docs_scored(query));
+        scored.extend(self.context.global_scored(query));
         scored.extend(self.context.recents_scored(query));
         scored.sort_by_key(|(score, rank, item)| (*score, *rank, item.title().to_lowercase()));
         scored.truncate(PALETTE_ITEM_CAP);
@@ -728,6 +731,7 @@ enum SourceRank {
     Action,
     Outline,
     Doc,
+    Global,
     Recent,
 }
 
@@ -762,6 +766,28 @@ impl PaletteContext {
                         score,
                         SourceRank::Doc,
                         PaletteItem::DocHit {
+                            page: *page,
+                            range: *range,
+                            excerpt: excerpt.clone(),
+                        },
+                    )
+                })
+            })
+            .collect()
+    }
+
+    /// Hits das outras abas abertas casados com o trecho: só camadas de
+    /// texto já extraídas, sem abrir arquivo por tecla (#45).
+    fn global_scored(&self, query: &str) -> Vec<(u8, SourceRank, PaletteItem)> {
+        self.global
+            .iter()
+            .filter_map(|(path, page, range, excerpt)| {
+                palette_match(query, excerpt).map(|score| {
+                    (
+                        score,
+                        SourceRank::Global,
+                        PaletteItem::GlobalHit {
+                            path: path.clone(),
                             page: *page,
                             range: *range,
                             excerpt: excerpt.clone(),
@@ -1063,10 +1089,31 @@ impl Tabs {
             .iter()
             .map(|hit| (hit.page, hit.range, hit_excerpt(&ready.pages.text, hit)))
             .collect();
+        let mut global = Vec::new();
+        for (index, doc) in self.docs.iter().enumerate() {
+            if index == self.active {
+                continue;
+            }
+            let path = doc.source.path().to_path_buf();
+            global.extend(
+                Search::derive(query, &doc.pages.text)
+                    .hits()
+                    .iter()
+                    .map(|hit| {
+                        (
+                            path.clone(),
+                            hit.page,
+                            hit.range,
+                            hit_excerpt(&doc.pages.text, hit),
+                        )
+                    }),
+            );
+        }
         PaletteContext {
             outline,
             recents,
             dochits,
+            global,
         }
     }
 
@@ -3657,7 +3704,31 @@ impl Session {
                 let _ = self.palette_close();
                 self.doc_hit_jump(query, page, range)
             }
-            Some((PaletteItem::GlobalHit { .. }, _)) => self.palette_close(),
+            Some((
+                PaletteItem::GlobalHit {
+                    path, page, range, ..
+                },
+                query,
+            )) => {
+                let _ = self.palette_close();
+                let tab = match self {
+                    Session::Ready(tabs) => tabs
+                        .docs
+                        .iter()
+                        .position(|doc| doc.source.path() == path.as_path()),
+                    _ => None,
+                };
+                match tab {
+                    Some(index) => {
+                        if let Session::Ready(tabs) = self {
+                            tabs.select(index);
+                        }
+                        self.doc_hit_jump(query, page, range)
+                    }
+                    // Aba fechada entre a query e o Enter: abre de novo, sem salto.
+                    None => self.update(Message::OpenRecent(path)),
+                }
+            }
         }
     }
 
@@ -10942,6 +11013,7 @@ mod tests {
         let global = PaletteItem::GlobalHit {
             path: PathBuf::from("/tmp/guia-folio.pdf"),
             page: PageNo::from_index(1),
+            range: TextRange { start: 0, end: 6 },
             excerpt: "achado".into(),
         };
         assert_eq!(global.title(), "achado");
