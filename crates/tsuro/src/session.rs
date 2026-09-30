@@ -3730,10 +3730,7 @@ impl Session {
         }
         match id {
             PaletteAction::GoToPage => {
-                // Sem Id no campo de página da toolbar: o text_input em
-                // view.rs não tem `.id()` (só search_input_id / pages_scroll_id
-                // / palette_input_id). Fecha só — sem parse nem salto.
-                Task::none()
+                iced::widget::text_input::focus(crate::view::page_input_id())
             }
             PaletteAction::ZoomIn => self.update(Message::ZoomIn),
             PaletteAction::ZoomOut => self.update(Message::ZoomOut),

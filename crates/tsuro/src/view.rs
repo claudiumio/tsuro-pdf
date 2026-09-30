@@ -55,6 +55,10 @@ pub fn search_input_id() -> text_input::Id {
     text_input::Id::new("tsuro-search")
 }
 
+pub fn page_input_id() -> text_input::Id {
+    text_input::Id::new("tsuro-page")
+}
+
 pub fn palette_input_id() -> text_input::Id {
     text_input::Id::new("tsuro-palette")
 }
@@ -431,6 +435,7 @@ fn topbar(session: &Session, t: Tokens) -> Element<'_, Message> {
                 row![
                     tip(
                         text_input("Página", ready.page_input())
+                            .id(page_input_id())
                             .on_input(Message::PageInput)
                             .on_submit(Message::PageSubmit)
                             .style(kiri::bar_input_style(t))
