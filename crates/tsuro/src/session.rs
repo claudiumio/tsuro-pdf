@@ -547,7 +547,6 @@ impl PaletteAction {
 }
 
 /// Item da paleta (#45).
-#[allow(dead_code)]
 #[derive(Debug, Clone)]
 pub(crate) enum PaletteItem {
     Action {
@@ -561,7 +560,6 @@ pub(crate) enum PaletteItem {
         excerpt: String,
     },
     OutlineRow {
-        path: Vec<usize>,
         title: String,
         page: PageNo,
     },
@@ -650,7 +648,7 @@ pub(crate) struct PaletteState {
 /// Transitório por query: digitar recalcula, nunca toca o `Ready.search`.
 #[derive(Debug, Clone, Default)]
 pub(crate) struct PaletteContext {
-    outline: Vec<(Vec<usize>, String, PageNo)>,
+    outline: Vec<(String, PageNo)>,
     recents: Vec<PathBuf>,
     dochits: Vec<(PageNo, TextRange, String)>,
     global: Vec<(PathBuf, PageNo, TextRange, String)>,
@@ -775,13 +773,12 @@ impl PaletteContext {
         self.outline
             .iter()
             .take(PALETTE_SOURCE_CAP)
-            .filter_map(|(path, title, page)| {
+            .filter_map(|(title, page)| {
                 palette_match(query, title).map(|score| {
                     (
                         score,
                         SourceRank::Outline,
                         PaletteItem::OutlineRow {
-                            path: path.clone(),
                             title: title.clone(),
                             page: *page,
                         },
@@ -1111,7 +1108,7 @@ impl Tabs {
         let outline = ready
             .outline_rows()
             .into_iter()
-            .map(|(path, _, title, page, _)| (path, title.to_owned(), page))
+            .map(|(_, _, title, page, _)| (title.to_owned(), page))
             .collect();
         let recents = ready
             .recents()
@@ -11063,7 +11060,6 @@ mod tests {
         assert_eq!(hit.subtitle(), None);
         assert_eq!(hit.icon(), "search");
         let outline = PaletteItem::OutlineRow {
-            path: vec![0],
             title: "Capítulo".into(),
             page: PageNo::first(),
         };
@@ -11949,7 +11945,7 @@ mod tests {
             "contexto vazio lista só ações"
         );
         let context = PaletteContext {
-            outline: vec![(vec![0], "relato".into(), PageNo::first())],
+            outline: vec![("relato".into(), PageNo::first())],
             recents: vec![PathBuf::from("/tmp/relato.pdf")],
             dochits: vec![(
                 PageNo::first(),
@@ -12179,7 +12175,6 @@ mod tests {
                 excerpt: "vizinho".into(),
             },
             PaletteItem::OutlineRow {
-                path: vec![0],
                 title: "Cap".into(),
                 page: PageNo::first(),
             },
@@ -12194,8 +12189,8 @@ mod tests {
 
     #[test]
     fn palette_outline_producer_caps_at_source_cap() {
-        let outline: Vec<(Vec<usize>, String, PageNo)> = (0..30usize)
-            .map(|i| (vec![i], format!("relato {i}"), PageNo::from_index(i as u32)))
+        let outline: Vec<(String, PageNo)> = (0..30usize)
+            .map(|i| (format!("relato {i}"), PageNo::from_index(i as u32)))
             .collect();
         let context = PaletteContext {
             outline,

@@ -2870,7 +2870,6 @@ mod tests {
         use crate::page::PageNo;
         use std::path::PathBuf;
         let outline = PaletteItem::OutlineRow {
-            path: vec![0],
             title: "Capítulo com\nquebra e cauda longa demais".into(),
             page: PageNo::first(),
         };
