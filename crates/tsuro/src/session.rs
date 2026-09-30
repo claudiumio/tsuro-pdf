@@ -1170,6 +1170,19 @@ impl Tabs {
         self.docs.push(ready);
         self.active = self.docs.len() - 1;
         self.sync_strip(before);
+        self.retarget_palette();
+    }
+
+    /// Paleta segue a aba ativa: trocar, fechar ou abrir aba reconstrói o
+    /// contexto com a query atual (auditoria F1). Sem paleta é no-op.
+    fn retarget_palette(&mut self) {
+        let query = self.palette.as_ref().map(|p| p.query().to_owned());
+        if let Some(query) = query {
+            let context = self.palette_context(&query);
+            if let Some(palette) = self.palette.as_mut() {
+                palette.set_query_with(context, query);
+            }
+        }
     }
 
     /// Fecha a aba `index` e devolve o documento que sai (o chamador solta o
@@ -1183,19 +1196,25 @@ impl Tabs {
         }
         self.active = self.active.min(self.docs.len() - 1);
         self.sync_strip(before);
+        self.retarget_palette();
         gone
     }
 
     fn select(&mut self, index: usize) {
-        if index < self.docs.len() {
+        if index < self.docs.len() && index != self.active {
             self.active = index;
+            self.retarget_palette();
         }
     }
 
     /// Ctrl+Tab (e Ctrl+Shift+Tab) dão a volta na faixa.
     fn cycle(&mut self, step: i32) {
         let len = self.docs.len() as i32;
-        self.active = (self.active as i32 + step).rem_euclid(len) as usize;
+        let next = (self.active as i32 + step).rem_euclid(len) as usize;
+        if next != self.active {
+            self.active = next;
+            self.retarget_palette();
+        }
     }
 
     /// A faixa só existe com 2+ abas: ao cruzar o limite de uma para duas (e
