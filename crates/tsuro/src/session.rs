@@ -12211,4 +12211,22 @@ mod tests {
             .count();
         assert_eq!(rows, PALETTE_SOURCE_CAP);
     }
+
+    #[test]
+    fn open_palette_twice_keeps_query() {
+        let Some(ready) = sample_ready() else {
+            return;
+        };
+        let mut session = Session::Ready(Tabs::single(ready));
+        apply(&mut session, Message::OpenPalette);
+        apply(&mut session, Message::PaletteQuery("zoom".into()));
+        apply(&mut session, Message::OpenPalette);
+        match &session {
+            Session::Ready(tabs) => {
+                let palette = tabs.palette().expect("segue aberta");
+                assert_eq!(palette.query(), "zoom");
+            }
+            other => panic!("esperava Ready, veio {other:?}"),
+        }
+    }
 }
