@@ -11799,4 +11799,229 @@ mod tests {
         });
         let _ = std::fs::remove_file(&pos_file);
     }
+
+    /// Segunda aba com outro caminho (mesmos bytes): o produtor global só
+    /// enxerga camadas de texto já extraídas, nunca abre arquivo.
+    fn second_tab_ready(path: PathBuf) -> Option<Ready> {
+        let bytes = std::fs::read(sample_pdf()).ok()?;
+        Document::from_bytes(OpenSource::Path(path), Arc::<[u8]>::from(bytes)).ok()
+    }
+
+    #[test]
+    fn palette_query_lists_globalhits_from_other_tabs_only() {
+        let Some(mut first) = sample_ready() else {
+            return;
+        };
+        let other_path = PathBuf::from("/tmp/tsuro-palette-outro.pdf");
+        let Some(mut second) = second_tab_ready(other_path.clone()) else {
+            return;
+        };
+        plant_text(&mut first, &[(0, "página sem o termo")]);
+        plant_text(&mut second, &[(0, "só aqui tem bissexto")]);
+        let mut tabs = Tabs::single(first);
+        tabs.push(second);
+        tabs.select(0);
+        let mut session = Session::Ready(tabs);
+        // Query vazia: ações + outline + recents, zero hits.
+        apply(&mut session, Message::OpenPalette);
+        match &session {
+            Session::Ready(tabs) => {
+                let items = tabs.palette().expect("aberta").items();
+                assert!(
+                    !items.iter().any(|item| matches!(
+                        item,
+                        PaletteItem::DocHit { .. } | PaletteItem::GlobalHit { .. }
+                    )),
+                    "query vazia não lista hit"
+                );
+            }
+            other => panic!("esperava Ready, veio {other:?}"),
+        }
+        apply(&mut session, Message::PaletteQuery("bissexto".into()));
+        match &session {
+            Session::Ready(tabs) => {
+                let items = tabs.palette().expect("aberta").items();
+                assert!(
+                    !items
+                        .iter()
+                        .any(|item| matches!(item, PaletteItem::DocHit { .. })),
+                    "aba ativa não contribui GlobalHit"
+                );
+                let hits: Vec<&PaletteItem> = items
+                    .iter()
+                    .filter(|item| matches!(item, PaletteItem::GlobalHit { .. }))
+                    .collect();
+                assert_eq!(hits.len(), 1);
+                let PaletteItem::GlobalHit {
+                    path,
+                    page,
+                    excerpt,
+                    ..
+                } = hits[0]
+                else {
+                    unreachable!();
+                };
+                assert_eq!(*path, other_path);
+                assert_eq!(*page, PageNo::first());
+                assert!(
+                    excerpt.contains("bissexto"),
+                    "trecho sem o match: {excerpt:?}"
+                );
+            }
+            other => panic!("esperava Ready, veio {other:?}"),
+        }
+    }
+
+    #[test]
+    fn palette_globalhits_rank_below_doc_above_recent() {
+        // Sem Ready: só ordenação e degradação do `refresh`.
+        let mut palette = PaletteState::fresh(PaletteContext::default());
+        palette.set_query(String::new());
+        assert!(
+            palette
+                .items()
+                .iter()
+                .all(|item| matches!(item, PaletteItem::Action { .. })),
+            "contexto vazio lista só ações"
+        );
+        let context = PaletteContext {
+            outline: vec![(vec![0], "relato".into(), PageNo::first())],
+            recents: vec![PathBuf::from("/tmp/relato.pdf")],
+            dochits: vec![(
+                PageNo::first(),
+                TextRange { start: 0, end: 6 },
+                "relato atual".into(),
+            )],
+            global: vec![(
+                PathBuf::from("/tmp/outro.pdf"),
+                PageNo::first(),
+                TextRange { start: 0, end: 6 },
+                "relato vizinho".into(),
+            )],
+        };
+        palette.set_query_with(context, "relato".into());
+        let mut kinds: Vec<&str> = palette
+            .items()
+            .iter()
+            .map(|item| match item {
+                PaletteItem::Action { .. } => "action",
+                PaletteItem::OutlineRow { .. } => "outline",
+                PaletteItem::DocHit { .. } => "doc",
+                PaletteItem::GlobalHit { .. } => "global",
+                PaletteItem::Recent { .. } => "recent",
+            })
+            .collect();
+        kinds.dedup();
+        let pos = |kind| kinds.iter().position(|k| *k == kind);
+        match (pos("outline"), pos("doc"), pos("global"), pos("recent")) {
+            (Some(outline), Some(doc), Some(global), Some(recent)) => {
+                assert!(outline < doc, "doc acima do outline: {kinds:?}");
+                assert!(doc < global, "global acima do doc: {kinds:?}");
+                assert!(global < recent, "global abaixo do recent: {kinds:?}");
+            }
+            _ => panic!("faltou fonte em {kinds:?}"),
+        }
+    }
+
+    #[test]
+    fn palette_confirm_globalhit_switches_tab_jumps_and_closes() {
+        let Some(mut first) = sample_ready() else {
+            return;
+        };
+        let other_path = PathBuf::from("/tmp/tsuro-palette-outro.pdf");
+        let Some(mut second) = second_tab_ready(other_path.clone()) else {
+            return;
+        };
+        let last = second.page_count().saturating_sub(1);
+        if last < 1 {
+            return;
+        }
+        let hit_page = PageNo::from_index(last);
+        plant_text(&mut first, &[(0, "página sem o termo")]);
+        plant_text(
+            &mut second,
+            &[(0, "página sem o termo"), (last, "só aqui tem bissexto")],
+        );
+        let pos_file = std::env::temp_dir().join(format!(
+            "tsuro-positions-unit-{}-palette-globalhit",
+            std::process::id()
+        ));
+        let _ = std::fs::remove_file(&pos_file);
+        crate::positions::with_positions_path(pos_file.clone(), || {
+            let mut tabs = Tabs::single(first);
+            tabs.push(second);
+            tabs.select(0);
+            let mut session = Session::Ready(tabs);
+            apply(&mut session, Message::OpenPalette);
+            apply(&mut session, Message::PaletteQuery("bissexto".into()));
+            if let Session::Ready(tabs) = &mut session {
+                let palette = tabs.palette.as_mut().expect("paleta aberta");
+                let index = palette
+                    .items
+                    .iter()
+                    .position(|item| matches!(item, PaletteItem::GlobalHit { .. }))
+                    .expect("hit global na paleta");
+                palette.selected = Some(index);
+            }
+            apply(&mut session, Message::PaletteConfirm);
+            match &session {
+                Session::Ready(tabs) => {
+                    assert!(!tabs.palette_open());
+                    assert_eq!(tabs.active_index(), 1);
+                    assert_eq!(tabs.active().source.path(), other_path.as_path());
+                    assert_eq!(tabs.visible, hit_page);
+                    let doc = tabs.active();
+                    assert_eq!(doc.search.query(), "bissexto");
+                    let hit = doc.search.current_hit().expect("current ancorado");
+                    assert_eq!(hit.page, hit_page);
+                    let slice = doc.pages.text[last as usize]
+                        .as_ref()
+                        .map(|layer| layer.slice(hit.range));
+                    assert_eq!(slice.as_deref(), Some("bissexto"));
+                    assert!(doc.can_history_back(), "salto entra no histórico");
+                }
+                other => panic!("esperava Ready, veio {other:?}"),
+            }
+        });
+        let _ = std::fs::remove_file(&pos_file);
+    }
+
+    #[test]
+    fn palette_confirm_globalhit_reopens_when_tab_closed() {
+        let Some(mut first) = sample_ready() else {
+            return;
+        };
+        let other_path = PathBuf::from("/tmp/tsuro-palette-outro.pdf");
+        let Some(mut second) = second_tab_ready(other_path.clone()) else {
+            return;
+        };
+        plant_text(&mut first, &[(0, "página sem o termo")]);
+        plant_text(&mut second, &[(0, "só aqui tem bissexto")]);
+        let mut tabs = Tabs::single(first);
+        tabs.push(second);
+        tabs.select(0);
+        let mut session = Session::Ready(tabs);
+        apply(&mut session, Message::OpenPalette);
+        apply(&mut session, Message::PaletteQuery("bissexto".into()));
+        if let Session::Ready(tabs) = &mut session {
+            let palette = tabs.palette.as_mut().expect("paleta aberta");
+            let index = palette
+                .items
+                .iter()
+                .position(|item| matches!(item, PaletteItem::GlobalHit { .. }))
+                .expect("hit global na paleta");
+            palette.selected = Some(index);
+        }
+        // Aba fechada entre a query e o Enter: confirmar reabre, sem salto.
+        apply(&mut session, Message::CloseTab(1));
+        apply(&mut session, Message::PaletteConfirm);
+        match &session {
+            Session::Ready(tabs) => {
+                assert!(!tabs.palette_open());
+                assert_eq!(tabs.len(), 1);
+                assert!(tabs.pending_gen().is_some(), "reabre a aba fechada");
+            }
+            other => panic!("esperava Ready, veio {other:?}"),
+        }
+    }
 }
