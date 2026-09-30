@@ -17,8 +17,8 @@ use crate::print::{PrintOrientation, MAX_COPIES};
 use crate::search::Search;
 use crate::session::{
     display_pt, display_rect, marker_side, page_pt_at, AnnotKind, Message, NavCmd, NoteDraft,
-    OpenSource, PaletteState, PrintDialog, RangeMode, Ready, Session, Tabs, ViewMode, Zoom,
-    ZoomFactor, DOC_GAP, DOC_PAD_BOTTOM, DOC_PAD_TOP, DOC_PAD_X, PAGES_PANEL_W, SIG_PANEL_W,
+    OpenSource, PaletteItem, PaletteState, PrintDialog, RangeMode, Ready, Session, Tabs, ViewMode,
+    Zoom, ZoomFactor, DOC_GAP, DOC_PAD_BOTTOM, DOC_PAD_TOP, DOC_PAD_X, PAGES_PANEL_W, SIG_PANEL_W,
     THUMB_ROW,
 };
 
@@ -1461,6 +1461,19 @@ fn palette_layer(palette: &PaletteState, t: Tokens) -> Element<'_, Message> {
     stack![mouse_area(dim).on_press(Message::PaletteClose), card].into()
 }
 
+/// Título de 1 linha para a linha da paleta: outline trunca como no
+/// painel; o resto só colapsa whitespace (trechos já vêm colapsados).
+fn palette_title(item: &PaletteItem) -> String {
+    match item {
+        PaletteItem::OutlineRow { title, .. } => outline_title(title),
+        _ => item
+            .title()
+            .split_whitespace()
+            .collect::<Vec<_>>()
+            .join(" "),
+    }
+}
+
 fn palette_card(palette: &PaletteState, t: Tokens) -> Element<'_, Message> {
     let query = text_input("Digite um comando…", palette.query())
         .id(palette_input_id())
@@ -1476,11 +1489,12 @@ fn palette_card(palette: &PaletteState, t: Tokens) -> Element<'_, Message> {
     } else {
         for (i, item) in palette.items().iter().enumerate() {
             let selected = Some(i) == palette.selected();
-            let mut titlecol = column![text(item.title()).size(13)].spacing(1);
+            let mut titlecol = column![text(palette_title(item)).size(13)].spacing(1);
             // Segunda linha só com hint; sem isso a linha fica compacta.
             if let Some(sub) = item.subtitle() {
-                if !sub.is_empty() {
-                    titlecol = titlecol.push(text(sub).size(11).color(t.muted));
+                let one_line = sub.split_whitespace().collect::<Vec<_>>().join(" ");
+                if !one_line.is_empty() {
+                    titlecol = titlecol.push(text(one_line).size(11).color(t.muted));
                 }
             }
             rows = rows.push(
@@ -2001,18 +2015,20 @@ fn outline_tab(ready: &Ready, t: Tokens) -> Element<'_, Message> {
         .into()
 }
 
-/// Título truncado em 24 caracteres para caber no painel.
+/// Título colapsado em 1 linha e truncado em 24 caracteres: título de
+/// PDF com quebra de linha não quebra a linha do painel nem da paleta.
 fn outline_title(title: &str) -> String {
     const MAX: usize = 24;
-    let end = title
+    let one_line = title.split_whitespace().collect::<Vec<_>>().join(" ");
+    let end = one_line
         .char_indices()
         .nth(MAX)
         .map(|(i, _)| i)
-        .unwrap_or(title.len());
-    if end < title.len() {
-        format!("{}…", &title[..end])
+        .unwrap_or(one_line.len());
+    if end < one_line.len() {
+        format!("{}…", &one_line[..end])
     } else {
-        title.to_string()
+        one_line
     }
 }
 fn thumbs_tab(ready: &Ready, t: Tokens) -> Element<'_, Message> {
@@ -2828,6 +2844,30 @@ mod tests {
         assert_eq!(outline_title("a\nb\nc"), "a b c");
     }
 
+    #[test]
+    fn palette_title_keeps_rows_single_line() {
+        use super::{palette_title, PaletteItem};
+        use crate::page::PageNo;
+        use std::path::PathBuf;
+        let outline = PaletteItem::OutlineRow {
+            path: vec![0],
+            title: "Capítulo com\nquebra e cauda longa demais".into(),
+            page: PageNo::first(),
+        };
+        let shown = palette_title(&outline);
+        assert!(!shown.contains('\n'), "outline cru: {shown:?}");
+        assert!(shown.ends_with('…'), "outline longo trunca: {shown:?}");
+        let recent = PaletteItem::Recent {
+            path: PathBuf::from("/tmp/nome\nquebrado.pdf"),
+        };
+        assert_eq!(palette_title(&recent), "nome quebrado.pdf");
+        let hit = PaletteItem::DocHit {
+            page: PageNo::first(),
+            range: crate::session::TextRange { start: 0, end: 4 },
+            excerpt: "trecho limpo".into(),
+        };
+        assert_eq!(palette_title(&hit), "trecho limpo");
+    }
 
     #[test]
     fn recent_label_shows_parent_and_truncates() {
