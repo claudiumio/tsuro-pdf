@@ -417,7 +417,7 @@ fn topbar(session: &Session, t: Tokens) -> Element<'_, Message> {
                 tip(
                     kiri::ori_small!("search"),
                     if cfg!(target_os = "macos") {
-                        "Buscar no documento (⌘F)"
+                        "Buscar no documento (Cmd+F)"
                     } else {
                         "Buscar no documento (Ctrl+F)"
                     },
@@ -1906,7 +1906,7 @@ fn tab_strip(tabs: &Tabs, t: Tokens) -> Element<'_, Message> {
                             .on_press(Message::CloseTab(index)),
                     ),
                     if cfg!(target_os = "macos") {
-                        "Fechar aba (⌘W)"
+                        "Fechar aba (Cmd+W)"
                     } else {
                         "Fechar aba (Ctrl+W)"
                     },

@@ -4172,52 +4172,52 @@ pub(crate) fn keyboard_message(
 pub(crate) fn shortcut_hint(msg: &Message) -> Option<&'static str> {
     match msg {
         Message::PickFile => Some(if cfg!(target_os = "macos") {
-            "⌘O"
+            "Cmd+O"
         } else {
             "Ctrl+O"
         }),
         Message::OpenPalette => Some(if cfg!(target_os = "macos") {
-            "⌘K"
+            "Cmd+K"
         } else {
             "Ctrl+K"
         }),
         Message::RotateView => Some("R"),
         Message::CopyAnnotations => Some("M"),
         Message::CopySelection => Some(if cfg!(target_os = "macos") {
-            "⌘C"
+            "Cmd+C"
         } else {
             "Ctrl+C"
         }),
         Message::OpenPrintDialog => Some(if cfg!(target_os = "macos") {
-            "⌘P"
+            "Cmd+P"
         } else {
             "Ctrl+P"
         }),
         Message::SaveCopyRequested => Some(if cfg!(target_os = "macos") {
-            "⌘S"
+            "Cmd+S"
         } else {
             "Ctrl+S"
         }),
         Message::DeleteSelectedAnnot => Some("Del"),
         Message::AnnotUndo => Some(if cfg!(target_os = "macos") {
-            "⌘Z"
+            "Cmd+Z"
         } else {
             "Ctrl+Z"
         }),
         Message::AnnotRedo => Some(if cfg!(target_os = "macos") {
-            "⌘⇧Z"
+            "Cmd+Shift+Z"
         } else {
             "Ctrl+Shift+Z"
         }),
         Message::HistoryBack => Some(if cfg!(target_os = "macos") {
-            "⌘←"
+            "Cmd+Left"
         } else {
-            "Alt+←"
+            "Alt+Left"
         }),
         Message::HistoryForward => Some(if cfg!(target_os = "macos") {
-            "⌘→"
+            "Cmd+Right"
         } else {
-            "Alt+→"
+            "Alt+Right"
         }),
         _ => None,
     }
