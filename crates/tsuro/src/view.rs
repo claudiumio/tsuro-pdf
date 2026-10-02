@@ -699,17 +699,16 @@ fn overflow_menu(ready: &Ready, t: Tokens) -> Element<'_, Message> {
         Message::PickFile,
         false,
     ));
+    items = items.push(section_title("Recentes", t));
     let recents: Vec<_> = ready.recents().iter().take(5).collect();
     if recents.is_empty() {
         items = items.push(menu_disabled(t, "Nenhum arquivo recente"));
     } else {
         for path in recents {
-            items = items.push(menu_item(
+            items = items.push(menu_recent(
                 t,
-                "file-text",
                 recent_label(path),
                 Message::OpenRecent(path.clone()),
-                false,
             ));
         }
     }
@@ -893,6 +892,22 @@ fn menu_item(
         .width(Length::Fill)
         .padding(Padding::from([8, 10]))
         .style(kiri::panel_seg_style(t, active))
+        .on_press(message)
+        .into()
+}
+
+/// Linha de recente no grupo Recentes: sem ícone, recuada para marcar que é
+/// documento (filho do grupo), não comando do Arquivo.
+fn menu_recent(t: Tokens, label: String, message: Message) -> Element<'static, Message> {
+    button(text(label).size(13))
+        .width(Length::Fill)
+        .padding(Padding {
+            top: 8.0,
+            right: 10.0,
+            bottom: 8.0,
+            left: 34.0,
+        })
+        .style(kiri::panel_seg_style(t, false))
         .on_press(message)
         .into()
 }
