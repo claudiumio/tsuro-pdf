@@ -301,6 +301,42 @@ mod tests {
     }
 
     #[test]
+    fn push_recent_dedups_across_dotdot_spellings() {
+        let recents = push_recent(Vec::new(), PathBuf::from("/tmp/sub/../a.pdf"));
+        let recents = push_recent(recents, PathBuf::from("/tmp/a.pdf"));
+        assert_eq!(recents, vec![PathBuf::from("/tmp/a.pdf")]);
+    }
+
+    #[test]
+    fn push_recent_absolutizes_relative_paths() {
+        let recents = push_recent(Vec::new(), PathBuf::from("relativa.pdf"));
+        assert_eq!(recents.len(), 1);
+        assert!(
+            recents[0].is_absolute(),
+            "relativo vira absoluto: {:?}",
+            recents[0]
+        );
+        assert!(recents[0].ends_with("relativa.pdf"));
+    }
+
+    #[test]
+    fn read_recents_cleans_dotdot_entries() {
+        let path = std::env::temp_dir().join(format!(
+            "tsuro-recents-clean-{}-{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        with_recents_path(path.clone(), || {
+            save_recents(&[PathBuf::from("/tmp/x/../ok.pdf")]).unwrap();
+            assert_eq!(read_recents(), vec![PathBuf::from("/tmp/ok.pdf")]);
+        });
+        let _ = std::fs::remove_file(&path);
+    }
+
+    #[test]
     fn merge_recents_keeps_primary_order_then_disk() {
         let merged = merge_recents(
             vec![PathBuf::from("/tmp/new.pdf")],
