@@ -6830,6 +6830,31 @@ mod tests {
     }
 
     #[test]
+    fn shortcut_hints_stay_ascii() {
+        // O render do iced 0.13 deturpa ⌘/⇧/←/→ (vira `|` no menu);
+        // hints ficam em ASCII até o framework resolver.
+        let hinted = [
+            Message::PickFile,
+            Message::OpenPalette,
+            Message::RotateView,
+            Message::CopyAnnotations,
+            Message::CopySelection,
+            Message::OpenPrintDialog,
+            Message::SaveCopyRequested,
+            Message::DeleteSelectedAnnot,
+            Message::AnnotUndo,
+            Message::AnnotRedo,
+            Message::HistoryBack,
+            Message::HistoryForward,
+        ];
+        assert_eq!(hinted.len(), 12);
+        for msg in hinted {
+            let hint = shortcut_hint(&msg).expect("com hint");
+            assert!(hint.is_ascii(), "hint não-ASCII: {hint:?} ({msg:?})");
+        }
+    }
+
+    #[test]
     fn standard_accelerators_map_to_actions() {
         use iced::event::Status;
         use iced::keyboard::Modifiers;
