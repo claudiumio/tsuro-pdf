@@ -82,7 +82,7 @@ fn read_recents_from(file: &Path) -> Vec<PathBuf> {
     let Ok(raw) = std::fs::read_to_string(file) else {
         return Vec::new();
     };
-    let mut out = Vec::new();
+    let mut out: Vec<PathBuf> = Vec::new();
     for line in raw.lines() {
         let line = line.trim();
         if line.is_empty() {
@@ -92,7 +92,8 @@ fn read_recents_from(file: &Path) -> Vec<PathBuf> {
         if !is_pdf(&path) {
             continue;
         }
-        if !out.contains(&path) {
+        let key = normalize_recent(&path);
+        if !out.iter().any(|p| normalize_recent(p) == key) {
             out.push(path);
         }
         if out.len() == RECENTS_CAP {
@@ -116,21 +117,53 @@ pub fn save_recents(paths: &[PathBuf]) -> std::io::Result<()> {
 }
 
 pub fn push_recent(mut recents: Vec<PathBuf>, path: PathBuf) -> Vec<PathBuf> {
-    recents.retain(|p| p != &path);
+    let key = normalize_recent(&path);
+    recents.retain(|p| normalize_recent(p) != key);
     recents.insert(0, path);
     recents.truncate(RECENTS_CAP);
     recents
 }
 
+/// Chave de comparação: absolutiza (cwd atual) e colapsa `.`/`..` por
+/// via léxica, sem tocar o disco. Só deduplica — o original é guardado
+/// intacto (`a/../b.pdf` abre igual a `b.pdf`).
+fn normalize_recent(path: &Path) -> PathBuf {
+    let absolute = if path.is_absolute() {
+        path.to_path_buf()
+    } else {
+        std::env::current_dir()
+            .map(|cwd| cwd.join(path))
+            .unwrap_or_else(|_| path.to_path_buf())
+    };
+    let mut clean = PathBuf::new();
+    for comp in absolute.components() {
+        match comp {
+            std::path::Component::CurDir => {}
+            std::path::Component::ParentDir => {
+                if !clean.pop() && clean.as_os_str().is_empty() {
+                    clean.push("..");
+                }
+            }
+            other => clean.push(other.as_os_str()),
+        }
+    }
+    if clean.as_os_str().is_empty() {
+        return absolute;
+    }
+    clean
+}
+
 pub fn drop_recent(mut recents: Vec<PathBuf>, path: &Path) -> Vec<PathBuf> {
-    recents.retain(|p| p != path);
+    let key = normalize_recent(path);
+    recents.retain(|p| normalize_recent(p) != key);
     recents
 }
 
 pub fn merge_recents(primary: Vec<PathBuf>, secondary: Vec<PathBuf>) -> Vec<PathBuf> {
-    let mut out = Vec::new();
+    let mut out: Vec<PathBuf> = Vec::new();
     for path in primary.into_iter().chain(secondary) {
-        if !out.contains(&path) {
+        let key = normalize_recent(&path);
+        if !out.iter().any(|p| normalize_recent(p) == key) {
             out.push(path);
         }
         if out.len() == RECENTS_CAP {
@@ -308,19 +341,15 @@ mod tests {
     }
 
     #[test]
-    fn push_recent_absolutizes_relative_paths() {
+    fn push_recent_dedups_relative_against_absolute() {
+        let abs = std::env::current_dir().unwrap().join("relativa.pdf");
         let recents = push_recent(Vec::new(), PathBuf::from("relativa.pdf"));
-        assert_eq!(recents.len(), 1);
-        assert!(
-            recents[0].is_absolute(),
-            "relativo vira absoluto: {:?}",
-            recents[0]
-        );
-        assert!(recents[0].ends_with("relativa.pdf"));
+        let recents = push_recent(recents, abs.clone());
+        assert_eq!(recents, vec![abs]);
     }
 
     #[test]
-    fn read_recents_cleans_dotdot_entries() {
+    fn read_recents_dedups_across_dotdot_spellings() {
         let path = std::env::temp_dir().join(format!(
             "tsuro-recents-clean-{}-{}",
             std::process::id(),
@@ -330,8 +359,12 @@ mod tests {
                 .as_nanos()
         ));
         with_recents_path(path.clone(), || {
-            save_recents(&[PathBuf::from("/tmp/x/../ok.pdf")]).unwrap();
-            assert_eq!(read_recents(), vec![PathBuf::from("/tmp/ok.pdf")]);
+            save_recents(&[
+                PathBuf::from("/tmp/x/../ok.pdf"),
+                PathBuf::from("/tmp/ok.pdf"),
+            ])
+            .unwrap();
+            assert_eq!(read_recents(), vec![PathBuf::from("/tmp/x/../ok.pdf")]);
         });
         let _ = std::fs::remove_file(&path);
     }
