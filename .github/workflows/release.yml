@@ -104,11 +104,17 @@ jobs:
           sha256sum * | tee SHA256SUMS
           NOTES="$(mktemp)"
           cat >"$NOTES" <<EOF
-          TsuroPDF ${GITHUB_REF_NAME} — correção do histórico na rolagem contínua
+          TsuroPDF ${GITHUB_REF_NAME} — paleta de comandos, menu ⋯ e aceleradores
 
-          Novidades desde a v0.3.0:
+          Novidades desde a v0.3.1:
 
-          - **Histórico na rolagem contínua**: Voltar, Avançar e o salto do sumário agora movem a folha junto com a página, como setas, busca e "ir para página" já faziam.
+          - **Paleta de comandos** (#45): acesso rápido a todas as ações sem sair do teclado.
+          - **Menu ⋯**: dicas de atalho, grupos Arquivo/Editar/Ver/Ir/Ajuda, Abrir recente e Recentes colapsável (#42).
+          - **Aceleradores padrão** de teclado e identidade da faixa de abas (#72, #75).
+          - **Busca**: navegar entre ocorrências, sem salto ao digitar, acertos com acentos (#43).
+          - **Auto-reload**: recarrega quando o arquivo muda no disco (#46).
+          - **Marcar texto**: copiar destaques como Markdown (#50); a impressão inclui as marcações (#86).
+          - **Assinaturas**: checagem RSA antes do status intacto; fim do crash com objetos aninhados (#85, #87).
           EOF
           # PRs mergeadas com @autores (visibilidade open-source; rodapé Full
           # Changelog próprio do template, então filtra o gerado). Falha aqui
@@ -124,7 +130,7 @@ jobs:
           } >>"$NOTES"
           cat >>"$NOTES" <<EOF
 
-          **Full Changelog**: https://github.com/claudioorjunior/tsuro-pdf/compare/v0.3.0...${GITHUB_REF_NAME}
+          **Full Changelog**: https://github.com/claudioorjunior/tsuro-pdf/compare/v0.3.1...${GITHUB_REF_NAME}
 
           Instalação:
 
