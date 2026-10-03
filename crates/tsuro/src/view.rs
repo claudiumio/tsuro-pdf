@@ -17,9 +17,9 @@ use crate::print::{PrintOrientation, MAX_COPIES};
 use crate::search::Search;
 use crate::session::{
     display_pt, display_rect, marker_side, page_pt_at, AnnotKind, Message, NavCmd, NoteDraft,
-    OpenSource, PaletteItem, PaletteState, PrintDialog, RangeMode, Ready, Session, Tabs, ViewMode,
-    Zoom, ZoomFactor, DOC_GAP, DOC_PAD_BOTTOM, DOC_PAD_TOP, DOC_PAD_X, PAGES_PANEL_W, SIG_PANEL_W,
-    THUMB_ROW,
+    OpenSource, PaletteItem, PaletteState, PrintDialog, RangeMode, Ready, Session, Tabs,
+    UpdateState, ViewMode, Zoom, ZoomFactor, DOC_GAP, DOC_PAD_BOTTOM, DOC_PAD_TOP, DOC_PAD_X,
+    PAGES_PANEL_W, SIG_PANEL_W, THUMB_ROW,
 };
 
 /// Altura do chrome Kiri: toolbar 36px + progresso 2px + respiro.
@@ -135,6 +135,10 @@ pub fn chrome(session: &Session, theme: Theme) -> Element<'_, Message> {
         Session::Ready(ready) if ready.save_warning => stack![main, save_warning_layer(t)].into(),
         // Sobre (Ajuda): cartão de versão; fundo e Esc fecham.
         Session::Ready(ready) if ready.about_open => stack![main, about_layer(t)].into(),
+        // Configurações (Ajuda): abre por cima do Sobre; fundo e Esc fecham.
+        Session::Ready(ready) if ready.settings_open => {
+            stack![main, settings_layer(ready, t)].into()
+        }
         // Overlay visual: só os botões capturam clique, o resto atravessa.
         Session::Ready(ready) if ready.overflow_open => {
             stack![main, overflow_layer(ready, t)].into()
@@ -878,6 +882,13 @@ fn overflow_menu(ready: &Ready, t: Tokens) -> Element<'_, Message> {
     items = items.push(section_title("Ajuda", t));
     items = items.push(menu_item(
         t,
+        "more",
+        "Configurações",
+        Message::ToggleSettings,
+        false,
+    ));
+    items = items.push(menu_item(
+        t,
         "home",
         "Definir como leitor padrão…",
         Message::SetDefaultReader,
@@ -1440,6 +1451,107 @@ fn about_card(t: Tokens) -> Element<'static, Message> {
     container(body)
         .width(Length::Fixed(320.0))
         .padding(16)
+        .style(kiri::menu_style(t))
+        .into()
+}
+
+/// Configurações (Ajuda → Configurações): tema, leitor padrão, permissões,
+/// idioma e versão — mesmo padrão do Sobre (fundo fecha, cartão engole).
+fn settings_layer(ready: &Ready, t: Tokens) -> Element<'static, Message> {
+    let dim = container(Space::with_width(Length::Fill))
+        .width(Length::Fill)
+        .height(Length::Fill)
+        .style(|_| container::Style {
+            background: Some(Background::Color(Color::from_rgba(0.0, 0.0, 0.0, 0.25))),
+            ..container::Style::default()
+        });
+    let card = container(mouse_area(settings_card(ready, t)).on_press(Message::PrintNop))
+        .width(Length::Fill)
+        .height(Length::Fill)
+        .align_x(Alignment::Center)
+        .align_y(Alignment::Center);
+    stack![mouse_area(dim).on_press(Message::ToggleSettings), card,].into()
+}
+
+#[allow(clippy::too_many_lines)]
+fn settings_card(ready: &Ready, t: Tokens) -> Element<'static, Message> {
+    let dark = ready.theme.is_dark();
+    let mut body = column![
+        text("Configurações").size(16).color(t.ink),
+        section_title("Tema", t),
+        row![
+            menu_theme_button(t, "Escuro", Theme::Dark, dark),
+            menu_theme_button(t, "Claro", Theme::Light, !dark),
+        ]
+        .spacing(4),
+        section_title("Leitor padrão", t),
+        menu_item(
+            t,
+            "home",
+            "Definir como leitor padrão…",
+            Message::SetDefaultReader,
+            false,
+        ),
+    ]
+    .spacing(8)
+    .align_x(Alignment::Start)
+    .width(300);
+    if cfg!(target_os = "macos") {
+        let granted =
+            crate::browse::downloads_dir().is_some_and(|dir| crate::browse::dir_accessible(&dir));
+        body = body
+            .push(section_title("Permissões", t))
+            .push(
+                text(if granted {
+                    "Downloads: acesso liberado."
+                } else {
+                    "Downloads: acesso bloqueado."
+                })
+                .size(13)
+                .color(if granted { t.ink } else { t.danger }),
+            )
+            .push(if granted {
+                Element::from(menu_disabled(t, "Sem pastas pendentes."))
+            } else {
+                Element::from(menu_item(
+                    t,
+                    "shield",
+                    "Abrir Ajustes…",
+                    Message::OpenPrivacySettings,
+                    false,
+                ))
+            });
+    }
+    body = body
+        .push(section_title("Idioma", t))
+        .push(menu_disabled(t, "Português (English em breve)"))
+        .push(section_title("Sobre", t))
+        .push(
+            text(format!("Versão {}", env!("CARGO_PKG_VERSION")))
+                .size(13)
+                .color(t.muted),
+        );
+    body = match &ready.update {
+        UpdateState::Checking => {
+            body.push(text("Verificando atualização…").size(12).color(t.muted))
+        }
+        UpdateState::Current => body.push(text("Você está atualizado.").size(12).color(t.muted)),
+        UpdateState::Available(tag) => body.push(
+            text(format!("Nova versão disponível: {tag}"))
+                .size(12)
+                .color(t.accent),
+        ),
+        UpdateState::Idle | UpdateState::Failed => body,
+    };
+    body = body.push(
+        button(text("Fechar").size(13))
+            .padding(Padding::from([8, 12]))
+            .style(kiri::menu_item_style(t))
+            .on_press(Message::ToggleSettings),
+    );
+    container(body)
+        .padding(12)
+        .width(324)
         .style(kiri::menu_style(t))
         .into()
 }

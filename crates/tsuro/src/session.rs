@@ -1276,6 +1276,18 @@ impl std::ops::DerefMut for Tabs {
     }
 }
 
+/// Estado da checagem de atualização (Configurações): uma por sessão;
+/// offline volta a `Failed` e rende só a versão local, sem alarde.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub enum UpdateState {
+    #[default]
+    Idle,
+    Checking,
+    Current,
+    Available(String),
+    Failed,
+}
+
 #[derive(Clone)]
 pub struct Ready {
     pub source: OpenSource,
@@ -1338,6 +1350,11 @@ pub struct Ready {
     pub recents_expanded: bool,
     /// Cartão Sobre aberto (Ajuda). Fecha no fundo, no botão e no Esc.
     pub about_open: bool,
+    /// Diálogo Configurações aberto (⋯ → Ajuda). Fecha no fundo, no botão e
+    /// no Esc; abre por cima do Sobre.
+    pub settings_open: bool,
+    /// Checagem de atualização: uma por sessão, silenciosa quando offline.
+    pub update: UpdateState,
     /// Diálogo de impressão aberto (`None` = fechado). Só existe em `Ready`.
     pub print_dialog: Option<PrintDialog>,
     /// Linha de status pós-envio ("Enviado para …"); limpa ao reabrir o diálogo.
@@ -1960,6 +1977,14 @@ pub enum Message {
     ToggleRecents,
     /// Ajuda → Sobre: cartão com nome/versão; fundo e Esc fecham.
     ToggleAbout,
+    /// Ajuda → Configurações: diálogo com tema, leitor padrão, permissões e
+    /// versão; fundo e Esc fecham.
+    ToggleSettings,
+    /// Configurações → Permissões: abre os Ajustes do SO na tela certa
+    /// (macOS; nas demais é no-op).
+    OpenPrivacySettings,
+    /// Resposta da checagem de atualização (`Ok` = tag latest do GitHub).
+    UpdateChecked(Result<String, String>),
     /// Ajuda → leitor padrão: no Windows abre o painel de apps padrão; nas
     /// demais plataformas abre o Sobre com o passo a passo do SO.
     SetDefaultReader,
@@ -2742,10 +2767,42 @@ impl Session {
             Message::ToggleAbout => {
                 if let Session::Ready(ready) = self {
                     ready.about_open = !ready.about_open;
-                    // Sobre abre por cima: o ⋯ fecha junto.
+                    // Sobre abre por cima: o ⋯ e o Configurações fecham junto.
                     if ready.about_open {
                         ready.overflow_open = false;
+                        ready.settings_open = false;
                     }
+                }
+                Task::none()
+            }
+            Message::ToggleSettings => {
+                if let Session::Ready(ready) = self {
+                    ready.settings_open = !ready.settings_open;
+                    if ready.settings_open {
+                        ready.about_open = false;
+                        ready.overflow_open = false;
+                        // Uma checagem por sessão; offline falha silencioso.
+                        if ready.update == UpdateState::Idle {
+                            ready.update = UpdateState::Checking;
+                            return Task::perform(fetch_latest_tag(), Message::UpdateChecked);
+                        }
+                    }
+                }
+                Task::none()
+            }
+            Message::OpenPrivacySettings => {
+                #[cfg(target_os = "macos")]
+                open_privacy_settings();
+                Task::none()
+            }
+            Message::UpdateChecked(result) => {
+                if let Session::Ready(ready) = self {
+                    let current = env!("CARGO_PKG_VERSION");
+                    ready.update = match result {
+                        Ok(tag) if update_available(current, &tag) => UpdateState::Available(tag),
+                        Ok(_) => UpdateState::Current,
+                        Err(_) => UpdateState::Failed,
+                    };
                 }
                 Task::none()
             }
@@ -2763,6 +2820,7 @@ impl Session {
                     if let Session::Ready(ready) = self {
                         ready.about_open = true;
                         ready.overflow_open = false;
+                        ready.settings_open = false;
                     }
                 }
                 Task::none()
@@ -2899,6 +2957,7 @@ impl Session {
                     ready.save_warning = false;
                     ready.overflow_open = false;
                     ready.about_open = false;
+                    ready.settings_open = false;
                     // Enviando: ignora (Esc) para não perder o resultado na volta.
                     if ready
                         .print_dialog
@@ -4205,8 +4264,8 @@ pub(crate) fn keyboard_message(
 /// Desktop perguntam no uso. Resultado descartado.
 #[cfg(target_os = "macos")]
 fn probe_files_consent() {
-    if let Some(home) = std::env::var_os("HOME") {
-        let _ = dir_accessible(&std::path::PathBuf::from(home).join("Downloads"));
+    if let Some(downloads) = crate::browse::downloads_dir() {
+        let _ = dir_accessible(&downloads);
     }
 }
 
@@ -4221,6 +4280,51 @@ fn open_default_apps_settings() {
     let _ = std::process::Command::new("cmd")
         .args(["/C", "start", "ms-settings:defaultapps"])
         .spawn();
+}
+
+/// Abre os Ajustes do macOS na tela Arquivos e Pastas (o prompt do TCC não
+/// reaparece por código após negação; a chave manual é o reparo).
+#[cfg(target_os = "macos")]
+fn open_privacy_settings() {
+    let _ = std::process::Command::new("open")
+        .arg("x-apple.systempreferences:com.apple.preference.security?Privacy_FilesAndFolders")
+        .spawn();
+}
+
+/// Tag da latest release no GitHub, via curl do sistema (sem dep nova).
+/// Falha offline/via proxy: o chamador trata como silencioso.
+async fn fetch_latest_tag() -> Result<String, String> {
+    let out = tokio::task::spawn_blocking(|| {
+        std::process::Command::new("curl")
+            .args([
+                "-fsSL",
+                "--max-time",
+                "15",
+                "https://api.github.com/repos/claudiumio/tsuro-pdf/releases/latest",
+            ])
+            .output()
+            .map_err(|e| e.to_string())
+    })
+    .await
+    .map_err(|e| e.to_string())??;
+    if !out.status.success() {
+        return Err(format!("http {}", out.status));
+    }
+    let body = String::from_utf8(out.stdout).map_err(|e| e.to_string())?;
+    parse_latest_tag(&body).ok_or_else(|| "sem tag_name".to_string())
+}
+
+/// Extrai `"tag_name": "vX.Y.Z"` do JSON sem serde (só este campo interessa).
+fn parse_latest_tag(body: &str) -> Option<String> {
+    let rest = body.split_once("\"tag_name\"")?.1;
+    let rest = rest.split_once(':')?.1.trim_start();
+    let rest = rest.strip_prefix('"')?;
+    Some(rest.split_once('"')?.0.to_string())
+}
+
+/// `true` quando a tag latest difere da versão embutida (`v` inicial ignora).
+fn update_available(current: &str, latest: &str) -> bool {
+    latest.trim_start_matches('v').trim() != current.trim()
 }
 
 pub(crate) fn shortcut_hint(msg: &Message) -> Option<&'static str> {
@@ -5575,6 +5679,8 @@ impl Document {
             overflow_open: false,
             recents_expanded: false,
             about_open: false,
+            settings_open: false,
+            update: UpdateState::Idle,
             print_dialog: None,
             print_status: None,
             save_status: None,
@@ -7039,6 +7145,61 @@ mod tests {
             }
             _ => unreachable!(),
         }
+    }
+
+    #[test]
+    fn toggle_settings_opens_closes_and_starts_checking() {
+        let Some(ready) = sample_ready() else {
+            return;
+        };
+        let mut session = Session::Ready(Tabs::single(ready));
+        apply(&mut session, Message::ToggleOverflow);
+        apply(&mut session, Message::ToggleSettings);
+        match &session {
+            Session::Ready(r) => {
+                assert!(r.settings_open);
+                assert!(!r.overflow_open, "Configurações fecha o ⋯");
+                assert!(!r.about_open);
+                assert_eq!(r.update, UpdateState::Checking);
+            }
+            _ => unreachable!(),
+        }
+        // Segunda abertura não re-checa: Esc fecha, reabrir mantém o estado.
+        apply(&mut session, Message::ClosePrintDialog);
+        let current = format!("v{}", env!("CARGO_PKG_VERSION"));
+        apply(&mut session, Message::UpdateChecked(Ok(current)));
+        apply(&mut session, Message::ToggleSettings);
+        match &session {
+            Session::Ready(r) => {
+                assert!(r.settings_open);
+                assert_eq!(r.update, UpdateState::Current);
+            }
+            _ => unreachable!(),
+        }
+    }
+
+    #[test]
+    fn update_checked_marks_available_current_and_failed() {
+        let Some(ready) = sample_ready() else {
+            return;
+        };
+        let mut session = Session::Ready(Tabs::single(ready));
+        apply(&mut session, Message::UpdateChecked(Ok("v99.99.99".into())));
+        assert_eq!(
+            active_ready(&session).update,
+            UpdateState::Available("v99.99.99".into())
+        );
+        apply(&mut session, Message::UpdateChecked(Err("offline".into())));
+        assert_eq!(active_ready(&session).update, UpdateState::Failed);
+    }
+
+    #[test]
+    fn parse_latest_tag_reads_github_release() {
+        let body = r#"{"url":"x","tag_name":"v0.4.0","name":"TsuroPDF v0.4.0"}"#;
+        assert_eq!(parse_latest_tag(body).as_deref(), Some("v0.4.0"));
+        assert_eq!(parse_latest_tag("{}"), None);
+        assert!(!update_available("0.4.0", "v0.4.0"));
+        assert!(update_available("0.4.0", "v0.5.0"));
     }
 
     /// Anotação fake direta (a função pura não precisa de fixture).

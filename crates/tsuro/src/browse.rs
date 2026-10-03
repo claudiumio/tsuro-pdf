@@ -231,6 +231,14 @@ pub fn dir_accessible(path: &Path) -> bool {
     std::fs::read_dir(path).is_ok()
 }
 
+/// Pasta Downloads do usuário (`None` sem HOME/USERPROFILE). Base da sonda
+/// de consentimento e do status de permissão no Configurações.
+pub fn downloads_dir() -> Option<PathBuf> {
+    std::env::var_os("HOME")
+        .or_else(|| std::env::var_os("USERPROFILE"))
+        .map(|home| PathBuf::from(home).join("Downloads"))
+}
+
 /// Erro cru do SO vira orientação acionável. O caso real: TCC do macOS nega
 /// `read_dir` em Downloads/Documentos/Desktop (EPERM) quando o consentimento
 /// foi negado — e no Windows ACLs dão o mesmo `PermissionDenied`. O app não é
@@ -436,5 +444,12 @@ mod tests {
         assert!(dir_accessible(&root));
         assert!(!dir_accessible(&root.join("nao-existe")));
         let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn downloads_dir_ends_with_downloads() {
+        assert!(downloads_dir()
+            .map(|p| p.ends_with("Downloads"))
+            .unwrap_or(true));
     }
 }
