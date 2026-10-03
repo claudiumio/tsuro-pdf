@@ -449,7 +449,7 @@ fn outline_node(bookmark: &PdfBookmark<'_>, total: u32) -> OutlineItem {
     let title = bookmark
         .title()
         .filter(|t| !t.is_empty())
-        .unwrap_or_else(String::new);
+        .unwrap_or_default();
     let children = bookmark
         .iter_direct_children()
         .map(|child| outline_node(&child, total))

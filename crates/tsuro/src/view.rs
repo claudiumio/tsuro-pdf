@@ -125,7 +125,7 @@ pub fn chrome(session: &Session, theme: Theme) -> Element<'_, Message> {
         Session::Ready(ready) if ready.selection_bar_pos().is_some() => {
             stack![main, selection_bar_layer(ready, t)].into()
         }
-        _ => main.into(),
+        _ => main,
     }
 }
 

@@ -4988,10 +4988,7 @@ impl EmptyState {
     }
 
     pub fn parent(&self) -> Option<Option<PathBuf>> {
-        match &self.cwd {
-            None => None,
-            Some(cwd) => Some(parent_of(cwd)),
-        }
+        self.cwd.as_ref().map(|cwd| parent_of(cwd))
     }
 }
 
