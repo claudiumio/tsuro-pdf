@@ -225,6 +225,12 @@ pub fn parent_of(cwd: &Path) -> Option<PathBuf> {
     cwd.parent().map(|p| p.to_path_buf())
 }
 
+/// `true` se dá para listar a pasta. O ato de tentar dispara o prompt do TCC
+/// na primeira vez; depois vale o consentimento gravado.
+pub fn dir_accessible(path: &Path) -> bool {
+    std::fs::read_dir(path).is_ok()
+}
+
 /// Erro cru do SO vira orientação acionável. O caso real: TCC do macOS nega
 /// `read_dir` em Downloads/Documentos/Desktop (EPERM) quando o consentimento
 /// foi negado — e no Windows ACLs dão o mesmo `PermissionDenied`. O app não é
@@ -414,5 +420,21 @@ mod tests {
         let missing = std::io::Error::new(std::io::ErrorKind::NotFound, "sem tal pasta");
         assert_eq!(friendly_list_error(missing), "sem tal pasta");
         assert!(list_dir(Path::new("/tsuro-nao-existe-xyz")).is_err());
+    }
+
+    #[test]
+    fn dir_accessible_matches_readable_tmp() {
+        let root = std::env::temp_dir().join(format!(
+            "tsuro-access-{}-{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        std::fs::create_dir_all(&root).unwrap();
+        assert!(dir_accessible(&root));
+        assert!(!dir_accessible(&root.join("nao-existe")));
+        let _ = std::fs::remove_dir_all(&root);
     }
 }
