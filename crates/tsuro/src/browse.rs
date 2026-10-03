@@ -197,9 +197,9 @@ pub fn special_folders() -> Vec<FsEntry> {
 
 pub fn list_dir(path: &Path) -> Result<Vec<FsEntry>, String> {
     let mut entries = Vec::new();
-    let reader = std::fs::read_dir(path).map_err(|e| e.to_string())?;
+    let reader = std::fs::read_dir(path).map_err(friendly_list_error)?;
     for ent in reader {
-        let ent = ent.map_err(|e| e.to_string())?;
+        let ent = ent.map_err(friendly_list_error)?;
         let path = ent.path();
         let name = ent.file_name().to_string_lossy().into_owned();
         if name.starts_with('.') {
@@ -223,6 +223,24 @@ pub fn parent_of(cwd: &Path) -> Option<PathBuf> {
         return None;
     }
     cwd.parent().map(|p| p.to_path_buf())
+}
+
+/// Erro cru do SO vira orientação acionável. O caso real: TCC do macOS nega
+/// `read_dir` em Downloads/Documentos/Desktop (EPERM) quando o consentimento
+/// foi negado — e no Windows ACLs dão o mesmo `PermissionDenied`. O app não é
+/// sandboxado (ver `scripts/tsuro.entitlements`), então não há entitlement a
+/// declarar: o consentimento vive nos Ajustes, e a mensagem aponta para lá.
+fn friendly_list_error(e: std::io::Error) -> String {
+    if e.kind() != std::io::ErrorKind::PermissionDenied {
+        return e.to_string();
+    }
+    if cfg!(target_os = "macos") {
+        "Sem acesso a esta pasta. Libere em Ajustes do Sistema › Privacidade e Segurança › Arquivos e Pastas › TsuroPDF.".to_string()
+    } else if cfg!(target_os = "windows") {
+        "Sem acesso a esta pasta. Confira as permissões da pasta no Windows.".to_string()
+    } else {
+        "Sem acesso a esta pasta (permissão negada).".to_string()
+    }
 }
 
 pub fn display_path(cwd: Option<&Path>) -> String {
@@ -379,5 +397,22 @@ mod tests {
             merged,
             vec![PathBuf::from("/tmp/new.pdf"), PathBuf::from("/tmp/old.pdf")]
         );
+    }
+
+    #[test]
+    fn list_error_denied_points_to_os_settings() {
+        let denied = std::io::Error::new(std::io::ErrorKind::PermissionDenied, "os error 1");
+        let msg = friendly_list_error(denied);
+        assert!(msg.starts_with("Sem acesso a esta pasta"), "{msg}");
+        if cfg!(target_os = "macos") {
+            assert!(msg.contains("Arquivos e Pastas"), "{msg}");
+        }
+    }
+
+    #[test]
+    fn list_error_other_passes_through() {
+        let missing = std::io::Error::new(std::io::ErrorKind::NotFound, "sem tal pasta");
+        assert_eq!(friendly_list_error(missing), "sem tal pasta");
+        assert!(list_dir(Path::new("/tsuro-nao-existe-xyz")).is_err());
     }
 }
