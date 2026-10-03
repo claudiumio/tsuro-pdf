@@ -862,6 +862,9 @@ pub struct Ready {
     pub theme: Theme,
     /// Menu ⋯ aberto. Só existe em `Ready`; zera ao trocar de documento.
     pub overflow_open: bool,
+    /// Grupo Recentes expandido no ⋯; colapsado por padrão. Só existe em
+    /// `Ready`; zera ao trocar de documento.
+    pub recents_expanded: bool,
     /// Cartão Sobre aberto (Ajuda). Fecha no fundo, no botão e no Esc.
     pub about_open: bool,
     /// Diálogo de impressão aberto (`None` = fechado). Só existe em `Ready`.
@@ -1482,6 +1485,8 @@ pub enum Message {
     ToggleSignatures,
     TogglePages,
     ToggleOverflow,
+    /// Expande/colapsa o grupo Recentes no ⋯ (colapsado por padrão).
+    ToggleRecents,
     /// Ajuda → Sobre: cartão com nome/versão; fundo e Esc fecham.
     ToggleAbout,
     /// Aba Sumário no painel de Páginas (`true` = sumário, `false` = miniaturas).
@@ -2243,6 +2248,12 @@ impl Session {
             Message::ToggleOverflow => {
                 if let Session::Ready(ready) = self {
                     ready.overflow_open = !ready.overflow_open;
+                }
+                Task::none()
+            }
+            Message::ToggleRecents => {
+                if let Session::Ready(ready) = self {
+                    ready.recents_expanded = !ready.recents_expanded;
                 }
                 Task::none()
             }
@@ -4852,6 +4863,7 @@ impl Document {
             render_scale: 1.0,
             theme: Theme::Dark,
             overflow_open: false,
+            recents_expanded: false,
             about_open: false,
             print_dialog: None,
             print_status: None,
@@ -6242,6 +6254,19 @@ mod tests {
         apply(&mut session, Message::ZoomOut);
         let down = factor(&session);
         assert!(down < before, "{before} -> {after} -> {down}");
+    }
+
+    #[test]
+    fn toggle_recents_expands_and_collapses() {
+        let Some(ready) = sample_ready() else {
+            return;
+        };
+        let mut session = Session::Ready(Tabs::single(ready));
+        assert!(!active_ready(&session).recents_expanded);
+        apply(&mut session, Message::ToggleRecents);
+        assert!(active_ready(&session).recents_expanded);
+        apply(&mut session, Message::ToggleRecents);
+        assert!(!active_ready(&session).recents_expanded);
     }
 
     #[test]

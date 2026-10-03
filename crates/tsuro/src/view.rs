@@ -699,17 +699,29 @@ fn overflow_menu(ready: &Ready, t: Tokens) -> Element<'_, Message> {
         Message::PickFile,
         false,
     ));
-    items = items.push(section_title("Recentes", t));
-    let recents: Vec<_> = ready.recents().iter().take(5).collect();
-    if recents.is_empty() {
-        items = items.push(menu_disabled(t, "Nenhum arquivo recente"));
-    } else {
-        for path in recents {
-            items = items.push(menu_recent(
-                t,
-                recent_label(path),
-                Message::OpenRecent(path.clone()),
-            ));
+    items = items.push(menu_item(
+        t,
+        "folder",
+        if ready.recents_expanded {
+            "Recentes ▾"
+        } else {
+            "Recentes ▸"
+        },
+        Message::ToggleRecents,
+        false,
+    ));
+    if ready.recents_expanded {
+        let recents: Vec<_> = ready.recents().iter().take(5).collect();
+        if recents.is_empty() {
+            items = items.push(menu_disabled(t, "Nenhum arquivo recente"));
+        } else {
+            for path in recents {
+                items = items.push(menu_recent(
+                    t,
+                    recent_label(path),
+                    Message::OpenRecent(path.clone()),
+                ));
+            }
         }
     }
     items = items.push(menu_item(
