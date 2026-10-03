@@ -1960,6 +1960,9 @@ pub enum Message {
     ToggleRecents,
     /// Ajuda → Sobre: cartão com nome/versão; fundo e Esc fecham.
     ToggleAbout,
+    /// Ajuda → leitor padrão: no Windows abre o painel de apps padrão; nas
+    /// demais plataformas abre o Sobre com o passo a passo do SO.
+    SetDefaultReader,
     /// Aba Sumário no painel de Páginas (`true` = sumário, `false` = miniaturas).
     OutlineTab(bool),
     /// Expande/colapsa um nó da árvore (caminho de índices desde a raiz).
@@ -2739,6 +2742,24 @@ impl Session {
                     ready.about_open = !ready.about_open;
                     // Sobre abre por cima: o ⋯ fecha junto.
                     if ready.about_open {
+                        ready.overflow_open = false;
+                    }
+                }
+                Task::none()
+            }
+            Message::SetDefaultReader => {
+                #[cfg(target_os = "windows")]
+                {
+                    self.close_overflow();
+                    open_default_apps_settings();
+                }
+                // Windows bloqueia troca silenciosa de padrão (UserChoice com
+                // hash); macOS não expõe sem bridge objc. Nos dois casos o
+                // caminho honesto é a tela do SO — no macOS via o Sobre.
+                #[cfg(not(target_os = "windows"))]
+                {
+                    if let Session::Ready(ready) = self {
+                        ready.about_open = true;
                         ready.overflow_open = false;
                     }
                 }
@@ -4180,6 +4201,15 @@ pub(crate) fn keyboard_message(
 /// toolbar (H/U/S/N, F3, Ctrl+F, +/-, setas de página). Cobertura travada em
 /// `every_keyboard_shortcut_has_a_menu_hint_or_exemption` — atalho novo no
 /// `keyboard_message` sem rótulo aqui (ou isenção) quebra o teste.
+/// Abre o painel de apps padrão do Windows (Configurações). Fire-and-forget:
+/// falhar aqui não pode quebrar a sessão; o usuário segue no app.
+#[cfg(target_os = "windows")]
+fn open_default_apps_settings() {
+    let _ = std::process::Command::new("cmd")
+        .args(["/C", "start", "ms-settings:defaultapps"])
+        .spawn();
+}
+
 pub(crate) fn shortcut_hint(msg: &Message) -> Option<&'static str> {
     match msg {
         Message::PickFile => Some(if cfg!(target_os = "macos") {
@@ -6976,6 +7006,24 @@ mod tests {
         apply(&mut session, Message::ClosePrintDialog);
         match &session {
             Session::Ready(r) => assert!(!r.about_open),
+            _ => unreachable!(),
+        }
+    }
+
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn set_default_reader_opens_about_on_macos() {
+        let Some(ready) = sample_ready() else {
+            return;
+        };
+        let mut session = Session::Ready(Tabs::single(ready));
+        apply(&mut session, Message::ToggleOverflow);
+        apply(&mut session, Message::SetDefaultReader);
+        match &session {
+            Session::Ready(r) => {
+                assert!(r.about_open);
+                assert!(!r.overflow_open, "Sobre fecha o ⋯");
+            }
             _ => unreachable!(),
         }
     }

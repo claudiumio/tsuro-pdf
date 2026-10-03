@@ -878,6 +878,13 @@ fn overflow_menu(ready: &Ready, t: Tokens) -> Element<'_, Message> {
     items = items.push(section_title("Ajuda", t));
     items = items.push(menu_item(
         t,
+        "home",
+        "Definir como leitor padrão…",
+        Message::SetDefaultReader,
+        false,
+    ));
+    items = items.push(menu_item(
+        t,
         "file-text",
         "Sobre o Tsuro PDF",
         Message::ToggleAbout,
@@ -1406,7 +1413,7 @@ fn about_layer(t: Tokens) -> Element<'static, Message> {
 }
 
 fn about_card(t: Tokens) -> Element<'static, Message> {
-    let body = column![
+    let mut body = column![
         text("Tsuro PDF").size(16).color(t.ink),
         text(format!("Versão {}", env!("CARGO_PKG_VERSION")))
             .size(13)
@@ -1418,9 +1425,18 @@ fn about_card(t: Tokens) -> Element<'static, Message> {
             .padding(Padding::from([8, 12]))
             .style(kiri::menu_item_style(t))
             .on_press(Message::ToggleAbout),
-    ]
-    .spacing(8)
-    .align_x(Alignment::Center);
+    ];
+    // Sem API pública de padrão sem bridge objc: o caminho é o Finder.
+    if cfg!(target_os = "macos") {
+        body = body.push(
+            text(
+                "Leitor padrão: Finder › Obter Informações › Abrir com › TsuroPDF › Alterar tudo.",
+            )
+            .size(12)
+            .color(t.muted),
+        );
+    }
+    let body = body.spacing(8).align_x(Alignment::Center);
     container(body)
         .width(Length::Fixed(320.0))
         .padding(16)
