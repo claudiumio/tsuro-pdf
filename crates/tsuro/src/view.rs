@@ -17,8 +17,9 @@ use crate::print::{PrintOrientation, MAX_COPIES};
 use crate::search::Search;
 use crate::session::{
     display_pt, display_rect, marker_side, page_pt_at, AnnotKind, Message, NavCmd, NoteDraft,
-    OpenSource, PrintDialog, RangeMode, Ready, Session, Tabs, ViewMode, Zoom, ZoomFactor, DOC_GAP,
-    DOC_PAD_BOTTOM, DOC_PAD_TOP, DOC_PAD_X, PAGES_PANEL_W, SIG_PANEL_W, THUMB_ROW,
+    OpenSource, PaletteItem, PaletteState, PrintDialog, RangeMode, Ready, Session, Tabs, ViewMode,
+    Zoom, ZoomFactor, DOC_GAP, DOC_PAD_BOTTOM, DOC_PAD_TOP, DOC_PAD_X, PAGES_PANEL_W, SIG_PANEL_W,
+    THUMB_ROW,
 };
 
 /// Altura do chrome Kiri: toolbar 36px + progresso 2px + respiro.
@@ -53,6 +54,21 @@ pub fn doc_scroll_id() -> scrollable::Id {
 pub fn search_input_id() -> text_input::Id {
     text_input::Id::new("tsuro-search")
 }
+
+pub fn page_input_id() -> text_input::Id {
+    text_input::Id::new("tsuro-page")
+}
+
+pub fn palette_input_id() -> text_input::Id {
+    text_input::Id::new("tsuro-palette")
+}
+
+pub fn palette_scroll_id() -> scrollable::Id {
+    scrollable::Id::new("tsuro-palette-list")
+}
+
+/// Altura máxima da lista da paleta (~10 linhas); além disso, scroll.
+const PALETTE_LIST_MAX_H: f32 = 420.0;
 
 pub fn chrome(session: &Session, theme: Theme) -> Element<'_, Message> {
     let t = Tokens::for_theme(theme);
@@ -99,6 +115,11 @@ pub fn chrome(session: &Session, theme: Theme) -> Element<'_, Message> {
     match session {
         // Fechar com marcações sujas fica por cima dos outros modais.
         Session::Ready(ready) if ready.close_prompt() => stack![main, close_prompt_layer(t)].into(),
+        Session::Ready(tabs) if tabs.palette_open() => stack![
+            main,
+            palette_layer(tabs.palette().as_ref().expect("checked above"), t)
+        ]
+        .into(),
         // Modal de impressão captura tudo; menu ⋯ nunca abre junto (fecha ao abrir).
         Session::Ready(ready) if ready.print_dialog.is_some() => {
             let dialog = ready.print_dialog.as_ref().expect("checked above");
@@ -396,7 +417,7 @@ fn topbar(session: &Session, t: Tokens) -> Element<'_, Message> {
                 tip(
                     kiri::ori_small!("search"),
                     if cfg!(target_os = "macos") {
-                        "Buscar no documento (⌘F)"
+                        "Buscar no documento (Cmd+F)"
                     } else {
                         "Buscar no documento (Ctrl+F)"
                     },
@@ -414,6 +435,7 @@ fn topbar(session: &Session, t: Tokens) -> Element<'_, Message> {
                 row![
                     tip(
                         text_input("Página", ready.page_input())
+                            .id(page_input_id())
                             .on_input(Message::PageInput)
                             .on_submit(Message::PageSubmit)
                             .style(kiri::bar_input_style(t))
@@ -1427,6 +1449,100 @@ fn close_prompt_card(t: Tokens) -> Element<'static, Message> {
     .into()
 }
 
+/// Só o estado da paleta — o overlay não pede Tabs/Ready.
+fn palette_layer(palette: &PaletteState, t: Tokens) -> Element<'_, Message> {
+    let dim = container(Space::with_width(Length::Fill))
+        .width(Length::Fill)
+        .height(Length::Fill)
+        .style(|_| container::Style {
+            background: Some(Background::Color(Color::from_rgba(0.0, 0.0, 0.0, 0.25))),
+            ..container::Style::default()
+        });
+    // Âncora no topo (Spotlight/VSCode), não no centro como os outros modais.
+    let card = container(mouse_area(palette_card(palette, t)).on_press(Message::PrintNop))
+        .width(Length::Fill)
+        .height(Length::Fill)
+        .align_x(Alignment::Center)
+        .align_y(Alignment::Start)
+        .padding(Padding {
+            top: 64.0,
+            right: 0.0,
+            bottom: 0.0,
+            left: 0.0,
+        });
+    stack![mouse_area(dim).on_press(Message::PaletteClose), card].into()
+}
+
+/// Título de 1 linha para a linha da paleta: outline trunca como no
+/// painel; o resto só colapsa whitespace (trechos já vêm colapsados).
+fn palette_title(item: &PaletteItem) -> String {
+    match item {
+        PaletteItem::OutlineRow { title, .. } => outline_title(title),
+        _ => item
+            .title()
+            .split_whitespace()
+            .collect::<Vec<_>>()
+            .join(" "),
+    }
+}
+
+fn palette_card(palette: &PaletteState, t: Tokens) -> Element<'_, Message> {
+    let query = text_input("Digite um comando…", palette.query())
+        .id(palette_input_id())
+        .on_input(Message::PaletteQuery)
+        .on_submit(Message::PaletteConfirm)
+        .style(kiri::bar_input_style(t))
+        .padding([8, 10])
+        .size(14)
+        .width(Length::Fill);
+    let mut rows = column![].spacing(2);
+    if palette.items().is_empty() {
+        rows = rows.push(text("Nenhum resultado").size(13).color(t.muted));
+    } else {
+        for (i, item) in palette.items().iter().enumerate() {
+            let selected = Some(i) == palette.selected();
+            let mut titlecol = column![text(palette_title(item)).size(13)].spacing(1);
+            // Segunda linha só com hint; sem isso a linha fica compacta.
+            if let Some(sub) = item.subtitle() {
+                let one_line = sub.split_whitespace().collect::<Vec<_>>().join(" ");
+                if !one_line.is_empty() {
+                    titlecol = titlecol.push(text(one_line).size(11).color(t.muted));
+                }
+            }
+            rows = rows.push(
+                button(
+                    row![
+                        kiri::ori_icon(item.icon(), 16.0),
+                        titlecol,
+                        Space::with_width(Length::Fill),
+                        text((i + 1).to_string()).size(11).color(t.muted),
+                    ]
+                    .spacing(8)
+                    .align_y(Alignment::Center)
+                    .width(Length::Fill),
+                )
+                .width(Length::Fill)
+                .padding(Padding::from([8, 10]))
+                .style(kiri::panel_seg_style(t, selected))
+                .on_press(Message::PaletteSelect(i)),
+            );
+        }
+    }
+    let list = container(
+        scrollable(rows)
+            .id(palette_scroll_id())
+            .width(Length::Fill)
+            .height(Length::Shrink),
+    )
+    .max_height(PALETTE_LIST_MAX_H)
+    .width(Length::Fill);
+    container(column![query, list].spacing(8))
+        .width(Length::Fixed(560.0))
+        .padding(12)
+        .style(kiri::menu_style(t))
+        .into()
+}
+
 /// Pergunta sim/não do aviso de assinatura; "Salvar mesmo assim" segue para o
 /// diálogo de destino.
 fn save_warning_card(t: Tokens) -> Element<'static, Message> {
@@ -1790,7 +1906,7 @@ fn tab_strip(tabs: &Tabs, t: Tokens) -> Element<'_, Message> {
                             .on_press(Message::CloseTab(index)),
                     ),
                     if cfg!(target_os = "macos") {
-                        "Fechar aba (⌘W)"
+                        "Fechar aba (Cmd+W)"
                     } else {
                         "Fechar aba (Ctrl+W)"
                     },
@@ -1919,18 +2035,20 @@ fn outline_tab(ready: &Ready, t: Tokens) -> Element<'_, Message> {
         .into()
 }
 
-/// Título truncado em 24 caracteres para caber no painel.
+/// Título colapsado em 1 linha e truncado em 24 caracteres: título de
+/// PDF com quebra de linha não quebra a linha do painel nem da paleta.
 fn outline_title(title: &str) -> String {
     const MAX: usize = 24;
-    let end = title
+    let one_line = title.split_whitespace().collect::<Vec<_>>().join(" ");
+    let end = one_line
         .char_indices()
         .nth(MAX)
         .map(|(i, _)| i)
-        .unwrap_or(title.len());
-    if end < title.len() {
-        format!("{}…", &title[..end])
+        .unwrap_or(one_line.len());
+    if end < one_line.len() {
+        format!("{}…", &one_line[..end])
     } else {
-        title.to_string()
+        one_line
     }
 }
 fn thumbs_tab(ready: &Ready, t: Tokens) -> Element<'_, Message> {
@@ -2737,6 +2855,37 @@ mod tests {
         // Exatos 24 caracteres passam intactos.
         let exact: String = "a".repeat(24);
         assert_eq!(outline_title(&exact), exact);
+    }
+
+    #[test]
+    fn outline_title_collapses_whitespace_to_one_line() {
+        assert_eq!(outline_title("Capítulo\nquebrado"), "Capítulo quebrado");
+        assert_eq!(outline_title("  antes\tdepois  "), "antes depois");
+        assert_eq!(outline_title("a\nb\nc"), "a b c");
+    }
+
+    #[test]
+    fn palette_title_keeps_rows_single_line() {
+        use super::{palette_title, PaletteItem};
+        use crate::page::PageNo;
+        use std::path::PathBuf;
+        let outline = PaletteItem::OutlineRow {
+            title: "Capítulo com\nquebra e cauda longa demais".into(),
+            page: PageNo::first(),
+        };
+        let shown = palette_title(&outline);
+        assert!(!shown.contains('\n'), "outline cru: {shown:?}");
+        assert!(shown.ends_with('…'), "outline longo trunca: {shown:?}");
+        let recent = PaletteItem::Recent {
+            path: PathBuf::from("/tmp/nome\nquebrado.pdf"),
+        };
+        assert_eq!(palette_title(&recent), "nome quebrado.pdf");
+        let hit = PaletteItem::DocHit {
+            page: PageNo::first(),
+            range: crate::session::TextRange { start: 0, end: 4 },
+            excerpt: "trecho limpo".into(),
+        };
+        assert_eq!(palette_title(&hit), "trecho limpo");
     }
 
     #[test]
