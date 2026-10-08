@@ -11,8 +11,8 @@ use iced::Task;
 use tsuro_sign::{analyze_pdf, PdfAnalysis};
 
 use crate::browse::{
-    dir_accessible, display_path, drop_recent, is_pdf, list_path, load_recents, merge_recents,
-    parent_of, push_recent, read_recents, save_recents, EmptyState, FsEntry,
+    display_path, drop_recent, is_pdf, list_path, load_recents, merge_recents, parent_of,
+    push_recent, read_recents, save_recents, EmptyState, FsEntry,
 };
 use crate::engine::PdfiumEngine;
 use crate::kiri::Theme;
@@ -2082,8 +2082,6 @@ impl Session {
     }
 
     pub fn boot(self) -> (Self, Task<Message>) {
-        #[cfg(target_os = "macos")]
-        probe_files_consent();
         match &self {
             Session::Loading { source, gen, .. } => {
                 let source = source.clone();
@@ -4175,17 +4173,6 @@ pub(crate) fn keyboard_message(
         Key::Named(Named::ArrowDown) => Some(Message::OutlineKey(OutlineKey::Next)),
         Key::Named(Named::Enter) => Some(Message::OutlineKey(OutlineKey::Activate)),
         _ => None,
-    }
-}
-
-/// Sonda o consentimento Arquivos e Pastas logo na abertura: o primeiro
-/// `read_dir` numa pasta protegida faz o sistema perguntar; preguiçoso no
-/// clique, o prompt chegava tarde. Só Downloads (um prompt); Documentos e
-/// Desktop perguntam no uso. Resultado descartado.
-#[cfg(target_os = "macos")]
-fn probe_files_consent() {
-    if let Some(home) = std::env::var_os("HOME") {
-        let _ = dir_accessible(&std::path::PathBuf::from(home).join("Downloads"));
     }
 }
 
