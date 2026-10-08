@@ -225,31 +225,26 @@ pub fn parent_of(cwd: &Path) -> Option<PathBuf> {
     cwd.parent().map(|p| p.to_path_buf())
 }
 
-/// `true` se dá para listar a pasta. O ato de tentar dispara o prompt do TCC
-/// na primeira vez; depois vale o consentimento gravado.
+/// Returns whether `read_dir` can open the directory iterator.
+/// Entries may still fail during iteration. Opening may request OS consent.
 pub fn dir_accessible(path: &Path) -> bool {
     std::fs::read_dir(path).is_ok()
 }
 
-/// Pasta Downloads do usuário (`None` sem HOME/USERPROFILE). Base da sonda
-/// de consentimento e do status de permissão no Configurações.
+/// Downloads directory used by the settings permission check.
 pub fn downloads_dir() -> Option<PathBuf> {
     std::env::var_os("HOME")
         .or_else(|| std::env::var_os("USERPROFILE"))
         .map(|home| PathBuf::from(home).join("Downloads"))
 }
 
-/// Erro cru do SO vira orientação acionável. O caso real: TCC do macOS nega
-/// `read_dir` em Downloads/Documentos/Desktop (EPERM) quando o consentimento
-/// foi negado — e no Windows ACLs dão o mesmo `PermissionDenied`. O app não é
-/// sandboxado (ver `scripts/tsuro.entitlements`), então não há entitlement a
-/// declarar: o consentimento vive nos Ajustes, e a mensagem aponta para lá.
+/// PermissionDenied does not distinguish folder permissions from OS consent.
 fn friendly_list_error(e: std::io::Error) -> String {
     if e.kind() != std::io::ErrorKind::PermissionDenied {
         return e.to_string();
     }
     if cfg!(target_os = "macos") {
-        "Sem acesso a esta pasta. Libere em Ajustes do Sistema › Privacidade e Segurança › Arquivos e Pastas › TsuroPDF.".to_string()
+        "Sem acesso a esta pasta. Confira as permissões da pasta. Se o macOS bloqueou o acesso, confira Ajustes do Sistema › Privacidade e Segurança › Arquivos e Pastas › TsuroPDF.".to_string()
     } else if cfg!(target_os = "windows") {
         "Sem acesso a esta pasta. Confira as permissões da pasta no Windows.".to_string()
     } else {
@@ -414,11 +409,13 @@ mod tests {
     }
 
     #[test]
-    fn list_error_denied_points_to_os_settings() {
+    fn list_error_denied_does_not_assume_os_consent_is_the_cause() {
         let denied = std::io::Error::new(std::io::ErrorKind::PermissionDenied, "os error 1");
         let msg = friendly_list_error(denied);
         assert!(msg.starts_with("Sem acesso a esta pasta"), "{msg}");
         if cfg!(target_os = "macos") {
+            assert!(msg.contains("permissões da pasta"), "{msg}");
+            assert!(msg.contains("Se o macOS"), "{msg}");
             assert!(msg.contains("Arquivos e Pastas"), "{msg}");
         }
     }
