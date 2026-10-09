@@ -7400,18 +7400,22 @@ mod tests {
             range: TextRange { start: 0, end: 1 },
         });
         let mut session = Session::Ready(tabs);
+        #[cfg(target_os = "macos")]
+        let cmd = keyboard::Modifiers::LOGO;
+        #[cfg(not(target_os = "macos"))]
+        let cmd = keyboard::Modifiers::CTRL;
         for (key, modifiers) in [
             (Key::Character("r".into()), keyboard::Modifiers::empty()),
             (Key::Named(Named::Tab), keyboard::Modifiers::CTRL),
             (Key::Named(Named::End), keyboard::Modifiers::empty()),
             (Key::Character("+".into()), keyboard::Modifiers::empty()),
             (Key::Character("h".into()), keyboard::Modifiers::empty()),
-            (Key::Character("f".into()), keyboard::Modifiers::CTRL),
-            (Key::Character("p".into()), keyboard::Modifiers::CTRL),
-            (Key::Character("s".into()), keyboard::Modifiers::CTRL),
-            (Key::Character("o".into()), keyboard::Modifiers::CTRL),
-            (Key::Character("k".into()), keyboard::Modifiers::CTRL),
-            (Key::Character("w".into()), keyboard::Modifiers::CTRL),
+            (Key::Character("f".into()), cmd),
+            (Key::Character("p".into()), cmd),
+            (Key::Character("s".into()), cmd),
+            (Key::Character("o".into()), cmd),
+            (Key::Character("k".into()), cmd),
+            (Key::Character("w".into()), cmd),
         ] {
             let message = keyboard_message(key, modifiers, event::Status::Ignored)
                 .expect("shortcut must map to a real document command");
