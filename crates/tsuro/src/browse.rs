@@ -197,9 +197,9 @@ pub fn special_folders() -> Vec<FsEntry> {
 
 pub fn list_dir(path: &Path) -> Result<Vec<FsEntry>, String> {
     let mut entries = Vec::new();
-    let reader = std::fs::read_dir(path).map_err(|e| e.to_string())?;
+    let reader = std::fs::read_dir(path).map_err(friendly_list_error)?;
     for ent in reader {
-        let ent = ent.map_err(|e| e.to_string())?;
+        let ent = ent.map_err(friendly_list_error)?;
         let path = ent.path();
         let name = ent.file_name().to_string_lossy().into_owned();
         if name.starts_with('.') {
@@ -223,6 +223,26 @@ pub fn parent_of(cwd: &Path) -> Option<PathBuf> {
         return None;
     }
     cwd.parent().map(|p| p.to_path_buf())
+}
+
+/// Returns whether `read_dir` can open the directory iterator.
+/// Entries may still fail during iteration. Opening may request OS consent.
+pub fn dir_accessible(path: &Path) -> bool {
+    std::fs::read_dir(path).is_ok()
+}
+
+/// PermissionDenied does not distinguish folder permissions from OS consent.
+fn friendly_list_error(e: std::io::Error) -> String {
+    if e.kind() != std::io::ErrorKind::PermissionDenied {
+        return e.to_string();
+    }
+    if cfg!(target_os = "macos") {
+        "Sem acesso a esta pasta. Confira as permissões da pasta. Se o macOS bloqueou o acesso, confira Ajustes do Sistema › Privacidade e Segurança › Arquivos e Pastas › TsuroPDF.".to_string()
+    } else if cfg!(target_os = "windows") {
+        "Sem acesso a esta pasta. Confira as permissões da pasta no Windows.".to_string()
+    } else {
+        "Sem acesso a esta pasta (permissão negada).".to_string()
+    }
 }
 
 pub fn display_path(cwd: Option<&Path>) -> String {
@@ -379,5 +399,40 @@ mod tests {
             merged,
             vec![PathBuf::from("/tmp/new.pdf"), PathBuf::from("/tmp/old.pdf")]
         );
+    }
+
+    #[test]
+    fn list_error_denied_does_not_assume_os_consent_is_the_cause() {
+        let denied = std::io::Error::new(std::io::ErrorKind::PermissionDenied, "os error 1");
+        let msg = friendly_list_error(denied);
+        assert!(msg.starts_with("Sem acesso a esta pasta"), "{msg}");
+        if cfg!(target_os = "macos") {
+            assert!(msg.contains("permissões da pasta"), "{msg}");
+            assert!(msg.contains("Se o macOS"), "{msg}");
+            assert!(msg.contains("Arquivos e Pastas"), "{msg}");
+        }
+    }
+
+    #[test]
+    fn list_error_other_passes_through() {
+        let missing = std::io::Error::new(std::io::ErrorKind::NotFound, "sem tal pasta");
+        assert_eq!(friendly_list_error(missing), "sem tal pasta");
+        assert!(list_dir(Path::new("/tsuro-nao-existe-xyz")).is_err());
+    }
+
+    #[test]
+    fn dir_accessible_matches_readable_tmp() {
+        let root = std::env::temp_dir().join(format!(
+            "tsuro-access-{}-{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        std::fs::create_dir_all(&root).unwrap();
+        assert!(dir_accessible(&root));
+        assert!(!dir_accessible(&root.join("nao-existe")));
+        let _ = std::fs::remove_dir_all(&root);
     }
 }
