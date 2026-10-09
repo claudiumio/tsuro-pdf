@@ -7149,9 +7149,7 @@ mod tests {
 
     #[test]
     fn toggle_settings_opens_closes_and_starts_checking() {
-        let Some(ready) = sample_ready() else {
-            return;
-        };
+        let ready = sample_ready().expect("settings regression requires fixture and Pdfium");
         let mut session = Session::Ready(Tabs::single(ready));
         apply(&mut session, Message::ToggleOverflow);
         apply(&mut session, Message::ToggleSettings);
@@ -7180,17 +7178,22 @@ mod tests {
 
     #[test]
     fn update_checked_marks_available_current_and_failed() {
-        let Some(ready) = sample_ready() else {
-            return;
-        };
+        let ready = sample_ready().expect("update regression requires fixture and Pdfium");
         let mut session = Session::Ready(Tabs::single(ready));
         apply(&mut session, Message::UpdateChecked(Ok("v99.99.99".into())));
         assert_eq!(
-            active_ready(&session).update,
-            UpdateState::Available("v99.99.99".into())
+            match &session {
+                Session::Ready(tabs) => &tabs.update,
+                _ => unreachable!(),
+            },
+            &UpdateState::Available("v99.99.99".into())
         );
         apply(&mut session, Message::UpdateChecked(Err("offline".into())));
-        assert_eq!(active_ready(&session).update, UpdateState::Failed);
+        if let Session::Ready(tabs) = &session {
+            assert_eq!(tabs.update, UpdateState::Failed);
+        } else {
+            panic!("expected ready tabs");
+        }
     }
 
     #[test]
@@ -7200,6 +7203,254 @@ mod tests {
         assert_eq!(parse_latest_tag("{}"), None);
         assert!(!update_available("0.4.0", "v0.4.0"));
         assert!(update_available("0.4.0", "v0.5.0"));
+    }
+
+    #[test]
+    fn settings_update_is_shared_after_switching_and_adding_tabs() {
+        let first = sample_ready().expect("update regression requires fixture and Pdfium");
+        let second = sample_ready().expect("second fixture must load");
+        let third = sample_ready().expect("third fixture must load");
+        let mut tabs = Tabs::single(first);
+        tabs.push(second);
+        let mut session = Session::Ready(tabs);
+        apply(&mut session, Message::SelectTab(0));
+        apply(&mut session, Message::ToggleSettings);
+        apply(&mut session, Message::ClosePrintDialog);
+        apply(&mut session, Message::CycleTab(1));
+        let Session::Ready(tabs) = &session else {
+            panic!("expected ready tabs");
+        };
+        assert_eq!(tabs.active_index(), 1);
+        assert_eq!(tabs.update, UpdateState::Checking);
+        apply(&mut session, Message::ToggleSettings);
+        apply(&mut session, Message::UpdateChecked(Ok("v99.99.99".into())));
+        apply(&mut session, Message::ClosePrintDialog);
+        apply(&mut session, Message::SelectTab(0));
+        apply(&mut session, Message::ToggleSettings);
+        let Session::Ready(tabs) = &mut session else {
+            panic!("expected ready tabs");
+        };
+        assert_eq!(tabs.active_index(), 0);
+        assert!(tabs.settings_open);
+        assert_eq!(tabs.update, UpdateState::Available("v99.99.99".into()));
+        tabs.settings_open = false;
+        tabs.push(third);
+        apply(&mut session, Message::ToggleSettings);
+        let Session::Ready(tabs) = &session else {
+            panic!("expected ready tabs");
+        };
+        assert_eq!(tabs.active_index(), 2);
+        assert_eq!(tabs.update, UpdateState::Available("v99.99.99".into()));
+    }
+
+    #[test]
+    fn settings_update_survives_requester_close_and_ignores_no_tabs() {
+        isolated(|| {
+            let first = sample_ready().expect("update regression requires fixture and Pdfium");
+            let second = sample_ready().expect("second fixture must load");
+            let mut tabs = Tabs::single(first);
+            tabs.push(second);
+            let mut session = Session::Ready(tabs);
+            apply(&mut session, Message::SelectTab(0));
+            apply(&mut session, Message::ToggleSettings);
+            apply(&mut session, Message::ClosePrintDialog);
+            apply(&mut session, Message::CloseTab(0));
+            let Session::Ready(tabs) = &session else {
+                panic!("expected remaining tab");
+            };
+            assert_eq!(tabs.update, UpdateState::Checking);
+            apply(&mut session, Message::UpdateChecked(Ok("v0.4.0".into())));
+            let Session::Ready(tabs) = &session else {
+                panic!("expected remaining tab");
+            };
+            assert_eq!(tabs.len(), 1);
+            assert_eq!(tabs.update, UpdateState::Current);
+            apply(&mut session, Message::Close);
+            assert!(matches!(session, Session::Empty(_)));
+            apply(&mut session, Message::UpdateChecked(Ok("v99.99.99".into())));
+            assert!(matches!(session, Session::Empty(_)));
+            let ready = sample_ready().expect("reopened fixture must load");
+            session = Session::Ready(Tabs::single(ready));
+            let Session::Ready(tabs) = &session else {
+                panic!("expected reopened tab");
+            };
+            assert_eq!(tabs.update, UpdateState::Idle);
+        });
+    }
+
+    #[test]
+    fn settings_release_versions_require_strict_newer_numeric_triples() {
+        for (current, latest, expected) in [
+            ("0.4.0", "v0.3.0", false),
+            ("0.4.0", "v0.4.0", false),
+            ("0.4.0", "v0.4.1", true),
+            ("0.4.0", "0.5.0", true),
+            ("0.9.0", "v0.10.0", true),
+            ("0.10.0", "v0.9.99", false),
+            ("1.0.0", "v0.99.99", false),
+            ("0.99.99", "v1.0.0", true),
+            ("0.4.0", "", false),
+            ("0.4.0", "vv1.0.0", false),
+            ("0.4.0", "v1.0", false),
+            ("0.4.0", "v1.0.0.0", false),
+            ("0.4.0", "v01.0.0", false),
+            ("0.4.0", "v1..0", false),
+            ("0.4.0", "v+1.0.0", false),
+            ("0.4.0", " v1.0.0", false),
+            ("0.4.0", "v1.0.0\n", false),
+            ("0.4.0", "v1.0.0-rc.1", false),
+            ("0.4.0", "v1.0.0+build", false),
+            ("0.4.0", "v18446744073709551616.0.0", false),
+            ("bad", "v1.0.0", false),
+            ("0.4.0-dev", "v1.0.0", false),
+        ] {
+            assert_eq!(
+                update_available(current, latest),
+                expected,
+                "{current} vs {latest}"
+            );
+        }
+    }
+
+    #[test]
+    fn settings_update_result_rejects_older_and_unsupported_releases() {
+        let ready = sample_ready().expect("update regression requires fixture and Pdfium");
+        let mut session = Session::Ready(Tabs::single(ready));
+        for (tag, expected) in [
+            ("v0.3.0", UpdateState::Current),
+            ("v0.4.0", UpdateState::Current),
+            ("v0.4.1", UpdateState::Available("v0.4.1".into())),
+            ("v1.0.0-rc.1", UpdateState::Failed),
+            ("garbage", UpdateState::Failed),
+            ("", UpdateState::Failed),
+        ] {
+            apply(&mut session, Message::UpdateChecked(Ok(tag.into())));
+            let Session::Ready(tabs) = &session else {
+                panic!("expected ready tabs");
+            };
+            assert_eq!(tabs.update, expected, "release {tag}");
+        }
+    }
+
+    #[test]
+    fn settings_modal_blocks_keyboard_document_commands_and_tab_clicks() {
+        let first = sample_ready().expect("settings regression requires fixture and Pdfium");
+        let second = sample_ready().expect("second fixture must load");
+        let mut tabs = Tabs::single(first);
+        tabs.push(second);
+        tabs.select(0);
+        tabs.settings_open = true;
+        tabs.selection = Some(Selection {
+            page: PageNo::first(),
+            range: TextRange { start: 0, end: 1 },
+        });
+        let mut session = Session::Ready(tabs);
+        for (key, modifiers) in [
+            (Key::Character("r".into()), keyboard::Modifiers::empty()),
+            (Key::Named(Named::Tab), keyboard::Modifiers::CTRL),
+            (Key::Named(Named::End), keyboard::Modifiers::empty()),
+            (Key::Character("+".into()), keyboard::Modifiers::empty()),
+            (Key::Character("h".into()), keyboard::Modifiers::empty()),
+            (Key::Character("f".into()), keyboard::Modifiers::CTRL),
+            (Key::Character("p".into()), keyboard::Modifiers::CTRL),
+            (Key::Character("s".into()), keyboard::Modifiers::CTRL),
+            (Key::Character("o".into()), keyboard::Modifiers::CTRL),
+            (Key::Character("k".into()), keyboard::Modifiers::CTRL),
+            (Key::Character("w".into()), keyboard::Modifiers::CTRL),
+        ] {
+            let message = keyboard_message(key, modifiers, event::Status::Ignored)
+                .expect("shortcut must map to a real document command");
+            apply(&mut session, message);
+        }
+        apply(&mut session, Message::SelectTab(1));
+        apply(&mut session, Message::CloseTab(0));
+        let Session::Ready(tabs) = &session else {
+            panic!("settings must not close the document");
+        };
+        assert_eq!(tabs.active_index(), 0);
+        assert_eq!(tabs.len(), 2);
+        assert_eq!(tabs.view_rotation, 0);
+        assert_eq!(tabs.visible, PageNo::first());
+        assert!(matches!(tabs.zoom, Zoom::Width));
+        assert_eq!(tabs.annotations.len(), 0);
+        assert!(tabs.print_dialog.is_none());
+        assert!(!tabs.palette_open());
+        assert!(tabs.settings_open);
+        let escape = keyboard_message(
+            Key::Named(Named::Escape),
+            keyboard::Modifiers::empty(),
+            event::Status::Ignored,
+        )
+        .expect("escape must close settings");
+        apply(&mut session, escape);
+        assert!(!active_ready(&session).settings_open);
+        assert_eq!(
+            active_ready(&session).selection,
+            Some(Selection {
+                page: PageNo::first(),
+                range: TextRange { start: 0, end: 1 },
+            })
+        );
+        apply(&mut session, Message::RotateView);
+        assert_eq!(active_ready(&session).view_rotation, 1);
+    }
+
+    #[test]
+    fn settings_modal_preserves_theme_and_default_reader_actions() {
+        let prefs =
+            std::env::temp_dir().join(format!("tsuro-settings-modal-prefs-{}", std::process::id()));
+        crate::prefs::with_prefs_path(prefs.clone(), || {
+            let ready = sample_ready().expect("settings regression requires fixture and Pdfium");
+            let mut session = Session::Ready(Tabs::single(ready));
+            apply(&mut session, Message::ToggleSettings);
+            apply(&mut session, Message::SetTheme(Theme::Light));
+            assert_eq!(active_ready(&session).theme, Theme::Light);
+            assert!(active_ready(&session).settings_open);
+            apply(&mut session, Message::RotateView);
+            assert_eq!(active_ready(&session).view_rotation, 0);
+            apply(&mut session, Message::UpdateChecked(Ok("v0.4.0".into())));
+            let Session::Ready(tabs) = &session else {
+                panic!("expected ready tabs");
+            };
+            assert_eq!(tabs.update, UpdateState::Current);
+            #[cfg(not(target_os = "windows"))]
+            {
+                apply(&mut session, Message::SetDefaultReader);
+                assert!(active_ready(&session).about_open);
+                assert!(!active_ready(&session).settings_open);
+            }
+        });
+        let _ = std::fs::remove_file(prefs);
+    }
+
+    #[test]
+    fn settings_modal_accepts_external_pdf_delivery() {
+        isolated(|| {
+            let first = sample_ready().expect("settings regression requires fixture and Pdfium");
+            let second = sample_ready().expect("external fixture must load");
+            let path = second.source.path().to_path_buf();
+            let mut session = Session::Ready(Tabs::single(first));
+            apply(&mut session, Message::ToggleSettings);
+            apply(&mut session, Message::FileDropped(path.clone()));
+            let Session::Ready(tabs) = &session else {
+                panic!("external delivery must retain existing tabs");
+            };
+            assert!(!tabs.settings_open);
+            assert_eq!(
+                tabs.pending.as_ref().map(|(_, source)| source.path()),
+                Some(path.as_path())
+            );
+            assert_eq!(tabs.update, UpdateState::Checking);
+            session.finish_open(Ok(second));
+            apply(&mut session, Message::UpdateChecked(Ok("v0.4.0".into())));
+            let Session::Ready(tabs) = &session else {
+                panic!("external delivery must open a new tab");
+            };
+            assert_eq!(tabs.len(), 2);
+            assert_eq!(tabs.active_index(), 1);
+            assert_eq!(tabs.update, UpdateState::Current);
+            assert!(!tabs.docs()[0].settings_open);
+        });
     }
 
     /// Anotação fake direta (a função pura não precisa de fixture).
