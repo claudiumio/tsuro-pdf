@@ -15,6 +15,8 @@ use crate::kiri::{self, Theme, Tokens};
 use crate::page::{MediaBox, PageNo};
 use crate::print::{PrintOrientation, MAX_COPIES};
 use crate::search::Search;
+#[cfg(target_os = "macos")]
+use crate::session::PermissionsState;
 use crate::session::{
     display_pt, display_rect, marker_side, page_pt_at, AnnotKind, Message, NavCmd, NoteDraft,
     OpenSource, PaletteItem, PaletteState, PrintDialog, RangeMode, Ready, Session, Tabs,
@@ -1496,31 +1498,32 @@ fn settings_card(ready: &Tabs, t: Tokens) -> Element<'static, Message> {
     .spacing(8)
     .align_x(Alignment::Start)
     .width(300);
-    if cfg!(target_os = "macos") {
-        let granted =
-            crate::browse::downloads_dir().is_some_and(|dir| crate::browse::dir_accessible(&dir));
-        body = body
-            .push(section_title("Permissões", t))
-            .push(
-                text(if granted {
-                    "Downloads: acesso liberado."
-                } else {
-                    "Downloads: acesso bloqueado."
-                })
-                .size(13)
-                .color(if granted { t.ink } else { t.danger }),
-            )
-            .push(if granted {
-                Element::from(menu_disabled(t, "Downloads acessível."))
-            } else {
-                Element::from(menu_item(
-                    t,
-                    "shield",
-                    "Abrir Ajustes…",
-                    Message::OpenPrivacySettings,
-                    false,
-                ))
-            });
+    #[cfg(target_os = "macos")]
+    {
+        let label = match ready.permissions {
+            PermissionsState::Checking => "Downloads: verificando acesso…",
+            PermissionsState::Accessible => "Downloads: acesso liberado.",
+            PermissionsState::Denied => "Downloads: acesso negado.",
+            PermissionsState::Unavailable => "Downloads: acesso não disponível.",
+        };
+        body =
+            body.push(section_title("Permissões", t))
+                .push(text(label).size(13).color(
+                    if ready.permissions == PermissionsState::Denied {
+                        t.danger
+                    } else {
+                        t.muted
+                    },
+                ));
+        if ready.permissions == PermissionsState::Denied {
+            body = body.push(menu_item(
+                t,
+                "shield",
+                "Abrir Ajustes…",
+                Message::OpenPrivacySettings,
+                false,
+            ));
+        }
     }
     body = body
         .push(section_title("Idioma", t))

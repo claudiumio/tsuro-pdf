@@ -1006,6 +1006,8 @@ pub struct Tabs {
     docs: Vec<Ready>,
     active: usize,
     pub update: UpdateState,
+    #[cfg(target_os = "macos")]
+    pub(crate) permissions: PermissionsState,
     /// Geração + origem do documento carregando para uma aba nova (⌘T ou
     /// abrir com uma aba já aberta). `None` = nada pendente.
     pending: Option<(u64, OpenSource)>,
@@ -1049,6 +1051,8 @@ impl Tabs {
             docs: vec![ready],
             active: 0,
             update: UpdateState::Idle,
+            #[cfg(target_os = "macos")]
+            permissions: PermissionsState::Unavailable,
             pending: None,
             open_error: None,
             close_ask: None,
@@ -1288,6 +1292,15 @@ pub enum UpdateState {
     Current,
     Available(String),
     Failed,
+}
+
+#[cfg(target_os = "macos")]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum PermissionsState {
+    Checking,
+    Accessible,
+    Denied,
+    Unavailable,
 }
 
 #[derive(Clone)]
@@ -1985,6 +1998,8 @@ pub enum Message {
     OpenPrivacySettings,
     /// Resposta da checagem de atualização (`Ok` = tag latest do GitHub).
     UpdateChecked(Result<String, String>),
+    #[cfg(target_os = "macos")]
+    PermissionsChecked(Result<(), std::io::ErrorKind>),
     /// Ajuda → leitor padrão: no Windows abre o painel de apps padrão; nas
     /// demais plataformas abre o Sobre com o passo a passo do SO.
     SetDefaultReader,
@@ -2817,6 +2832,7 @@ impl Session {
                 Task::none()
             }
             Message::ToggleSettings => {
+                let mut tasks = Vec::new();
                 if let Session::Ready(ready) = self {
                     ready.settings_open = !ready.settings_open;
                     if ready.settings_open {
@@ -2825,9 +2841,36 @@ impl Session {
                         // Uma checagem por sessão; offline falha silencioso.
                         if ready.update == UpdateState::Idle {
                             ready.update = UpdateState::Checking;
-                            return Task::perform(fetch_latest_tag(), Message::UpdateChecked);
+                            tasks.push(Task::perform(fetch_latest_tag(), Message::UpdateChecked));
+                        }
+                        #[cfg(target_os = "macos")]
+                        if ready.permissions != PermissionsState::Checking {
+                            ready.permissions = PermissionsState::Checking;
+                            tasks.push(Task::perform(
+                                async {
+                                    tokio::task::spawn_blocking(|| {
+                                        crate::browse::downloads_dir()
+                                            .ok_or(std::io::ErrorKind::NotFound)
+                                            .and_then(|path| crate::browse::dir_access(&path))
+                                    })
+                                    .await
+                                    .unwrap_or(Err(std::io::ErrorKind::Other))
+                                },
+                                Message::PermissionsChecked,
+                            ));
                         }
                     }
+                }
+                Task::batch(tasks)
+            }
+            #[cfg(target_os = "macos")]
+            Message::PermissionsChecked(result) => {
+                if let Session::Ready(tabs) = self {
+                    tabs.permissions = match result {
+                        Ok(()) => PermissionsState::Accessible,
+                        Err(std::io::ErrorKind::PermissionDenied) => PermissionsState::Denied,
+                        Err(_) => PermissionsState::Unavailable,
+                    };
                 }
                 Task::none()
             }
@@ -4330,25 +4373,27 @@ fn open_privacy_settings() {
 
 /// Tag da latest release no GitHub, via curl do sistema (sem dep nova).
 /// Falha offline/via proxy: o chamador trata como silencioso.
-async fn fetch_latest_tag() -> Result<String, String> {
-    let out = tokio::task::spawn_blocking(|| {
-        std::process::Command::new("curl")
-            .args([
-                "-fsSL",
-                "--max-time",
-                "15",
-                "https://api.github.com/repos/claudiumio/tsuro-pdf/releases/latest",
-            ])
-            .output()
-            .map_err(|e| e.to_string())
-    })
-    .await
-    .map_err(|e| e.to_string())??;
-    if !out.status.success() {
-        return Err(format!("http {}", out.status));
+fn fetch_latest_tag() -> impl std::future::Future<Output = Result<String, String>> + Send {
+    async move {
+        let out = tokio::task::spawn_blocking(|| {
+            std::process::Command::new("curl")
+                .args([
+                    "-fsSL",
+                    "--max-time",
+                    "15",
+                    "https://api.github.com/repos/claudiumio/tsuro-pdf/releases/latest",
+                ])
+                .output()
+                .map_err(|e| e.to_string())
+        })
+        .await
+        .map_err(|e| e.to_string())??;
+        if !out.status.success() {
+            return Err(format!("http {}", out.status));
+        }
+        let body = String::from_utf8(out.stdout).map_err(|e| e.to_string())?;
+        parse_latest_tag(&body).ok_or_else(|| "sem tag_name".to_string())
     }
-    let body = String::from_utf8(out.stdout).map_err(|e| e.to_string())?;
-    parse_latest_tag(&body).ok_or_else(|| "sem tag_name".to_string())
 }
 
 /// Extrai `"tag_name": "vX.Y.Z"` do JSON sem serde (só este campo interessa).
@@ -7229,6 +7274,83 @@ mod tests {
             }
             _ => unreachable!(),
         }
+    }
+
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn settings_permissions_check_refreshes_without_restarting_update() {
+        let ready = sample_ready().expect("settings regression requires fixture and Pdfium");
+        let mut session = Session::Ready(Tabs::single(ready));
+        apply(&mut session, Message::ToggleSettings);
+        let Session::Ready(tabs) = &session else {
+            panic!("expected ready tabs");
+        };
+        assert_eq!(tabs.permissions, PermissionsState::Checking);
+        assert_eq!(tabs.update, UpdateState::Checking);
+        apply(&mut session, Message::PermissionsChecked(Ok(())));
+        apply(&mut session, Message::UpdateChecked(Ok("v0.4.0".into())));
+        apply(&mut session, Message::ClosePrintDialog);
+        let Session::Ready(tabs) = &session else {
+            panic!("expected ready tabs");
+        };
+        assert_eq!(tabs.permissions, PermissionsState::Accessible);
+        apply(&mut session, Message::ToggleSettings);
+        let Session::Ready(tabs) = &session else {
+            panic!("expected ready tabs");
+        };
+        assert_eq!(tabs.permissions, PermissionsState::Checking);
+        assert_eq!(tabs.update, UpdateState::Current);
+        apply(&mut session, Message::ClosePrintDialog);
+        apply(&mut session, Message::ToggleSettings);
+        let Session::Ready(tabs) = &session else {
+            panic!("expected ready tabs");
+        };
+        assert_eq!(tabs.permissions, PermissionsState::Checking);
+        assert_eq!(tabs.update, UpdateState::Current);
+    }
+
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn settings_permissions_only_denied_means_blocked_and_results_are_shared() {
+        let first = sample_ready().expect("settings regression requires fixture and Pdfium");
+        let second = sample_ready().expect("second fixture must load");
+        let mut tabs = Tabs::single(first);
+        tabs.push(second);
+        let mut session = Session::Ready(tabs);
+        apply(&mut session, Message::ToggleSettings);
+        apply(&mut session, Message::RotateView);
+        assert_eq!(active_ready(&session).view_rotation, 0);
+        for (result, expected) in [
+            (Ok(()), PermissionsState::Accessible),
+            (
+                Err(std::io::ErrorKind::PermissionDenied),
+                PermissionsState::Denied,
+            ),
+            (
+                Err(std::io::ErrorKind::NotFound),
+                PermissionsState::Unavailable,
+            ),
+            (
+                Err(std::io::ErrorKind::Other),
+                PermissionsState::Unavailable,
+            ),
+        ] {
+            apply(&mut session, Message::PermissionsChecked(result));
+            let Session::Ready(tabs) = &session else {
+                panic!("expected ready tabs");
+            };
+            assert_eq!(tabs.permissions, expected);
+        }
+        apply(&mut session, Message::ClosePrintDialog);
+        apply(&mut session, Message::SelectTab(0));
+        let Session::Ready(tabs) = &session else {
+            panic!("expected ready tabs");
+        };
+        assert_eq!(tabs.active_index(), 0);
+        assert_eq!(tabs.permissions, PermissionsState::Unavailable);
+        session = Session::empty();
+        apply(&mut session, Message::PermissionsChecked(Ok(())));
+        assert!(matches!(session, Session::Empty(_)));
     }
 
     #[test]

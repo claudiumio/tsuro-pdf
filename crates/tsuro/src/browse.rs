@@ -228,7 +228,13 @@ pub fn parent_of(cwd: &Path) -> Option<PathBuf> {
 /// Returns whether `read_dir` can open the directory iterator.
 /// Entries may still fail during iteration. Opening may request OS consent.
 pub fn dir_accessible(path: &Path) -> bool {
-    std::fs::read_dir(path).is_ok()
+    dir_access(path).is_ok()
+}
+
+pub(crate) fn dir_access(path: &Path) -> Result<(), std::io::ErrorKind> {
+    std::fs::read_dir(path)
+        .map(|_| ())
+        .map_err(|error| error.kind())
 }
 
 /// Downloads directory used by the settings permission check.
@@ -448,5 +454,20 @@ mod tests {
         assert!(downloads_dir()
             .map(|p| p.ends_with("Downloads"))
             .unwrap_or(true));
+    }
+
+    #[test]
+    fn dir_access_preserves_missing_path_error_without_creating_folders() {
+        let missing = std::env::temp_dir().join(format!(
+            "tsuro-missing-downloads-{}-{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        assert_eq!(dir_access(&missing), Err(std::io::ErrorKind::NotFound));
+        assert!(!missing.exists());
+        assert_eq!(dir_access(Path::new(env!("CARGO_MANIFEST_DIR"))), Ok(()));
     }
 }
