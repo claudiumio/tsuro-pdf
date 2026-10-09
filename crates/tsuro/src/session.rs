@@ -1005,6 +1005,9 @@ pub enum Session {
 pub struct Tabs {
     docs: Vec<Ready>,
     active: usize,
+    pub update: UpdateState,
+    #[cfg(target_os = "macos")]
+    pub(crate) permissions: PermissionsState,
     /// Geração + origem do documento carregando para uma aba nova (⌘T ou
     /// abrir com uma aba já aberta). `None` = nada pendente.
     pending: Option<(u64, OpenSource)>,
@@ -1047,6 +1050,9 @@ impl Tabs {
         Self {
             docs: vec![ready],
             active: 0,
+            update: UpdateState::Idle,
+            #[cfg(target_os = "macos")]
+            permissions: PermissionsState::Unavailable,
             pending: None,
             open_error: None,
             close_ask: None,
@@ -1276,6 +1282,27 @@ impl std::ops::DerefMut for Tabs {
     }
 }
 
+/// Estado da checagem de atualização (Configurações): uma por sessão;
+/// offline volta a `Failed` e rende só a versão local, sem alarde.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub enum UpdateState {
+    #[default]
+    Idle,
+    Checking,
+    Current,
+    Available(String),
+    Failed,
+}
+
+#[cfg(target_os = "macos")]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum PermissionsState {
+    Checking,
+    Accessible,
+    Denied,
+    Unavailable,
+}
+
 #[derive(Clone)]
 pub struct Ready {
     pub source: OpenSource,
@@ -1338,6 +1365,9 @@ pub struct Ready {
     pub recents_expanded: bool,
     /// Cartão Sobre aberto (Ajuda). Fecha no fundo, no botão e no Esc.
     pub about_open: bool,
+    /// Diálogo Configurações aberto (⋯ → Ajuda). Fecha no fundo, no botão e
+    /// no Esc; abre por cima do Sobre.
+    pub settings_open: bool,
     /// Diálogo de impressão aberto (`None` = fechado). Só existe em `Ready`.
     pub print_dialog: Option<PrintDialog>,
     /// Linha de status pós-envio ("Enviado para …"); limpa ao reabrir o diálogo.
@@ -1960,6 +1990,19 @@ pub enum Message {
     ToggleRecents,
     /// Ajuda → Sobre: cartão com nome/versão; fundo e Esc fecham.
     ToggleAbout,
+    /// Ajuda → Configurações: diálogo com tema, leitor padrão, permissões e
+    /// versão; fundo e Esc fecham.
+    ToggleSettings,
+    /// Configurações → Permissões: abre os Ajustes do SO na tela certa
+    /// (macOS; nas demais é no-op).
+    OpenPrivacySettings,
+    /// Resposta da checagem de atualização (`Ok` = tag latest do GitHub).
+    UpdateChecked(Result<String, String>),
+    #[cfg(target_os = "macos")]
+    PermissionsChecked(Result<(), std::io::ErrorKind>),
+    /// Ajuda → leitor padrão: no Windows abre o painel de apps padrão; nas
+    /// demais plataformas abre o Sobre com o passo a passo do SO.
+    SetDefaultReader,
     /// Aba Sumário no painel de Páginas (`true` = sumário, `false` = miniaturas).
     OutlineTab(bool),
     /// Expande/colapsa um nó da árvore (caminho de índices desde a raiz).
@@ -2100,6 +2143,46 @@ impl Session {
     }
 
     pub fn update(&mut self, message: Message) -> Task<Message> {
+        if matches!(self, Session::Ready(tabs) if tabs.settings_open)
+            && matches!(
+                &message,
+                Message::PickFile
+                    | Message::OpenRecent(_)
+                    | Message::Close
+                    | Message::CloseTabActive
+                    | Message::CloseTab(_)
+                    | Message::SelectTab(_)
+                    | Message::CycleTab(_)
+                    | Message::Nav(_)
+                    | Message::PageInput(_)
+                    | Message::PageSubmit
+                    | Message::SetZoom(_)
+                    | Message::ZoomIn
+                    | Message::ZoomOut
+                    | Message::FocusSearch
+                    | Message::RotateView
+                    | Message::SearchChanged(_)
+                    | Message::SearchSubmit
+                    | Message::SearchNext
+                    | Message::SearchPrev
+                    | Message::CopySelection
+                    | Message::CopyAnnotations
+                    | Message::Annotate(_)
+                    | Message::AnnotUndo
+                    | Message::AnnotRedo
+                    | Message::DeleteSelectedAnnot
+                    | Message::NoteSave
+                    | Message::OutlineKey(_)
+                    | Message::OpenPalette
+                    | Message::OpenPrintDialog
+                    | Message::SaveCopyRequested
+                    | Message::HistoryBack
+                    | Message::HistoryForward
+                    | Message::SetViewMode(_)
+            )
+        {
+            return Task::none();
+        }
         match message {
             Message::PickFile => match OpenSource::from_dialog() {
                 None => Task::none(),
@@ -2112,6 +2195,9 @@ impl Session {
                 if !is_pdf(&path) {
                     Task::none()
                 } else {
+                    if let Session::Ready(tabs) = self {
+                        tabs.settings_open = false;
+                    }
                     self.begin_open(OpenSource::Dropped(path))
                 }
             }
@@ -2737,9 +2823,89 @@ impl Session {
             Message::ToggleAbout => {
                 if let Session::Ready(ready) = self {
                     ready.about_open = !ready.about_open;
-                    // Sobre abre por cima: o ⋯ fecha junto.
+                    // Sobre abre por cima: o ⋯ e o Configurações fecham junto.
                     if ready.about_open {
                         ready.overflow_open = false;
+                        ready.settings_open = false;
+                    }
+                }
+                Task::none()
+            }
+            Message::ToggleSettings => {
+                let mut tasks = Vec::new();
+                if let Session::Ready(ready) = self {
+                    ready.settings_open = !ready.settings_open;
+                    if ready.settings_open {
+                        ready.about_open = false;
+                        ready.overflow_open = false;
+                        // Uma checagem por sessão; offline falha silencioso.
+                        if ready.update == UpdateState::Idle {
+                            ready.update = UpdateState::Checking;
+                            tasks.push(Task::perform(fetch_latest_tag(), Message::UpdateChecked));
+                        }
+                        #[cfg(target_os = "macos")]
+                        if ready.permissions != PermissionsState::Checking {
+                            ready.permissions = PermissionsState::Checking;
+                            tasks.push(Task::perform(
+                                async {
+                                    tokio::task::spawn_blocking(|| {
+                                        crate::browse::downloads_dir()
+                                            .ok_or(std::io::ErrorKind::NotFound)
+                                            .and_then(|path| crate::browse::dir_access(&path))
+                                    })
+                                    .await
+                                    .unwrap_or(Err(std::io::ErrorKind::Other))
+                                },
+                                Message::PermissionsChecked,
+                            ));
+                        }
+                    }
+                }
+                Task::batch(tasks)
+            }
+            #[cfg(target_os = "macos")]
+            Message::PermissionsChecked(result) => {
+                if let Session::Ready(tabs) = self {
+                    tabs.permissions = match result {
+                        Ok(()) => PermissionsState::Accessible,
+                        Err(std::io::ErrorKind::PermissionDenied) => PermissionsState::Denied,
+                        Err(_) => PermissionsState::Unavailable,
+                    };
+                }
+                Task::none()
+            }
+            Message::OpenPrivacySettings => {
+                #[cfg(target_os = "macos")]
+                open_privacy_settings();
+                Task::none()
+            }
+            Message::UpdateChecked(result) => {
+                if let Session::Ready(ready) = self {
+                    let current = env!("CARGO_PKG_VERSION");
+                    ready.update = match result {
+                        Ok(tag) if release_version(&tag).is_none() => UpdateState::Failed,
+                        Ok(tag) if update_available(current, &tag) => UpdateState::Available(tag),
+                        Ok(_) => UpdateState::Current,
+                        Err(_) => UpdateState::Failed,
+                    };
+                }
+                Task::none()
+            }
+            Message::SetDefaultReader => {
+                #[cfg(target_os = "windows")]
+                {
+                    self.close_overflow();
+                    open_default_apps_settings();
+                }
+                // Windows bloqueia troca silenciosa de padrão (UserChoice com
+                // hash); macOS não expõe sem bridge objc. Nos dois casos o
+                // caminho honesto é a tela do SO — no macOS via o Sobre.
+                #[cfg(not(target_os = "windows"))]
+                {
+                    if let Session::Ready(ready) = self {
+                        ready.about_open = true;
+                        ready.overflow_open = false;
+                        ready.settings_open = false;
                     }
                 }
                 Task::none()
@@ -2855,6 +3021,12 @@ impl Session {
                 Task::none()
             }
             Message::ClosePrintDialog => {
+                if let Session::Ready(tabs) = self {
+                    if tabs.settings_open && !tabs.close_prompt() {
+                        tabs.settings_open = false;
+                        return Task::none();
+                    }
+                }
                 if let Session::Ready(ready) = self {
                     // Paleta desfaz sozinha; o segundo Esc segue o cascade.
                     if ready.palette_open() {
@@ -2876,6 +3048,7 @@ impl Session {
                     ready.save_warning = false;
                     ready.overflow_open = false;
                     ready.about_open = false;
+                    ready.settings_open = false;
                     // Enviando: ignora (Esc) para não perder o resultado na volta.
                     if ready
                         .print_dialog
@@ -3642,7 +3815,7 @@ impl Session {
     /// origem — a resposta assíncrona voltaria para uma aba que saiu da tela.
     fn modal_open(&self) -> bool {
         self.blocks_close()
-            || matches!(self, Session::Ready(tabs) if tabs.note_draft.is_some() || tabs.close_prompt())
+            || matches!(self, Session::Ready(tabs) if tabs.settings_open || tabs.note_draft.is_some() || tabs.close_prompt())
     }
 
     /// `nav_follow` do documento ativo (sem aba aberta é `Task::none`).
@@ -4180,6 +4353,81 @@ pub(crate) fn keyboard_message(
 /// toolbar (H/U/S/N, F3, Ctrl+F, +/-, setas de página). Cobertura travada em
 /// `every_keyboard_shortcut_has_a_menu_hint_or_exemption` — atalho novo no
 /// `keyboard_message` sem rótulo aqui (ou isenção) quebra o teste.
+/// Abre o painel de apps padrão do Windows (Configurações). Fire-and-forget:
+/// falhar aqui não pode quebrar a sessão; o usuário segue no app.
+#[cfg(target_os = "windows")]
+fn open_default_apps_settings() {
+    let _ = std::process::Command::new("cmd")
+        .args(["/C", "start", "ms-settings:defaultapps"])
+        .spawn();
+}
+
+/// Abre os Ajustes do macOS na tela Arquivos e Pastas (o prompt do TCC não
+/// reaparece por código após negação; a chave manual é o reparo).
+#[cfg(target_os = "macos")]
+fn open_privacy_settings() {
+    let _ = std::process::Command::new("open")
+        .arg("x-apple.systempreferences:com.apple.preference.security?Privacy_FilesAndFolders")
+        .spawn();
+}
+
+/// Tag da latest release no GitHub, via curl do sistema (sem dep nova).
+/// Falha offline/via proxy: o chamador trata como silencioso.
+fn fetch_latest_tag() -> impl std::future::Future<Output = Result<String, String>> + Send {
+    async move {
+        let out = tokio::task::spawn_blocking(|| {
+            std::process::Command::new("curl")
+                .args([
+                    "-fsSL",
+                    "--max-time",
+                    "15",
+                    "https://api.github.com/repos/claudiumio/tsuro-pdf/releases/latest",
+                ])
+                .output()
+                .map_err(|e| e.to_string())
+        })
+        .await
+        .map_err(|e| e.to_string())??;
+        if !out.status.success() {
+            return Err(format!("http {}", out.status));
+        }
+        let body = String::from_utf8(out.stdout).map_err(|e| e.to_string())?;
+        parse_latest_tag(&body).ok_or_else(|| "sem tag_name".to_string())
+    }
+}
+
+/// Extrai `"tag_name": "vX.Y.Z"` do JSON sem serde (só este campo interessa).
+fn parse_latest_tag(body: &str) -> Option<String> {
+    let rest = body.split_once("\"tag_name\"")?.1;
+    let rest = rest.split_once(':')?.1.trim_start();
+    let rest = rest.strip_prefix('"')?;
+    Some(rest.split_once('"')?.0.to_string())
+}
+
+fn release_version(version: &str) -> Option<[u64; 3]> {
+    let mut parts = version.strip_prefix('v').unwrap_or(version).split('.');
+    let mut numbers = [0; 3];
+    for number in &mut numbers {
+        let part = parts.next()?;
+        if part.is_empty()
+            || !part.bytes().all(|byte| byte.is_ascii_digit())
+            || (part.len() > 1 && part.starts_with('0'))
+        {
+            return None;
+        }
+        *number = part.parse().ok()?;
+    }
+    parts.next().is_none().then_some(numbers)
+}
+
+/// Unsupported versions never advertise an update.
+fn update_available(current: &str, latest: &str) -> bool {
+    match (release_version(current), release_version(latest)) {
+        (Some(current), Some(latest)) => latest > current,
+        _ => false,
+    }
+}
+
 pub(crate) fn shortcut_hint(msg: &Message) -> Option<&'static str> {
     match msg {
         Message::PickFile => Some(if cfg!(target_os = "macos") {
@@ -5532,6 +5780,7 @@ impl Document {
             overflow_open: false,
             recents_expanded: false,
             about_open: false,
+            settings_open: false,
             print_dialog: None,
             print_status: None,
             save_status: None,
@@ -6978,6 +7227,411 @@ mod tests {
             Session::Ready(r) => assert!(!r.about_open),
             _ => unreachable!(),
         }
+    }
+
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn set_default_reader_opens_about_on_macos() {
+        let Some(ready) = sample_ready() else {
+            return;
+        };
+        let mut session = Session::Ready(Tabs::single(ready));
+        apply(&mut session, Message::ToggleOverflow);
+        apply(&mut session, Message::SetDefaultReader);
+        match &session {
+            Session::Ready(r) => {
+                assert!(r.about_open);
+                assert!(!r.overflow_open, "Sobre fecha o ⋯");
+            }
+            _ => unreachable!(),
+        }
+    }
+
+    #[test]
+    fn toggle_settings_opens_closes_and_starts_checking() {
+        let ready = sample_ready().expect("settings regression requires fixture and Pdfium");
+        let mut session = Session::Ready(Tabs::single(ready));
+        apply(&mut session, Message::ToggleOverflow);
+        apply(&mut session, Message::ToggleSettings);
+        match &session {
+            Session::Ready(r) => {
+                assert!(r.settings_open);
+                assert!(!r.overflow_open, "Configurações fecha o ⋯");
+                assert!(!r.about_open);
+                assert_eq!(r.update, UpdateState::Checking);
+            }
+            _ => unreachable!(),
+        }
+        // Segunda abertura não re-checa: Esc fecha, reabrir mantém o estado.
+        apply(&mut session, Message::ClosePrintDialog);
+        let current = format!("v{}", env!("CARGO_PKG_VERSION"));
+        apply(&mut session, Message::UpdateChecked(Ok(current)));
+        apply(&mut session, Message::ToggleSettings);
+        match &session {
+            Session::Ready(r) => {
+                assert!(r.settings_open);
+                assert_eq!(r.update, UpdateState::Current);
+            }
+            _ => unreachable!(),
+        }
+    }
+
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn settings_permissions_check_refreshes_without_restarting_update() {
+        let ready = sample_ready().expect("settings regression requires fixture and Pdfium");
+        let mut session = Session::Ready(Tabs::single(ready));
+        apply(&mut session, Message::ToggleSettings);
+        let Session::Ready(tabs) = &session else {
+            panic!("expected ready tabs");
+        };
+        assert_eq!(tabs.permissions, PermissionsState::Checking);
+        assert_eq!(tabs.update, UpdateState::Checking);
+        apply(&mut session, Message::PermissionsChecked(Ok(())));
+        apply(&mut session, Message::UpdateChecked(Ok("v0.4.0".into())));
+        apply(&mut session, Message::ClosePrintDialog);
+        let Session::Ready(tabs) = &session else {
+            panic!("expected ready tabs");
+        };
+        assert_eq!(tabs.permissions, PermissionsState::Accessible);
+        apply(&mut session, Message::ToggleSettings);
+        let Session::Ready(tabs) = &session else {
+            panic!("expected ready tabs");
+        };
+        assert_eq!(tabs.permissions, PermissionsState::Checking);
+        assert_eq!(tabs.update, UpdateState::Current);
+        apply(&mut session, Message::ClosePrintDialog);
+        apply(&mut session, Message::ToggleSettings);
+        let Session::Ready(tabs) = &session else {
+            panic!("expected ready tabs");
+        };
+        assert_eq!(tabs.permissions, PermissionsState::Checking);
+        assert_eq!(tabs.update, UpdateState::Current);
+    }
+
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn settings_permissions_only_denied_means_blocked_and_results_are_shared() {
+        let first = sample_ready().expect("settings regression requires fixture and Pdfium");
+        let second = sample_ready().expect("second fixture must load");
+        let mut tabs = Tabs::single(first);
+        tabs.push(second);
+        let mut session = Session::Ready(tabs);
+        apply(&mut session, Message::ToggleSettings);
+        apply(&mut session, Message::RotateView);
+        assert_eq!(active_ready(&session).view_rotation, 0);
+        for (result, expected) in [
+            (Ok(()), PermissionsState::Accessible),
+            (
+                Err(std::io::ErrorKind::PermissionDenied),
+                PermissionsState::Denied,
+            ),
+            (
+                Err(std::io::ErrorKind::NotFound),
+                PermissionsState::Unavailable,
+            ),
+            (
+                Err(std::io::ErrorKind::Other),
+                PermissionsState::Unavailable,
+            ),
+        ] {
+            apply(&mut session, Message::PermissionsChecked(result));
+            let Session::Ready(tabs) = &session else {
+                panic!("expected ready tabs");
+            };
+            assert_eq!(tabs.permissions, expected);
+        }
+        apply(&mut session, Message::ClosePrintDialog);
+        apply(&mut session, Message::SelectTab(0));
+        let Session::Ready(tabs) = &session else {
+            panic!("expected ready tabs");
+        };
+        assert_eq!(tabs.active_index(), 0);
+        assert_eq!(tabs.permissions, PermissionsState::Unavailable);
+        session = Session::empty();
+        apply(&mut session, Message::PermissionsChecked(Ok(())));
+        assert!(matches!(session, Session::Empty(_)));
+    }
+
+    #[test]
+    fn update_checked_marks_available_current_and_failed() {
+        let ready = sample_ready().expect("update regression requires fixture and Pdfium");
+        let mut session = Session::Ready(Tabs::single(ready));
+        apply(&mut session, Message::UpdateChecked(Ok("v99.99.99".into())));
+        assert_eq!(
+            match &session {
+                Session::Ready(tabs) => &tabs.update,
+                _ => unreachable!(),
+            },
+            &UpdateState::Available("v99.99.99".into())
+        );
+        apply(&mut session, Message::UpdateChecked(Err("offline".into())));
+        if let Session::Ready(tabs) = &session {
+            assert_eq!(tabs.update, UpdateState::Failed);
+        } else {
+            panic!("expected ready tabs");
+        }
+    }
+
+    #[test]
+    fn parse_latest_tag_reads_github_release() {
+        let body = r#"{"url":"x","tag_name":"v0.4.0","name":"TsuroPDF v0.4.0"}"#;
+        assert_eq!(parse_latest_tag(body).as_deref(), Some("v0.4.0"));
+        assert_eq!(parse_latest_tag("{}"), None);
+        assert!(!update_available("0.4.0", "v0.4.0"));
+        assert!(update_available("0.4.0", "v0.5.0"));
+    }
+
+    #[test]
+    fn settings_update_is_shared_after_switching_and_adding_tabs() {
+        let first = sample_ready().expect("update regression requires fixture and Pdfium");
+        let second = sample_ready().expect("second fixture must load");
+        let third = sample_ready().expect("third fixture must load");
+        let mut tabs = Tabs::single(first);
+        tabs.push(second);
+        let mut session = Session::Ready(tabs);
+        apply(&mut session, Message::SelectTab(0));
+        apply(&mut session, Message::ToggleSettings);
+        apply(&mut session, Message::ClosePrintDialog);
+        apply(&mut session, Message::CycleTab(1));
+        let Session::Ready(tabs) = &session else {
+            panic!("expected ready tabs");
+        };
+        assert_eq!(tabs.active_index(), 1);
+        assert_eq!(tabs.update, UpdateState::Checking);
+        apply(&mut session, Message::ToggleSettings);
+        apply(&mut session, Message::UpdateChecked(Ok("v99.99.99".into())));
+        apply(&mut session, Message::ClosePrintDialog);
+        apply(&mut session, Message::SelectTab(0));
+        apply(&mut session, Message::ToggleSettings);
+        let Session::Ready(tabs) = &mut session else {
+            panic!("expected ready tabs");
+        };
+        assert_eq!(tabs.active_index(), 0);
+        assert!(tabs.settings_open);
+        assert_eq!(tabs.update, UpdateState::Available("v99.99.99".into()));
+        tabs.settings_open = false;
+        tabs.push(third);
+        apply(&mut session, Message::ToggleSettings);
+        let Session::Ready(tabs) = &session else {
+            panic!("expected ready tabs");
+        };
+        assert_eq!(tabs.active_index(), 2);
+        assert_eq!(tabs.update, UpdateState::Available("v99.99.99".into()));
+    }
+
+    #[test]
+    fn settings_update_survives_requester_close_and_ignores_no_tabs() {
+        isolated(|| {
+            let first = sample_ready().expect("update regression requires fixture and Pdfium");
+            let second = sample_ready().expect("second fixture must load");
+            let mut tabs = Tabs::single(first);
+            tabs.push(second);
+            let mut session = Session::Ready(tabs);
+            apply(&mut session, Message::SelectTab(0));
+            apply(&mut session, Message::ToggleSettings);
+            apply(&mut session, Message::ClosePrintDialog);
+            apply(&mut session, Message::CloseTab(0));
+            let Session::Ready(tabs) = &session else {
+                panic!("expected remaining tab");
+            };
+            assert_eq!(tabs.update, UpdateState::Checking);
+            apply(&mut session, Message::UpdateChecked(Ok("v0.4.0".into())));
+            let Session::Ready(tabs) = &session else {
+                panic!("expected remaining tab");
+            };
+            assert_eq!(tabs.len(), 1);
+            assert_eq!(tabs.update, UpdateState::Current);
+            apply(&mut session, Message::Close);
+            assert!(matches!(session, Session::Empty(_)));
+            apply(&mut session, Message::UpdateChecked(Ok("v99.99.99".into())));
+            assert!(matches!(session, Session::Empty(_)));
+            let ready = sample_ready().expect("reopened fixture must load");
+            session = Session::Ready(Tabs::single(ready));
+            let Session::Ready(tabs) = &session else {
+                panic!("expected reopened tab");
+            };
+            assert_eq!(tabs.update, UpdateState::Idle);
+        });
+    }
+
+    #[test]
+    fn settings_release_versions_require_strict_newer_numeric_triples() {
+        for (current, latest, expected) in [
+            ("0.4.0", "v0.3.0", false),
+            ("0.4.0", "v0.4.0", false),
+            ("0.4.0", "v0.4.1", true),
+            ("0.4.0", "0.5.0", true),
+            ("0.9.0", "v0.10.0", true),
+            ("0.10.0", "v0.9.99", false),
+            ("1.0.0", "v0.99.99", false),
+            ("0.99.99", "v1.0.0", true),
+            ("0.4.0", "", false),
+            ("0.4.0", "vv1.0.0", false),
+            ("0.4.0", "v1.0", false),
+            ("0.4.0", "v1.0.0.0", false),
+            ("0.4.0", "v01.0.0", false),
+            ("0.4.0", "v1..0", false),
+            ("0.4.0", "v+1.0.0", false),
+            ("0.4.0", " v1.0.0", false),
+            ("0.4.0", "v1.0.0\n", false),
+            ("0.4.0", "v1.0.0-rc.1", false),
+            ("0.4.0", "v1.0.0+build", false),
+            ("0.4.0", "v18446744073709551616.0.0", false),
+            ("bad", "v1.0.0", false),
+            ("0.4.0-dev", "v1.0.0", false),
+        ] {
+            assert_eq!(
+                update_available(current, latest),
+                expected,
+                "{current} vs {latest}"
+            );
+        }
+    }
+
+    #[test]
+    fn settings_update_result_rejects_older_and_unsupported_releases() {
+        let ready = sample_ready().expect("update regression requires fixture and Pdfium");
+        let mut session = Session::Ready(Tabs::single(ready));
+        for (tag, expected) in [
+            ("v0.3.0", UpdateState::Current),
+            ("v0.4.0", UpdateState::Current),
+            ("v0.4.1", UpdateState::Available("v0.4.1".into())),
+            ("v1.0.0-rc.1", UpdateState::Failed),
+            ("garbage", UpdateState::Failed),
+            ("", UpdateState::Failed),
+        ] {
+            apply(&mut session, Message::UpdateChecked(Ok(tag.into())));
+            let Session::Ready(tabs) = &session else {
+                panic!("expected ready tabs");
+            };
+            assert_eq!(tabs.update, expected, "release {tag}");
+        }
+    }
+
+    #[test]
+    fn settings_modal_blocks_keyboard_document_commands_and_tab_clicks() {
+        let first = sample_ready().expect("settings regression requires fixture and Pdfium");
+        let second = sample_ready().expect("second fixture must load");
+        let mut tabs = Tabs::single(first);
+        tabs.push(second);
+        tabs.select(0);
+        tabs.settings_open = true;
+        tabs.selection = Some(Selection {
+            page: PageNo::first(),
+            range: TextRange { start: 0, end: 1 },
+        });
+        let mut session = Session::Ready(tabs);
+        #[cfg(target_os = "macos")]
+        let cmd = keyboard::Modifiers::LOGO;
+        #[cfg(not(target_os = "macos"))]
+        let cmd = keyboard::Modifiers::CTRL;
+        for (key, modifiers) in [
+            (Key::Character("r".into()), keyboard::Modifiers::empty()),
+            (Key::Named(Named::Tab), keyboard::Modifiers::CTRL),
+            (Key::Named(Named::End), keyboard::Modifiers::empty()),
+            (Key::Character("+".into()), keyboard::Modifiers::empty()),
+            (Key::Character("h".into()), keyboard::Modifiers::empty()),
+            (Key::Character("f".into()), cmd),
+            (Key::Character("p".into()), cmd),
+            (Key::Character("s".into()), cmd),
+            (Key::Character("o".into()), cmd),
+            (Key::Character("k".into()), cmd),
+            (Key::Character("w".into()), cmd),
+        ] {
+            let message = keyboard_message(key, modifiers, event::Status::Ignored)
+                .expect("shortcut must map to a real document command");
+            apply(&mut session, message);
+        }
+        apply(&mut session, Message::SelectTab(1));
+        apply(&mut session, Message::CloseTab(0));
+        let Session::Ready(tabs) = &session else {
+            panic!("settings must not close the document");
+        };
+        assert_eq!(tabs.active_index(), 0);
+        assert_eq!(tabs.len(), 2);
+        assert_eq!(tabs.view_rotation, 0);
+        assert_eq!(tabs.visible, PageNo::first());
+        assert!(matches!(tabs.zoom, Zoom::Width));
+        assert_eq!(tabs.annotations.len(), 0);
+        assert!(tabs.print_dialog.is_none());
+        assert!(!tabs.palette_open());
+        assert!(tabs.settings_open);
+        let escape = keyboard_message(
+            Key::Named(Named::Escape),
+            keyboard::Modifiers::empty(),
+            event::Status::Ignored,
+        )
+        .expect("escape must close settings");
+        apply(&mut session, escape);
+        assert!(!active_ready(&session).settings_open);
+        assert_eq!(
+            active_ready(&session).selection,
+            Some(Selection {
+                page: PageNo::first(),
+                range: TextRange { start: 0, end: 1 },
+            })
+        );
+        apply(&mut session, Message::RotateView);
+        assert_eq!(active_ready(&session).view_rotation, 1);
+    }
+
+    #[test]
+    fn settings_modal_preserves_theme_and_default_reader_actions() {
+        let prefs =
+            std::env::temp_dir().join(format!("tsuro-settings-modal-prefs-{}", std::process::id()));
+        crate::prefs::with_prefs_path(prefs.clone(), || {
+            let ready = sample_ready().expect("settings regression requires fixture and Pdfium");
+            let mut session = Session::Ready(Tabs::single(ready));
+            apply(&mut session, Message::ToggleSettings);
+            apply(&mut session, Message::SetTheme(Theme::Light));
+            assert_eq!(active_ready(&session).theme, Theme::Light);
+            assert!(active_ready(&session).settings_open);
+            apply(&mut session, Message::RotateView);
+            assert_eq!(active_ready(&session).view_rotation, 0);
+            apply(&mut session, Message::UpdateChecked(Ok("v0.4.0".into())));
+            let Session::Ready(tabs) = &session else {
+                panic!("expected ready tabs");
+            };
+            assert_eq!(tabs.update, UpdateState::Current);
+            #[cfg(not(target_os = "windows"))]
+            {
+                apply(&mut session, Message::SetDefaultReader);
+                assert!(active_ready(&session).about_open);
+                assert!(!active_ready(&session).settings_open);
+            }
+        });
+        let _ = std::fs::remove_file(prefs);
+    }
+
+    #[test]
+    fn settings_modal_accepts_external_pdf_delivery() {
+        isolated(|| {
+            let first = sample_ready().expect("settings regression requires fixture and Pdfium");
+            let second = sample_ready().expect("external fixture must load");
+            let path = second.source.path().to_path_buf();
+            let mut session = Session::Ready(Tabs::single(first));
+            apply(&mut session, Message::ToggleSettings);
+            apply(&mut session, Message::FileDropped(path.clone()));
+            let Session::Ready(tabs) = &session else {
+                panic!("external delivery must retain existing tabs");
+            };
+            assert!(!tabs.settings_open);
+            assert_eq!(
+                tabs.pending.as_ref().map(|(_, source)| source.path()),
+                Some(path.as_path())
+            );
+            assert_eq!(tabs.update, UpdateState::Checking);
+            session.finish_open(Ok(second));
+            apply(&mut session, Message::UpdateChecked(Ok("v0.4.0".into())));
+            let Session::Ready(tabs) = &session else {
+                panic!("external delivery must open a new tab");
+            };
+            assert_eq!(tabs.len(), 2);
+            assert_eq!(tabs.active_index(), 1);
+            assert_eq!(tabs.update, UpdateState::Current);
+            assert!(!tabs.docs()[0].settings_open);
+        });
     }
 
     /// Anotação fake direta (a função pura não precisa de fixture).
