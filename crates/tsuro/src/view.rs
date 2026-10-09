@@ -1457,7 +1457,7 @@ fn about_card(t: Tokens) -> Element<'static, Message> {
 
 /// Configurações (Ajuda → Configurações): tema, leitor padrão, permissões,
 /// idioma e versão — mesmo padrão do Sobre (fundo fecha, cartão engole).
-fn settings_layer(ready: &Ready, t: Tokens) -> Element<'static, Message> {
+fn settings_layer(ready: &Tabs, t: Tokens) -> Element<'static, Message> {
     let dim = container(Space::with_width(Length::Fill))
         .width(Length::Fill)
         .height(Length::Fill)
@@ -1474,7 +1474,7 @@ fn settings_layer(ready: &Ready, t: Tokens) -> Element<'static, Message> {
 }
 
 #[allow(clippy::too_many_lines)]
-fn settings_card(ready: &Ready, t: Tokens) -> Element<'static, Message> {
+fn settings_card(ready: &Tabs, t: Tokens) -> Element<'static, Message> {
     let dark = ready.theme.is_dark();
     let mut body = column![
         text("Configurações").size(16).color(t.ink),
@@ -1511,7 +1511,7 @@ fn settings_card(ready: &Ready, t: Tokens) -> Element<'static, Message> {
                 .color(if granted { t.ink } else { t.danger }),
             )
             .push(if granted {
-                Element::from(menu_disabled(t, "Sem pastas pendentes."))
+                Element::from(menu_disabled(t, "Downloads acessível."))
             } else {
                 Element::from(menu_item(
                     t,

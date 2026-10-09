@@ -1005,6 +1005,7 @@ pub enum Session {
 pub struct Tabs {
     docs: Vec<Ready>,
     active: usize,
+    pub update: UpdateState,
     /// Geração + origem do documento carregando para uma aba nova (⌘T ou
     /// abrir com uma aba já aberta). `None` = nada pendente.
     pending: Option<(u64, OpenSource)>,
@@ -1047,6 +1048,7 @@ impl Tabs {
         Self {
             docs: vec![ready],
             active: 0,
+            update: UpdateState::Idle,
             pending: None,
             open_error: None,
             close_ask: None,
@@ -1353,8 +1355,6 @@ pub struct Ready {
     /// Diálogo Configurações aberto (⋯ → Ajuda). Fecha no fundo, no botão e
     /// no Esc; abre por cima do Sobre.
     pub settings_open: bool,
-    /// Checagem de atualização: uma por sessão, silenciosa quando offline.
-    pub update: UpdateState,
     /// Diálogo de impressão aberto (`None` = fechado). Só existe em `Ready`.
     pub print_dialog: Option<PrintDialog>,
     /// Linha de status pós-envio ("Enviado para …"); limpa ao reabrir o diálogo.
@@ -2130,6 +2130,46 @@ impl Session {
     }
 
     pub fn update(&mut self, message: Message) -> Task<Message> {
+        if matches!(self, Session::Ready(tabs) if tabs.settings_open)
+            && matches!(
+                &message,
+                Message::PickFile
+                    | Message::OpenRecent(_)
+                    | Message::Close
+                    | Message::CloseTabActive
+                    | Message::CloseTab(_)
+                    | Message::SelectTab(_)
+                    | Message::CycleTab(_)
+                    | Message::Nav(_)
+                    | Message::PageInput(_)
+                    | Message::PageSubmit
+                    | Message::SetZoom(_)
+                    | Message::ZoomIn
+                    | Message::ZoomOut
+                    | Message::FocusSearch
+                    | Message::RotateView
+                    | Message::SearchChanged(_)
+                    | Message::SearchSubmit
+                    | Message::SearchNext
+                    | Message::SearchPrev
+                    | Message::CopySelection
+                    | Message::CopyAnnotations
+                    | Message::Annotate(_)
+                    | Message::AnnotUndo
+                    | Message::AnnotRedo
+                    | Message::DeleteSelectedAnnot
+                    | Message::NoteSave
+                    | Message::OutlineKey(_)
+                    | Message::OpenPalette
+                    | Message::OpenPrintDialog
+                    | Message::SaveCopyRequested
+                    | Message::HistoryBack
+                    | Message::HistoryForward
+                    | Message::SetViewMode(_)
+            )
+        {
+            return Task::none();
+        }
         match message {
             Message::PickFile => match OpenSource::from_dialog() {
                 None => Task::none(),
@@ -2142,6 +2182,9 @@ impl Session {
                 if !is_pdf(&path) {
                     Task::none()
                 } else {
+                    if let Session::Ready(tabs) = self {
+                        tabs.settings_open = false;
+                    }
                     self.begin_open(OpenSource::Dropped(path))
                 }
             }
@@ -2799,6 +2842,7 @@ impl Session {
                 if let Session::Ready(ready) = self {
                     let current = env!("CARGO_PKG_VERSION");
                     ready.update = match result {
+                        Ok(tag) if release_version(&tag).is_none() => UpdateState::Failed,
                         Ok(tag) if update_available(current, &tag) => UpdateState::Available(tag),
                         Ok(_) => UpdateState::Current,
                         Err(_) => UpdateState::Failed,
@@ -2936,6 +2980,12 @@ impl Session {
                 Task::none()
             }
             Message::ClosePrintDialog => {
+                if let Session::Ready(tabs) = self {
+                    if tabs.settings_open && !tabs.close_prompt() {
+                        tabs.settings_open = false;
+                        return Task::none();
+                    }
+                }
                 if let Session::Ready(ready) = self {
                     // Paleta desfaz sozinha; o segundo Esc segue o cascade.
                     if ready.palette_open() {
@@ -3724,7 +3774,7 @@ impl Session {
     /// origem — a resposta assíncrona voltaria para uma aba que saiu da tela.
     fn modal_open(&self) -> bool {
         self.blocks_close()
-            || matches!(self, Session::Ready(tabs) if tabs.note_draft.is_some() || tabs.close_prompt())
+            || matches!(self, Session::Ready(tabs) if tabs.settings_open || tabs.note_draft.is_some() || tabs.close_prompt())
     }
 
     /// `nav_follow` do documento ativo (sem aba aberta é `Task::none`).
@@ -4322,9 +4372,28 @@ fn parse_latest_tag(body: &str) -> Option<String> {
     Some(rest.split_once('"')?.0.to_string())
 }
 
-/// `true` quando a tag latest difere da versão embutida (`v` inicial ignora).
+fn release_version(version: &str) -> Option<[u64; 3]> {
+    let mut parts = version.strip_prefix('v').unwrap_or(version).split('.');
+    let mut numbers = [0; 3];
+    for number in &mut numbers {
+        let part = parts.next()?;
+        if part.is_empty()
+            || !part.bytes().all(|byte| byte.is_ascii_digit())
+            || (part.len() > 1 && part.starts_with('0'))
+        {
+            return None;
+        }
+        *number = part.parse().ok()?;
+    }
+    parts.next().is_none().then_some(numbers)
+}
+
+/// Unsupported versions never advertise an update.
 fn update_available(current: &str, latest: &str) -> bool {
-    latest.trim_start_matches('v').trim() != current.trim()
+    match (release_version(current), release_version(latest)) {
+        (Some(current), Some(latest)) => latest > current,
+        _ => false,
+    }
 }
 
 pub(crate) fn shortcut_hint(msg: &Message) -> Option<&'static str> {
@@ -5680,7 +5749,6 @@ impl Document {
             recents_expanded: false,
             about_open: false,
             settings_open: false,
-            update: UpdateState::Idle,
             print_dialog: None,
             print_status: None,
             save_status: None,
