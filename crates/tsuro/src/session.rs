@@ -3876,6 +3876,10 @@ impl Session {
         }
     }
 
+    pub fn is_opening(&self) -> bool {
+        self.loading_gen().is_some()
+    }
+
     /// Geração do documento que está carregando: a primeira aba (`Loading`) ou
     /// a aba nova pendente de uma janela já aberta (issue #40).
     fn loading_gen(&self) -> Option<u64> {
