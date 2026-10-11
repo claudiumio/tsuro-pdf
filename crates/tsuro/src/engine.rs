@@ -65,6 +65,13 @@ enum Request {
         page: PageNo,
         reply: mpsc::Sender<Result<(MediaBox, TextLayer), EngineError>>,
     },
+    /// Caixa de uma página, sem carregar a página nem o texto: o render e a
+    /// impressão só precisam do tamanho.
+    MediaBox {
+        doc_id: u64,
+        page: PageNo,
+        reply: mpsc::Sender<Result<MediaBox, EngineError>>,
+    },
     /// Caixas de todas as páginas, sem camada de texto. O contínuo mede a
     /// coluna com isto; `PageData` continua preguiçoso.
     MediaBoxes {
@@ -188,6 +195,15 @@ fn serve(incoming: mpsc::Receiver<Request>) {
             } => {
                 let _ = reply.send(with_doc(&documents, doc_id, |doc| {
                     page_data_from_doc(doc, page)
+                }));
+            }
+            Request::MediaBox {
+                doc_id,
+                page,
+                reply,
+            } => {
+                let _ = reply.send(with_doc(&documents, doc_id, |doc| {
+                    media_box_from_doc(doc, page)
                 }));
             }
             Request::MediaBoxes { doc_id, reply } => {
@@ -369,8 +385,14 @@ impl PageEngine for PdfiumEngine {
         self.page_count
     }
 
+    /// Só o tamanho (`FPDF_GetPageSizeByIndexF`): antes passava por
+    /// `page_data` e extraía o texto inteiro da página à toa.
     fn media(&self, page: PageNo) -> Result<MediaBox, EngineError> {
-        self.page_data(page).map(|(media, _)| media)
+        self.call(|reply| Request::MediaBox {
+            doc_id: self.doc_id,
+            page,
+            reply,
+        })
     }
 
     fn render(&self, page: PageNo, scale: Scale, rotation: u8) -> Result<PageSurface, EngineError> {
@@ -405,19 +427,21 @@ fn page_data_from_doc(
 /// página (`pages().get`) custava ~140 ms em 400 páginas com a worker presa.
 /// Mesmo tamanho de `media_of` (inclui o `/Rotate` do arquivo).
 fn media_boxes_from_doc(document: &PdfDocument<'_>) -> Result<Vec<MediaBox>, EngineError> {
-    let pages = document.pages();
-    let total = u32::from(pages.len());
-    let mut boxes = Vec::with_capacity(total as usize);
-    for index in 0..total {
-        let size = pages
-            .page_size(page_index(PageNo::from_index(index))?)
-            .map_err(|e| EngineError(e.to_string()))?;
-        boxes.push(MediaBox {
-            width: size.width().value,
-            height: size.height().value,
-        });
-    }
-    Ok(boxes)
+    let total = u32::from(document.pages().len());
+    (0..total)
+        .map(|index| media_box_from_doc(document, PageNo::from_index(index)))
+        .collect()
+}
+
+fn media_box_from_doc(document: &PdfDocument<'_>, page: PageNo) -> Result<MediaBox, EngineError> {
+    let size = document
+        .pages()
+        .page_size(page_index(page)?)
+        .map_err(|e| EngineError(e.to_string()))?;
+    Ok(MediaBox {
+        width: size.width().value,
+        height: size.height().value,
+    })
 }
 
 fn media_of(page: &PdfPage<'_>) -> MediaBox {
@@ -991,6 +1015,25 @@ mod tests {
         // `/Rotate 90` troca os lados, como `media_of` (página carregada).
         assert!((boxes[1].width - 792.0).abs() < 0.01);
         assert!((boxes[1].height - 612.0).abs() < 0.01);
+    }
+
+    #[test]
+    fn media_reads_the_size_alone() {
+        let pages = [(612.0, 792.0, 0), (300.0, 200.0, 90)];
+        let Ok(engine) = PdfiumEngine::open(synthetic_pdf(&pages)) else {
+            return;
+        };
+        for index in 0..pages.len() as u32 {
+            let page = PageNo::from_index(index);
+            let media = engine.media(page).expect("tamanho");
+            let (loaded, _) = engine.page_data(page).expect("page data");
+            assert!((media.width - loaded.width).abs() < 0.01);
+            assert!((media.height - loaded.height).abs() < 0.01);
+        }
+        assert!(
+            engine.media(PageNo::from_index(9)).is_err(),
+            "fora do intervalo"
+        );
     }
 
     #[test]
