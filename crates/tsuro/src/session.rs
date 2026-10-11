@@ -12867,6 +12867,9 @@ mod tests {
             }
             other => panic!("esperava Ready, veio {other:?}"),
         }
+        // O 1º item é "Abrir PDF…": o diálogo nativo não roda em teste (no
+        // macOS o rfd entra em pânico fora da thread principal).
+        apply(&mut session, Message::PaletteQuery("aumentar".into()));
         apply(&mut session, Message::PaletteConfirm);
         match &session {
             Session::Ready(tabs) => assert!(!tabs.palette_open()),
