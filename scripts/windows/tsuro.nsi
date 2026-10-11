@@ -46,9 +46,33 @@ Section "TsuroPDF" SecApp
   WriteRegStr HKCU "Software\Microsoft\Windows\CurrentVersion\Uninstall\TsuroPDF" "Publisher" "TsuroPDF"
   WriteRegStr HKCU "Software\Microsoft\Windows\CurrentVersion\Uninstall\TsuroPDF" "InstallLocation" "$INSTDIR"
   WriteRegStr HKCU "Software\Microsoft\Windows\CurrentVersion\Uninstall\TsuroPDF" "UninstallString" "$INSTDIR\Uninstall.exe"
+  ; Associação .pdf (CurrentUser, sem admin): registra a capacidade + Open With.
+  ; O padrão efetivo o usuário escolhe em Abrir com / Configurações (hash do
+  ; UserChoice impede troca silenciosa; o app abre essa tela pelo menu Ajuda).
+  WriteRegStr HKCU "Software\Classes\TsuroPDF.pdf" "" "Documento PDF"
+  WriteRegStr HKCU "Software\Classes\TsuroPDF.pdf\DefaultIcon" "" "$INSTDIR\TsuroPDF.ico"
+  WriteRegStr HKCU "Software\Classes\TsuroPDF.pdf\shell\open\command" "" '"$INSTDIR\TsuroPDF.exe" "%1"'
+  WriteRegStr HKCU "Software\Classes\.pdf\OpenWithProgids" "TsuroPDF.pdf" ""
+  WriteRegStr HKCU "Software\Classes\Applications\TsuroPDF.exe" "FriendlyAppName" "TsuroPDF"
+  WriteRegStr HKCU "Software\Classes\Applications\TsuroPDF.exe\shell\open\command" "" '"$INSTDIR\TsuroPDF.exe" "%1"'
+  WriteRegStr HKCU "Software\Classes\Applications\TsuroPDF.exe\SupportedTypes" ".pdf" ""
+  ; Capabilities + RegisteredApplications: sem isso o TsuroPDF não aparece em
+  ; Configurações › Apps padrão (ms-settings:defaultapps).
+  WriteRegStr HKCU "Software\TsuroPDF\Capabilities" "ApplicationName" "TsuroPDF"
+  WriteRegStr HKCU "Software\TsuroPDF\Capabilities" "ApplicationDescription" "Leitor de PDF leve e rápido."
+  WriteRegStr HKCU "Software\TsuroPDF\Capabilities\FileAssociations" ".pdf" "TsuroPDF.pdf"
+  WriteRegStr HKCU "Software\RegisteredApplications" "TsuroPDF" "Software\TsuroPDF\Capabilities"
+  ; SHCNE_ASSOCCHANGED: o Explorer relê as associações sem logoff.
+  System::Call 'shell32::SHChangeNotify(i 0x08000000, i 0, p 0, p 0)'
 SectionEnd
 
 Section "Uninstall"
+  DeleteRegKey HKCU "Software\Classes\TsuroPDF.pdf"
+  DeleteRegValue HKCU "Software\Classes\.pdf\OpenWithProgids" "TsuroPDF.pdf"
+  DeleteRegKey HKCU "Software\Classes\Applications\TsuroPDF.exe"
+  DeleteRegValue HKCU "Software\RegisteredApplications" "TsuroPDF"
+  DeleteRegKey HKCU "Software\TsuroPDF"
+  System::Call 'shell32::SHChangeNotify(i 0x08000000, i 0, p 0, p 0)'
   Delete "$INSTDIR\TsuroPDF.exe"
   Delete "$INSTDIR\pdfium.dll"
   Delete "$INSTDIR\TsuroPDF.ico"
