@@ -6,6 +6,7 @@ use std::path::{Path, PathBuf};
 use iced::widget::image;
 
 use crate::kiri::Theme;
+use crate::session::PaletteState;
 
 pub const RECENTS_CAP: usize = 12;
 
@@ -40,6 +41,9 @@ pub struct EmptyState {
     /// Prévias dos cartões de arquivo (recentes e PDFs da pasta), geradas uma
     /// por vez. Ausente = ainda não pedida.
     pub thumbs: HashMap<PathBuf, Thumb>,
+    /// Paleta (Ctrl+K) do Início: abrir, recentes, PDFs da pasta e texto das
+    /// abas abertas — sem as ações do documento, que está escondido.
+    pub(crate) palette: Option<PaletteState>,
 }
 
 /// Prévia do topo da 1ª página de um cartão do Início.
