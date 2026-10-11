@@ -1030,6 +1030,25 @@ mod tests {
         assert!((boxes[1].height - 612.0).abs() < 0.01);
     }
 
+    /// O Pdfium empresta os bytes do `LiveDoc` (sem cópia): a worker tem de
+    /// segurá-los enquanto o documento vive e soltá-los ao fechar.
+    #[test]
+    fn worker_keeps_bytes_while_open_and_drops_them_on_close() {
+        let bytes = synthetic_pdf(&[(100.0, 100.0, 0)]);
+        let weak = Arc::downgrade(&bytes);
+        let Ok(engine) = PdfiumEngine::open(bytes) else {
+            return;
+        };
+        assert!(weak.upgrade().is_some(), "a worker guarda os bytes");
+        engine
+            .render(PageNo::first(), Scale::from_factor(1.0), 0)
+            .expect("render com os bytes só na worker");
+        engine.close();
+        // Canal em ordem: este pedido só volta depois do Close.
+        assert!(engine.media(PageNo::first()).is_err(), "documento fechado");
+        assert!(weak.upgrade().is_none(), "fechar solta os bytes");
+    }
+
     #[test]
     fn media_reads_the_size_alone() {
         let pages = [(612.0, 792.0, 0), (300.0, 200.0, 90)];
