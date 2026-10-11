@@ -75,7 +75,7 @@ const PALETTE_LIST_MAX_H: f32 = 420.0;
 pub fn chrome(session: &Session, theme: Theme) -> Element<'_, Message> {
     let t = Tokens::for_theme(theme);
     let body: Element<'_, Message> = match session {
-        Session::Empty(empty) => empty_browser(empty, t),
+        Session::Empty(empty) => empty_browser(empty, false, t),
         Session::Loading { source, phase, .. } => opening(source, *phase, t),
         Session::Failed {
             source, message, ..
@@ -86,10 +86,14 @@ pub fn chrome(session: &Session, theme: Theme) -> Element<'_, Message> {
     // Toolbar 36px + progresso 2px + respiro 8px = `CHROME_HEIGHT` (46px).
     let mut col = column![topbar(session, t)];
     if let Session::Ready(tabs) = session {
-        col = col.push(progress(tabs, t));
+        // Progresso de leitura é do documento: some com o Início na tela.
+        if tabs.home().is_none() {
+            col = col.push(progress(tabs, t));
+        }
         // Faixa de abas (issue #40): com um documento só a janela é a de
-        // sempre — sem faixa nenhuma.
-        if tabs.len() > 1 {
+        // sempre — sem faixa nenhuma. Com o Início por cima, a faixa é o
+        // caminho de volta (mesmo com uma aba).
+        if tabs.len() > 1 || tabs.home().is_some() {
             col = col.push(tab_strip(tabs, t));
         }
     }
@@ -111,7 +115,7 @@ pub fn chrome(session: &Session, theme: Theme) -> Element<'_, Message> {
     // HUD flutuante (Stitch): pílula bottom-center sobre o canvas, sob os
     // modais — que escurecem por cima e capturam tudo.
     let main = match session {
-        Session::Ready(ready) => stack![main, hud(ready, t)].into(),
+        Session::Ready(ready) if ready.home().is_none() => stack![main, hud(ready, t)].into(),
         _ => main,
     };
     match session {
@@ -149,7 +153,7 @@ pub fn chrome(session: &Session, theme: Theme) -> Element<'_, Message> {
         // quatro botões recebem clique, o resto atravessa para a folha. Os
         // diálogos acima têm precedência; `Annotate` limpa a seleção e a
         // barra some sozinha.
-        Session::Ready(ready) if ready.selection_bar_pos().is_some() => {
+        Session::Ready(ready) if ready.home().is_none() && ready.selection_bar_pos().is_some() => {
             stack![main, selection_bar_layer(ready, t)].into()
         }
         _ => main,
@@ -305,9 +309,11 @@ fn open_button(t: Tokens) -> Element<'static, Message> {
     )
 }
 
-fn home_button(t: Tokens) -> Element<'static, Message> {
+/// Casinha: com abas abertas mostra o Início por cima delas (`GoHome`);
+/// carregando/erro não têm aba a preservar e fecham (`Close`).
+fn home_button(t: Tokens, message: Message) -> Element<'static, Message> {
     tip(
-        control(t, button(kiri::ori!("home")).on_press(Message::Close)),
+        control(t, button(kiri::ori!("home")).on_press(message)),
         "Início",
     )
 }
@@ -394,7 +400,12 @@ fn search_nav<'a>(ready: &'a Ready, t: Tokens) -> Element<'a, Message> {
 /// Barra única Kiri (`Session::Ready`): abrir │ pílula do documento │ busca e
 /// página │ marcar │ zoom │ painéis │ ⋯. Uma linha só (`CHROME_HEIGHT`).
 fn topbar(session: &Session, t: Tokens) -> Element<'_, Message> {
-    if let Session::Ready(ready) = session {
+    // Com o Início por cima das abas, a barra é a da tela inicial.
+    let doc = match session {
+        Session::Ready(ready) if ready.home().is_none() => Some(ready),
+        _ => None,
+    };
+    if let Some(ready) = doc {
         let n = ready.page_count().max(1);
         // Pílula do documento: dot (marcas da sessão ainda não salvas) + nome do
         // arquivo com elipse no meio. Nada de tamanho/data: só o que o estado tem.
@@ -609,7 +620,7 @@ fn topbar(session: &Session, t: Tokens) -> Element<'_, Message> {
         // Barra de anotar na cara (seleção viva): ⋯ é fuga, não casa. Os atalhos
         // H/U/S/N já vivem em `keyboard_message`; aqui só o rótulo da tecla.
         let mut bar = row![
-            home_button(t),
+            home_button(t, Message::GoHome),
             open_button(t),
             kiri::vsep(t),
             doc_pill,
@@ -683,10 +694,11 @@ fn topbar(session: &Session, t: Tokens) -> Element<'_, Message> {
         return toolbar_frame(t, bar.into());
     }
 
-    // Tela inicial não precisa de home; erro/carregando usam para voltar.
+    // Tela inicial (vazia ou por cima das abas) não precisa de home;
+    // erro/carregando usam para voltar.
     let mut items: Vec<Element<'_, Message>> = Vec::new();
-    if !matches!(session, Session::Empty(_)) {
-        items.push(home_button(t));
+    if matches!(session, Session::Loading { .. } | Session::Failed { .. }) {
+        items.push(home_button(t, Message::Close));
     }
     items.push(open_button(t));
     toolbar_frame(t, row(items).spacing(4).align_y(Alignment::Center).into())
@@ -774,7 +786,13 @@ fn overflow_menu(ready: &Ready, t: Tokens) -> Element<'_, Message> {
             false,
         ));
     }
-    items = items.push(menu_item(t, "x", "Fechar documento", Message::Close, false));
+    items = items.push(menu_item(
+        t,
+        "x",
+        "Fechar documento",
+        Message::CloseTabActive,
+        false,
+    ));
     let can_edit = ready.selection_plain_text().is_some()
         || !ready.annotations.is_empty()
         || ready.can_annot_undo()
@@ -1823,7 +1841,9 @@ impl Program<Message> for EmptyDash {
 /// Estado vazio (Stitch): dropzone tracejada, grid de "Documentos recentes"
 /// e, abaixo, o navegador de pastas de sempre (o Stitch não o mostra, mas o
 /// comportamento fica — só discreto, sem título próprio).
-fn empty_browser(empty: &EmptyState, t: Tokens) -> Element<'_, Message> {
+/// `tabs_open`: Início por cima das abas — o título não diz "nenhum
+/// documento" com documentos abertos na faixa acima.
+fn empty_browser(empty: &EmptyState, tabs_open: bool, t: Tokens) -> Element<'_, Message> {
     let mut path_row = row![].spacing(6).align_y(Alignment::Center);
     if let Some(parent) = empty.parent() {
         path_row = path_row.push(tip(
@@ -1893,7 +1913,12 @@ fn empty_browser(empty: &EmptyState, t: Tokens) -> Element<'_, Message> {
                     )
                     .padding(8)
                     .style(kiri::logo_stage_style()),
-                    text("Nenhum documento aberto").size(18),
+                    text(if tabs_open {
+                        "Abrir outro documento"
+                    } else {
+                        "Nenhum documento aberto"
+                    })
+                    .size(18),
                     text("Arraste e solte um arquivo PDF aqui")
                         .size(13)
                         .color(t.muted),
@@ -1994,6 +2019,16 @@ fn entry_row(entry: &FsEntry, t: Tokens) -> Element<'static, Message> {
 }
 
 fn ready_body(tabs: &Tabs, t: Tokens) -> Element<'_, Message> {
+    if let Some(home) = tabs.home() {
+        let browser = empty_browser(home, true, t);
+        return match tabs.open_error() {
+            Some(error) => column![text(error).size(13).color(t.muted), browser]
+                .spacing(8)
+                .height(Length::Fill)
+                .into(),
+            None => browser,
+        };
+    }
     let ready = tabs.active();
     let mut panes = row![].spacing(12).height(Length::Fill);
     if ready.pages_open {
@@ -2047,12 +2082,17 @@ fn disk_stale_row(ready: &Ready, t: Tokens) -> Element<'static, Message> {
 }
 
 /// Faixa de abas sob a toolbar (issue #40): um botão por documento — o ativo
-/// destacado — e o × que fecha a aba. Só existe com 2+ abas.
+/// destacado — e o × que fecha a aba. Só existe com 2+ abas ou com o Início
+/// por cima delas (aí nenhuma fica destacada: clicar volta para ela).
 fn tab_strip(tabs: &Tabs, t: Tokens) -> Element<'_, Message> {
+    // Padding dos botões-ícone (9px) somava ~35px numa faixa de 30px: o
+    // texto não cabia, o iced não desenhava a linha e a aba virava um
+    // quadradinho vazio. 4px cabe com folga.
+    let tab_pad = Padding::from([4, 10]);
     let mut strip = row![].spacing(4).align_y(Alignment::Center);
     for (index, doc) in tabs.docs().iter().enumerate() {
         let label = short_name(doc.source.path());
-        let active = index == tabs.active_index();
+        let active = tabs.home().is_none() && index == tabs.active_index();
         strip = strip.push(
             row![
                 tip_owned(
@@ -2060,7 +2100,8 @@ fn tab_strip(tabs: &Tabs, t: Tokens) -> Element<'_, Message> {
                         t,
                         button(text(label).size(13)).on_press(Message::SelectTab(index)),
                         active,
-                    ),
+                    )
+                    .padding(tab_pad),
                     identity_tip(doc.source.path()),
                 ),
                 tip(
@@ -2068,7 +2109,8 @@ fn tab_strip(tabs: &Tabs, t: Tokens) -> Element<'_, Message> {
                         t,
                         button(text("×").size(14).color(t.muted))
                             .on_press(Message::CloseTab(index)),
-                    ),
+                    )
+                    .padding(tab_pad),
                     if cfg!(target_os = "macos") {
                         "Fechar aba (Cmd+W)"
                     } else {

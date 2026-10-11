@@ -1021,6 +1021,10 @@ pub struct Tabs {
     palette: Option<PaletteState>,
     /// Shift segurado agora (janela, não aba): decide Enter vs Shift+Enter.
     shift_held: bool,
+    /// Início aberto por cima das abas (recentes e pastas): as abas seguem
+    /// vivas; abrir um PDF dali vira aba nova e clicar numa aba volta para
+    /// ela. `None` = documento ativo na tela.
+    home: Option<EmptyState>,
 }
 
 /// Fechamento que ainda precisa de confirmação.
@@ -1058,7 +1062,13 @@ impl Tabs {
             close_ask: None,
             palette: None,
             shift_held: false,
+            home: None,
         }
+    }
+
+    /// Início por cima das abas (`None` = documento ativo na tela).
+    pub(crate) fn home(&self) -> Option<&EmptyState> {
+        self.home.as_ref()
     }
 
     pub(crate) fn close_prompt(&self) -> bool {
@@ -1205,6 +1215,7 @@ impl Tabs {
         let before = self.docs.len();
         self.pending = None;
         self.open_error = None;
+        self.home = None;
         self.docs.push(ready);
         self.active = self.docs.len() - 1;
         self.sync_strip(before);
@@ -1239,6 +1250,9 @@ impl Tabs {
     }
 
     fn select(&mut self, index: usize) {
+        if index < self.docs.len() {
+            self.home = None;
+        }
         if index < self.docs.len() && index != self.active {
             self.active = index;
             self.retarget_palette();
@@ -1247,6 +1261,7 @@ impl Tabs {
 
     /// Ctrl+Tab (e Ctrl+Shift+Tab) dão a volta na faixa.
     fn cycle(&mut self, step: i32) {
+        self.home = None;
         let len = self.docs.len() as i32;
         let next = (self.active as i32 + step).rem_euclid(len) as usize;
         if next != self.active {
@@ -1900,7 +1915,10 @@ pub enum Message {
         doc_gen: u64,
         result: Result<Vec<MediaBox>, String>,
     },
+    /// Fecha todas as abas e volta para a tela vazia (carregando/erro).
     Close,
+    /// Início (casinha): recentes e pastas por cima das abas, sem fechar nada.
+    GoHome,
     /// Fecha a aba ativa (⌘W); se for a última, fecha a janela (→ `Empty`).
     CloseTabActive,
     /// Fecha a aba `usize` (o × da faixa de abas).
@@ -2144,42 +2162,23 @@ impl Session {
 
     pub fn update(&mut self, message: Message) -> Task<Message> {
         if matches!(self, Session::Ready(tabs) if tabs.settings_open)
-            && matches!(
-                &message,
-                Message::PickFile
-                    | Message::OpenRecent(_)
-                    | Message::Close
-                    | Message::CloseTabActive
-                    | Message::CloseTab(_)
-                    | Message::SelectTab(_)
-                    | Message::CycleTab(_)
-                    | Message::Nav(_)
-                    | Message::PageInput(_)
-                    | Message::PageSubmit
-                    | Message::SetZoom(_)
-                    | Message::ZoomIn
-                    | Message::ZoomOut
-                    | Message::FocusSearch
-                    | Message::RotateView
-                    | Message::SearchChanged(_)
-                    | Message::SearchSubmit
-                    | Message::SearchNext
-                    | Message::SearchPrev
-                    | Message::CopySelection
-                    | Message::CopyAnnotations
-                    | Message::Annotate(_)
-                    | Message::AnnotUndo
-                    | Message::AnnotRedo
-                    | Message::DeleteSelectedAnnot
-                    | Message::NoteSave
-                    | Message::OutlineKey(_)
-                    | Message::OpenPalette
-                    | Message::OpenPrintDialog
-                    | Message::SaveCopyRequested
-                    | Message::HistoryBack
-                    | Message::HistoryForward
-                    | Message::SetViewMode(_)
-            )
+            && (acts_on_active_document(&message)
+                || matches!(
+                    &message,
+                    Message::PickFile
+                        | Message::OpenRecent(_)
+                        | Message::Close
+                        | Message::CloseTab(_)
+                        | Message::SelectTab(_)
+                        | Message::CycleTab(_)
+                ))
+        {
+            return Task::none();
+        }
+        // Início aberto: o documento ativo está escondido, então o que age
+        // nele não faz nada. Abrir, trocar/fechar abas e Esc seguem.
+        if matches!(self, Session::Ready(tabs) if tabs.home.is_some())
+            && acts_on_active_document(&message)
         {
             return Task::none();
         }
@@ -2352,6 +2351,7 @@ impl Session {
                 self.schedule_work()
             }
             Message::Close => self.close_document(),
+            Message::GoHome => self.go_home(),
             Message::CloseTabActive => {
                 let index = match self {
                     Session::Ready(tabs) => tabs.active_index(),
@@ -3038,6 +3038,11 @@ impl Session {
                         ready.close_ask = None;
                         return Task::none();
                     }
+                    // Início por cima das abas: Esc volta ao documento ativo.
+                    if ready.home.is_some() {
+                        ready.home = None;
+                        return Task::none();
+                    }
                     // Esc com rascunho de nota aberto também o fecha: o
                     // popover de nota não tem subscription própria e a
                     // função pura de teclas não vê estado (Esc → este
@@ -3405,7 +3410,7 @@ impl Session {
                 Task::batch([self.schedule_work(), follow])
             }
             Message::BrowseTo(path) => {
-                if let Session::Empty(empty) = self {
+                if let Some(empty) = self.browser_mut() {
                     empty.cwd = path.clone();
                     empty.listing_error = None;
                     return Task::perform(list_path(path.clone()), move |result| {
@@ -3418,7 +3423,7 @@ impl Session {
                 Task::none()
             }
             Message::ListingReady { path, result } => {
-                if let Session::Empty(empty) = self {
+                if let Some(empty) = self.browser_mut() {
                     if empty.cwd == path {
                         match result {
                             Ok(listing) => {
@@ -3438,7 +3443,12 @@ impl Session {
                 match self {
                     Session::Empty(empty) => empty.recents = recents,
                     Session::Loading { recents: slot, .. } => *slot = recents,
-                    Session::Ready(_) | Session::Failed { .. } => {}
+                    Session::Ready(tabs) => {
+                        if let Some(home) = tabs.home.as_mut() {
+                            home.recents = recents;
+                        }
+                    }
+                    Session::Failed { .. } => {}
                 }
                 Task::none()
             }
@@ -3612,6 +3622,43 @@ impl Session {
                     render_scale,
                 };
             }
+        }
+    }
+
+    /// Início com abas abertas: recentes e pastas por cima, as abas ficam.
+    /// Sem abas (carregando/erro) não há o que preservar: a casinha fecha.
+    fn go_home(&mut self) -> Task<Message> {
+        if self.modal_open() {
+            return Task::none();
+        }
+        let recents = self.recents();
+        let theme = self.theme();
+        let open_gen = self.open_gen();
+        let render_scale = self.render_scale();
+        let Session::Ready(tabs) = self else {
+            return self.close_document();
+        };
+        tabs.overflow_open = false;
+        tabs.palette = None;
+        if tabs.home.is_none() {
+            tabs.home = Some(EmptyState {
+                recents,
+                theme,
+                open_gen,
+                render_scale,
+                ..EmptyState::default()
+            });
+        }
+        empty_tasks()
+    }
+
+    /// Navegador de pastas da tela: o da tela vazia ou o do Início aberto
+    /// por cima das abas.
+    fn browser_mut(&mut self) -> Option<&mut EmptyState> {
+        match self {
+            Session::Empty(empty) => Some(empty),
+            Session::Ready(tabs) => tabs.home.as_mut(),
+            _ => None,
         }
     }
 
@@ -4151,6 +4198,41 @@ impl Session {
         }
         Task::none()
     }
+}
+
+/// Mensagens que agem no documento ativo (navegar, zoom, busca, marcar,
+/// imprimir…). Bloqueadas com Configurações aberto e com o Início na tela.
+fn acts_on_active_document(message: &Message) -> bool {
+    matches!(
+        message,
+        Message::CloseTabActive
+            | Message::Nav(_)
+            | Message::PageInput(_)
+            | Message::PageSubmit
+            | Message::SetZoom(_)
+            | Message::ZoomIn
+            | Message::ZoomOut
+            | Message::FocusSearch
+            | Message::RotateView
+            | Message::SearchChanged(_)
+            | Message::SearchSubmit
+            | Message::SearchNext
+            | Message::SearchPrev
+            | Message::CopySelection
+            | Message::CopyAnnotations
+            | Message::Annotate(_)
+            | Message::AnnotUndo
+            | Message::AnnotRedo
+            | Message::DeleteSelectedAnnot
+            | Message::NoteSave
+            | Message::OutlineKey(_)
+            | Message::OpenPalette
+            | Message::OpenPrintDialog
+            | Message::SaveCopyRequested
+            | Message::HistoryBack
+            | Message::HistoryForward
+            | Message::SetViewMode(_)
+    )
 }
 
 fn empty_tasks() -> Task<Message> {
@@ -6990,6 +7072,108 @@ mod tests {
             let loaded = ready.pages.text.iter().filter(|t| t.is_some()).count();
             assert!(loaded < 16, "sem busca, só a vizinhança: {loaded} páginas");
         });
+    }
+
+    fn home_tabs(session: &Session) -> &Tabs {
+        match session {
+            Session::Ready(tabs) => tabs,
+            _ => panic!("o Início não pode fechar as abas"),
+        }
+    }
+
+    #[test]
+    fn go_home_keeps_tabs_and_ignores_document_keys() {
+        isolated(|| {
+            let Some(mut session) = sumario_session() else {
+                return;
+            };
+            apply(&mut session, Message::Nav(NavCmd::Next));
+            let page = home_tabs(&session).visible;
+            apply(&mut session, Message::GoHome);
+            let tabs = home_tabs(&session);
+            assert!(tabs.home().is_some());
+            assert_eq!(tabs.len(), 1);
+            // O documento está escondido: navegar e Ctrl+W não agem nele.
+            apply(&mut session, Message::Nav(NavCmd::Next));
+            apply(&mut session, Message::CloseTabActive);
+            assert_eq!(home_tabs(&session).visible, page);
+            // Esc volta ao documento, na mesma página.
+            apply(&mut session, Message::ClosePrintDialog);
+            let tabs = home_tabs(&session);
+            assert!(tabs.home().is_none());
+            assert_eq!(tabs.visible, page);
+        });
+    }
+
+    #[test]
+    fn clicking_a_tab_leaves_home() {
+        isolated(|| {
+            let Some(mut session) = sumario_session() else {
+                return;
+            };
+            apply(&mut session, Message::GoHome);
+            apply(&mut session, Message::SelectTab(0));
+            assert!(home_tabs(&session).home().is_none());
+        });
+    }
+
+    #[test]
+    fn opening_from_home_adds_a_tab_and_leaves_home() {
+        isolated(|| {
+            let Some(mut session) = sumario_session() else {
+                return;
+            };
+            apply(&mut session, Message::GoHome);
+            let guia = sample_pdf();
+            apply(&mut session, Message::OpenRecent(guia.clone()));
+            let tabs = home_tabs(&session);
+            let gen = tabs.pending_gen().expect("aba nova pendente");
+            assert!(tabs.home().is_some(), "o Início fica até o arquivo chegar");
+            let bytes = std::fs::read(&guia).expect("fixture");
+            let ready = Document::from_bytes(OpenSource::Path(guia), Arc::<[u8]>::from(bytes)).ok();
+            let Some(ready) = ready else {
+                return;
+            };
+            apply(
+                &mut session,
+                Message::Opened {
+                    gen,
+                    result: Ok(ready),
+                },
+            );
+            let tabs = home_tabs(&session);
+            assert_eq!(tabs.len(), 2);
+            assert!(tabs.home().is_none());
+        });
+    }
+
+    #[test]
+    fn home_over_tabs_browses_folders() {
+        isolated(|| {
+            let Some(mut session) = sumario_session() else {
+                return;
+            };
+            apply(&mut session, Message::GoHome);
+            let folder = std::env::temp_dir();
+            apply(&mut session, Message::BrowseTo(Some(folder.clone())));
+            apply(
+                &mut session,
+                Message::ListingReady {
+                    path: Some(folder.clone()),
+                    result: Ok(Vec::new()),
+                },
+            );
+            let home = home_tabs(&session).home().expect("Início aberto");
+            assert_eq!(home.cwd.as_deref(), Some(folder.as_path()));
+            assert!(home.listing_error.is_none());
+        });
+    }
+
+    #[test]
+    fn go_home_on_empty_screen_stays_empty() {
+        let mut session = Session::empty();
+        apply(&mut session, Message::GoHome);
+        assert!(matches!(session, Session::Empty(_)));
     }
 
     #[test]
