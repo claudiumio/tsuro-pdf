@@ -3216,10 +3216,7 @@ mod tests {
         let layer = || TextLayer {
             page: PageNo::first(),
             plain: "a a".into(),
-            glyphs: vec![Glyph {
-                cluster: "a a".into(),
-                quad: Quad::from_rect(0.0, 0.0, 10.0, 10.0),
-            }],
+            glyphs: vec![Glyph::new("a a", Quad::from_rect(0.0, 0.0, 10.0, 10.0))],
         };
         let empty = Search::derive("", &[]);
         assert_eq!(search_count_text(&empty, false), None);

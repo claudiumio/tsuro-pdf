@@ -131,10 +131,47 @@ pub struct Bitmap {
     pub rgba: Vec<u8>,
 }
 
-#[derive(Debug, Clone)]
+/// Um cluster do texto da página: `len` bytes do `TextLayer::plain`, em
+/// ordem (o início é a soma dos anteriores), e o retângulo dele no espaço da
+/// página. Sem `String` por glifo nem `Quad` de 8 floats: com a busca lendo o
+/// documento inteiro, uma página densa tem dezenas de milhares de glifos.
+#[derive(Debug, Clone, Copy, PartialEq)]
 pub struct Glyph {
-    pub cluster: String,
-    pub quad: Quad,
+    pub len: u32,
+    /// `[left, bottom, right, top]` — os glifos do Pdfium são retângulos.
+    rect: [f32; 4],
+}
+
+impl Glyph {
+    /// Glifo de `cluster` com o retângulo que envolve `quad`.
+    pub fn new(cluster: &str, quad: Quad) -> Self {
+        Self::with_len(cluster.len(), quad)
+    }
+
+    /// Glifo de `len` bytes do `plain` (a extração escreve direto nele).
+    pub fn with_len(len: usize, quad: Quad) -> Self {
+        let xs = [quad.x0, quad.x1, quad.x2, quad.x3];
+        let ys = [quad.y0, quad.y1, quad.y2, quad.y3];
+        Self {
+            len: len as u32,
+            rect: [
+                xs.iter().copied().fold(f32::INFINITY, f32::min),
+                ys.iter().copied().fold(f32::INFINITY, f32::min),
+                xs.iter().copied().fold(f32::NEG_INFINITY, f32::max),
+                ys.iter().copied().fold(f32::NEG_INFINITY, f32::max),
+            ],
+        }
+    }
+
+    pub fn quad(&self) -> Quad {
+        let [left, bottom, right, top] = self.rect;
+        Quad::from_rect(left, bottom, right, top)
+    }
+
+    /// Bytes do cluster no `plain`.
+    pub fn byte_len(&self) -> usize {
+        self.len as usize
+    }
 }
 
 #[derive(Debug, Clone)]
@@ -147,7 +184,7 @@ pub struct TextLayer {
 impl TextLayer {
     pub fn hit(&self, page_pt: [f32; 2]) -> Option<usize> {
         let [x, y] = page_pt;
-        self.glyphs.iter().position(|g| g.quad.contains(x, y))
+        self.glyphs.iter().position(|g| g.quad().contains(x, y))
     }
 
     /// Glifo mais próximo do ponto (distância ao retângulo; 0 se dentro).
@@ -157,7 +194,7 @@ impl TextLayer {
         let [x, y] = page_pt;
         let mut best: Option<(f32, usize)> = None;
         for (i, glyph) in self.glyphs.iter().enumerate() {
-            let q = glyph.quad;
+            let q = glyph.quad();
             let min_x = q.x0.min(q.x1).min(q.x2).min(q.x3);
             let max_x = q.x0.max(q.x1).max(q.x2).max(q.x3);
             let min_y = q.y0.min(q.y1).min(q.y2).min(q.y3);
@@ -257,14 +294,8 @@ mod tests {
             page: PageNo::first(),
             plain: "ab".to_string(),
             glyphs: vec![
-                Glyph {
-                    cluster: "a".to_string(),
-                    quad: Quad::from_rect(0.0, 0.0, 10.0, 10.0),
-                },
-                Glyph {
-                    cluster: "b".to_string(),
-                    quad: Quad::from_rect(20.0, 0.0, 30.0, 10.0),
-                },
+                Glyph::new("a", Quad::from_rect(0.0, 0.0, 10.0, 10.0)),
+                Glyph::new("b", Quad::from_rect(20.0, 0.0, 30.0, 10.0)),
             ],
         }
     }

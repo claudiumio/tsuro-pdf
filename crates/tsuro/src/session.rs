@@ -221,9 +221,9 @@ pub(crate) fn quads_for_range_by_line(glyphs: &[Glyph], start: usize, end: usize
     let mut cursor = 0usize;
     let mut lines: Vec<(f32, f32, f32, f32)> = Vec::new();
     for glyph in glyphs {
-        let next = cursor + glyph.cluster.len();
+        let next = cursor + glyph.byte_len();
         if cursor < end && next > start {
-            let (x0, y0, x1, y1) = quad_bbox(glyph.quad);
+            let (x0, y0, x1, y1) = quad_bbox(glyph.quad());
             let merge = match lines.last() {
                 Some(last) => y0 <= last.3 && y1 >= last.1 && x0 >= last.0,
                 None => false,
@@ -6186,7 +6186,7 @@ impl PageCatalog {
 fn glyph_byte_range(layer: &TextLayer, index: usize) -> (usize, usize) {
     let mut cursor = 0usize;
     for (i, glyph) in layer.glyphs.iter().enumerate() {
-        let next = cursor + glyph.cluster.len();
+        let next = cursor + glyph.byte_len();
         if i == index {
             return (cursor, next);
         }
@@ -7102,10 +7102,10 @@ mod tests {
         ready.pages.text[last as usize] = Some(TextLayer {
             page: hit_page,
             plain: "cláusula".into(),
-            glyphs: vec![Glyph {
-                cluster: "cláusula".into(),
-                quad: Quad::from_rect(0.0, 0.0, 10.0, 10.0),
-            }],
+            glyphs: vec![Glyph::new(
+                "cláusula",
+                Quad::from_rect(0.0, 0.0, 10.0, 10.0),
+            )],
         });
         let file = std::env::temp_dir().join(format!(
             "tsuro-positions-unit-{}-search",
@@ -7148,10 +7148,7 @@ mod tests {
             ready.pages.text[idx as usize] = Some(TextLayer {
                 page,
                 plain: "alvo".into(),
-                glyphs: vec![Glyph {
-                    cluster: "alvo".into(),
-                    quad: Quad::from_rect(0.0, 0.0, 10.0, 10.0),
-                }],
+                glyphs: vec![Glyph::new("alvo", Quad::from_rect(0.0, 0.0, 10.0, 10.0))],
             });
         }
         let mut session = Session::Ready(Tabs::single(ready));
@@ -7693,10 +7690,7 @@ mod tests {
             ready.pages.text[idx as usize] = Some(TextLayer {
                 page,
                 plain: "alvo".into(),
-                glyphs: vec![Glyph {
-                    cluster: "alvo".into(),
-                    quad: Quad::from_rect(0.0, 0.0, 10.0, 10.0),
-                }],
+                glyphs: vec![Glyph::new("alvo", Quad::from_rect(0.0, 0.0, 10.0, 10.0))],
             });
         }
         let mut session = Session::Ready(Tabs::single(ready));
@@ -9857,10 +9851,7 @@ mod tests {
     }
 
     fn glyph_at(cluster: &str, x0: f32, y0: f32, x1: f32, y1: f32) -> Glyph {
-        Glyph {
-            cluster: cluster.to_string(),
-            quad: Quad::from_rect(x0, y0, x1, y1),
-        }
+        Glyph::new(cluster, Quad::from_rect(x0, y0, x1, y1))
     }
 
     #[test]
@@ -10726,7 +10717,7 @@ mod tests {
             assert_eq!(ready.view_rotation, step);
             let rotated = ready.rotated_media(page);
             let (dw, dh) = (900.0, 900.0 * rotated.height / rotated.width.max(1.0));
-            let [x, y, w, h] = display_rect(layer.glyphs[k].quad, media, step, dw, dh);
+            let [x, y, w, h] = display_rect(layer.glyphs[k].quad(), media, step, dw, dh);
             let at = [x + w / 2.0, y + h / 2.0];
             let page_pt = page_pt_at(at, media, step, dw, dh);
             apply(
@@ -11846,7 +11837,7 @@ mod tests {
             .glyphs
             .iter()
             .take(40)
-            .map(|glyph| glyph.quad)
+            .map(|glyph| glyph.quad())
             .collect();
         if quads.is_empty() {
             return;
@@ -13188,10 +13179,7 @@ mod tests {
             ready.pages.text[*idx as usize] = Some(TextLayer {
                 page,
                 plain: plain.to_string(),
-                glyphs: vec![Glyph {
-                    cluster: plain.to_string(),
-                    quad: Quad::from_rect(0.0, 0.0, 10.0, 10.0),
-                }],
+                glyphs: vec![Glyph::new(&plain, Quad::from_rect(0.0, 0.0, 10.0, 10.0))],
             });
         }
     }

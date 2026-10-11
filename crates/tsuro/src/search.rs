@@ -204,7 +204,7 @@ pub(crate) fn quads_for_range_monotonic(
     byte_cursor: &mut usize,
 ) -> Quad {
     while *glyph_idx < glyphs.len() {
-        let next = *byte_cursor + glyphs[*glyph_idx].cluster.len();
+        let next = *byte_cursor + glyphs[*glyph_idx].byte_len();
         if next > start {
             break;
         }
@@ -214,11 +214,11 @@ pub(crate) fn quads_for_range_monotonic(
     let mut acc: Option<Quad> = None;
     let mut cursor = *byte_cursor;
     for glyph in &glyphs[*glyph_idx..] {
-        let next = cursor + glyph.cluster.len();
+        let next = cursor + glyph.byte_len();
         if cursor < end && next > start {
             acc = Some(match acc {
-                None => glyph.quad,
-                Some(q) => q.union(glyph.quad),
+                None => glyph.quad(),
+                Some(q) => q.union(glyph.quad()),
             });
         }
         cursor = next;
@@ -239,10 +239,10 @@ mod tests {
         let layer = TextLayer {
             page: PageNo::first(),
             plain: "texto ação extra".into(),
-            glyphs: vec![Glyph {
-                cluster: "texto ação extra".into(),
-                quad: Quad::from_rect(0.0, 0.0, 10.0, 10.0),
-            }],
+            glyphs: vec![Glyph::new(
+                "texto ação extra",
+                Quad::from_rect(0.0, 0.0, 10.0, 10.0),
+            )],
         };
         let hits = Search::derive("ação", &[Some(layer.clone())]);
         assert_eq!(hits.hits().len(), 1);
@@ -255,10 +255,10 @@ mod tests {
         let layer = TextLayer {
             page: PageNo::first(),
             plain: "texto ação extra".into(),
-            glyphs: vec![Glyph {
-                cluster: "texto ação extra".into(),
-                quad: Quad::from_rect(0.0, 0.0, 10.0, 10.0),
-            }],
+            glyphs: vec![Glyph::new(
+                "texto ação extra",
+                Quad::from_rect(0.0, 0.0, 10.0, 10.0),
+            )],
         };
         let mut pages: Vec<Option<TextLayer>> = vec![None; 200];
         pages[0] = Some(layer);
@@ -273,10 +273,7 @@ mod tests {
         let mut plain = String::new();
         for _ in 0..50 {
             plain.push_str("ação ");
-            glyphs.push(Glyph {
-                cluster: "ação ".into(),
-                quad: Quad::from_rect(0.0, 0.0, 10.0, 10.0),
-            });
+            glyphs.push(Glyph::new("ação ", Quad::from_rect(0.0, 0.0, 10.0, 10.0)));
         }
         let layer = TextLayer {
             page: PageNo::first(),
@@ -293,14 +290,8 @@ mod tests {
             page: PageNo::first(),
             plain: "aa".into(),
             glyphs: vec![
-                Glyph {
-                    cluster: "a".into(),
-                    quad: Quad::from_rect(0.0, 0.0, 1.0, 1.0),
-                },
-                Glyph {
-                    cluster: "a".into(),
-                    quad: Quad::from_rect(1.0, 0.0, 2.0, 1.0),
-                },
+                Glyph::new("a", Quad::from_rect(0.0, 0.0, 1.0, 1.0)),
+                Glyph::new("a", Quad::from_rect(1.0, 0.0, 2.0, 1.0)),
             ],
         };
         let hits = find_hits("aa", &layer);
@@ -313,10 +304,7 @@ mod tests {
         let layer = TextLayer {
             page: PageNo::first(),
             plain: "a a a".into(),
-            glyphs: vec![Glyph {
-                cluster: "a a a".into(),
-                quad: Quad::from_rect(0.0, 0.0, 10.0, 10.0),
-            }],
+            glyphs: vec![Glyph::new("a a a", Quad::from_rect(0.0, 0.0, 10.0, 10.0))],
         };
         let mut search = Search::derive("a", &[Some(layer)]);
         assert_eq!(search.hits().len(), 3);
@@ -336,10 +324,7 @@ mod tests {
             &[Some(TextLayer {
                 page: PageNo::first(),
                 plain: "a a".into(),
-                glyphs: vec![Glyph {
-                    cluster: "a a".into(),
-                    quad: Quad::from_rect(0.0, 0.0, 10.0, 10.0),
-                }],
+                glyphs: vec![Glyph::new("a a", Quad::from_rect(0.0, 0.0, 10.0, 10.0))],
             })],
         );
         fresh.step(-1);
@@ -354,20 +339,20 @@ mod tests {
         let first = TextLayer {
             page: PageNo::first(),
             plain: "nada aqui".into(),
-            glyphs: vec![Glyph {
-                cluster: "nada aqui".into(),
-                quad: Quad::from_rect(0.0, 0.0, 10.0, 10.0),
-            }],
+            glyphs: vec![Glyph::new(
+                "nada aqui",
+                Quad::from_rect(0.0, 0.0, 10.0, 10.0),
+            )],
         };
         let mut search = Search::derive("alvo", &[Some(first)]);
         assert!(search.hits().is_empty());
         let second = TextLayer {
             page: PageNo::from_index(1),
             plain: "um alvo só".into(),
-            glyphs: vec![Glyph {
-                cluster: "um alvo só".into(),
-                quad: Quad::from_rect(0.0, 0.0, 10.0, 10.0),
-            }],
+            glyphs: vec![Glyph::new(
+                "um alvo só",
+                Quad::from_rect(0.0, 0.0, 10.0, 10.0),
+            )],
         };
         search.extend_page(&second);
         assert_eq!(search.hits().len(), 1);
@@ -377,10 +362,10 @@ mod tests {
         let zero = TextLayer {
             page: PageNo::first(),
             plain: "alvo no início".into(),
-            glyphs: vec![Glyph {
-                cluster: "alvo no início".into(),
-                quad: Quad::from_rect(0.0, 0.0, 10.0, 10.0),
-            }],
+            glyphs: vec![Glyph::new(
+                "alvo no início",
+                Quad::from_rect(0.0, 0.0, 10.0, 10.0),
+            )],
         };
         search.extend_page(&zero);
         assert_eq!(search.hits().len(), 2);
@@ -402,18 +387,9 @@ mod tests {
             page: PageNo::first(),
             plain: "e\u{301}x".into(),
             glyphs: vec![
-                Glyph {
-                    cluster: "e".into(),
-                    quad: e,
-                },
-                Glyph {
-                    cluster: "\u{301}".into(),
-                    quad: accent,
-                },
-                Glyph {
-                    cluster: "x".into(),
-                    quad: x,
-                },
+                Glyph::new("e", e),
+                Glyph::new("\u{301}", accent),
+                Glyph::new("x", x),
             ],
         };
         assert_eq!(layer.plain.len(), 4, "sem NFC o plain soma os clusters");
@@ -427,10 +403,10 @@ mod tests {
         let layer = TextLayer {
             page: PageNo::first(),
             plain: "e\u{301}x".into(),
-            glyphs: vec![Glyph {
-                cluster: "e\u{301}x".into(),
-                quad: Quad::from_rect(0.0, 0.0, 30.0, 10.0),
-            }],
+            glyphs: vec![Glyph::new(
+                "e\u{301}x",
+                Quad::from_rect(0.0, 0.0, 30.0, 10.0),
+            )],
         };
         let hits = find_hits("\u{e9}", &layer);
         assert_eq!(hits.len(), 1, "NFC é vs NFD e+combining");
@@ -441,10 +417,7 @@ mod tests {
         let layer = TextLayer {
             page: PageNo::first(),
             plain: "\u{e9}x".into(),
-            glyphs: vec![Glyph {
-                cluster: "\u{e9}x".into(),
-                quad: Quad::from_rect(0.0, 0.0, 30.0, 10.0),
-            }],
+            glyphs: vec![Glyph::new("\u{e9}x", Quad::from_rect(0.0, 0.0, 30.0, 10.0))],
         };
         let hits = find_hits("e\u{301}", &layer);
         assert_eq!(hits.len(), 1, "NFD e+combining vs NFC é");
@@ -455,10 +428,10 @@ mod tests {
         let layer = |index: u32| TextLayer {
             page: PageNo::from_index(index),
             plain: "alvo e alvo".into(),
-            glyphs: vec![Glyph {
-                cluster: "alvo e alvo".into(),
-                quad: Quad::from_rect(0.0, 0.0, 10.0, 10.0),
-            }],
+            glyphs: vec![Glyph::new(
+                "alvo e alvo",
+                Quad::from_rect(0.0, 0.0, 10.0, 10.0),
+            )],
         };
         let pages = vec![Some(layer(0)), None, Some(layer(2)), Some(layer(3))];
         let capped = Search::derive_capped("alvo", &pages, 5);

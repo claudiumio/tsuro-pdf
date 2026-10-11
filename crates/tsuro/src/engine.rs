@@ -973,14 +973,18 @@ fn text_layer_from_page(page: &PdfPage<'_>, page_no: PageNo) -> Result<TextLayer
     let mut plain = String::new();
     let mut glyphs = Vec::new();
     for ch in chars.iter() {
-        let cluster: String = ch.unicode_string().unwrap_or_default().nfc().collect();
-        if cluster.is_empty() {
+        // NFC direto no `plain`: o glifo guarda só quantos bytes são dele.
+        let start = plain.len();
+        plain.extend(ch.unicode_string().unwrap_or_default().nfc());
+        let len = plain.len() - start;
+        if len == 0 {
             continue;
         }
-        let quad = quad_from_char(&ch);
-        plain.push_str(&cluster);
-        glyphs.push(Glyph { cluster, quad });
+        glyphs.push(Glyph::with_len(len, quad_from_char(&ch)));
     }
+    // Páginas ficam em memória (a busca lê o documento todo): sem folga.
+    plain.shrink_to_fit();
+    glyphs.shrink_to_fit();
     // Sem segunda NFC no `plain` (#79): compor aqui encolheria os bytes
     // contra os clusters e o quad do hit cairia no glifo errado em NFD.
     Ok(TextLayer {
@@ -1142,6 +1146,32 @@ mod tests {
         assert!(weak.upgrade().is_none(), "fechar solta os bytes");
     }
 
+    /// Com a busca lendo o documento todo, cada byte por glifo conta: uma
+    /// `String` + `Quad` por glifo davam ~117 B; o `Glyph` compacto, 20.
+    #[test]
+    fn glyph_stays_compact() {
+        assert!(std::mem::size_of::<Glyph>() <= 20);
+    }
+
+    #[test]
+    fn glyph_lengths_add_up_to_the_plain_text() {
+        let Some(engine) = sample_engine("guia-folio.pdf") else {
+            return;
+        };
+        let (_, layer) = engine.page_data(PageNo::first()).expect("texto");
+        assert!(!layer.glyphs.is_empty());
+        let total: usize = layer.glyphs.iter().map(Glyph::byte_len).sum();
+        assert_eq!(total, layer.plain.len(), "cada byte do plain é de um glifo");
+        let mut cursor = 0;
+        for glyph in &layer.glyphs {
+            cursor += glyph.byte_len();
+            assert!(
+                layer.plain.is_char_boundary(cursor),
+                "glifo corta um caractere"
+            );
+        }
+    }
+
     #[test]
     fn media_reads_the_size_alone() {
         let pages = [(612.0, 792.0, 0), (300.0, 200.0, 90)];
@@ -1283,7 +1313,7 @@ mod tests {
         };
         let page = PageNo::first();
         let (media, text) = engine.page_data(page).expect("page data");
-        let quads: Vec<Quad> = text.glyphs.iter().take(3).map(|g| g.quad).collect();
+        let quads: Vec<Quad> = text.glyphs.iter().take(3).map(|g| g.quad()).collect();
         let Some(first) = quads.first().copied() else {
             return;
         };
@@ -1363,7 +1393,7 @@ mod tests {
         };
         let page = PageNo::first();
         let (_, text) = engine.page_data(page).expect("page data");
-        let quads: Vec<Quad> = text.glyphs.iter().take(2).map(|g| g.quad).collect();
+        let quads: Vec<Quad> = text.glyphs.iter().take(2).map(|g| g.quad()).collect();
         let Some(first) = quads.first().copied() else {
             return;
         };
@@ -1457,7 +1487,7 @@ mod tests {
         };
         let page = PageNo::first();
         let (_, text) = engine.page_data(page).expect("page data");
-        let quads: Vec<Quad> = text.glyphs.iter().take(3).map(|g| g.quad).collect();
+        let quads: Vec<Quad> = text.glyphs.iter().take(3).map(|g| g.quad()).collect();
         if quads.is_empty() {
             return;
         }
