@@ -8526,10 +8526,18 @@ mod tests {
     fn settings_update_result_rejects_older_and_unsupported_releases() {
         let ready = sample_ready().expect("update regression requires fixture and Pdfium");
         let mut session = Session::Ready(Tabs::single(ready));
+        // Relativo à versão do crate: o bump de release não quebra o teste.
+        let current = format!("v{}", env!("CARGO_PKG_VERSION"));
+        let next = format!(
+            "v{}.{}.{}",
+            env!("CARGO_PKG_VERSION_MAJOR"),
+            env!("CARGO_PKG_VERSION_MINOR"),
+            env!("CARGO_PKG_VERSION_PATCH").parse::<u64>().unwrap() + 1
+        );
         for (tag, expected) in [
             ("v0.3.0", UpdateState::Current),
-            ("v0.4.0", UpdateState::Current),
-            ("v0.4.1", UpdateState::Available("v0.4.1".into())),
+            (current.as_str(), UpdateState::Current),
+            (next.as_str(), UpdateState::Available(next.clone())),
             ("v1.0.0-rc.1", UpdateState::Failed),
             ("garbage", UpdateState::Failed),
             ("", UpdateState::Failed),
