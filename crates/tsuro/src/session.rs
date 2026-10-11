@@ -4138,7 +4138,18 @@ impl Session {
         if let Some(task) = ready.request_speculative_render() {
             return task;
         }
-        ready.request_thumb_render()
+        let thumb = ready.request_thumb_render();
+        if !ready.render_inflight.is_empty() {
+            return thumb;
+        }
+        // Por último, com a busca ativa: o texto das páginas que faltam, uma
+        // por vez, para os hits cobrirem o documento todo.
+        if let Some(page) = ready.next_search_page_data_target() {
+            let doc_gen = ready.open_gen;
+            ready.page_data_inflight.insert(page.index());
+            return page_data_task(ready.engine.clone(), page, doc_gen);
+        }
+        Task::none()
     }
 }
 
@@ -5527,11 +5538,35 @@ impl Ready {
     }
 
     fn next_page_data_target(&self) -> Option<PageNo> {
-        self.page_data_priority().into_iter().find(|page| {
-            !self.has_page_data(*page)
-                && !self.page_data_inflight.contains(&page.index())
-                && !self.page_data_failed.contains(&page.index())
-        })
+        self.page_data_priority()
+            .into_iter()
+            .find(|page| self.wants_page_data(*page))
+    }
+
+    fn wants_page_data(&self, page: PageNo) -> bool {
+        !self.has_page_data(page)
+            && !self.page_data_inflight.contains(&page.index())
+            && !self.page_data_failed.contains(&page.index())
+    }
+
+    /// Busca ativa: próxima página sem texto, da atual em diante (com volta),
+    /// para os hits vizinhos chegarem primeiro.
+    fn next_search_page_data_target(&self) -> Option<PageNo> {
+        if self.search.query().is_empty() {
+            return None;
+        }
+        let total = self.pages.total;
+        let start = self.visible.index();
+        (0..total)
+            .map(|step| PageNo::from_index((start + step) % total))
+            .find(|page| self.wants_page_data(*page))
+    }
+
+    /// Ainda há páginas sem texto que a busca vai ler (o contador da busca
+    /// mostra que os hits podem crescer).
+    pub(crate) fn search_scanning(&self) -> bool {
+        self.next_search_page_data_target().is_some()
+            || (!self.search.query().is_empty() && !self.page_data_inflight.is_empty())
     }
 
     fn page_data_priority(&self) -> Vec<PageNo> {
@@ -6855,6 +6890,106 @@ mod tests {
             (PageNo::from_index(last), Some(1)),
             "wrap reverso"
         );
+    }
+
+    /// Faz o papel da worker: atende o que o agendador pediu (texto, render,
+    /// caixas) até ele não pedir mais nada. Renders voltam como falha — os
+    /// testes que usam isto só olham o texto.
+    fn drain_work(session: &mut Session) {
+        let mut kicked = false;
+        for _ in 0..1_000 {
+            let Session::Ready(tabs) = &*session else {
+                return;
+            };
+            let doc_gen = tabs.open_gen;
+            let engine = tabs.engine.clone();
+            if let Some(&index) = tabs.page_data_inflight.iter().next() {
+                let page = PageNo::from_index(index);
+                let result = engine.page_data(page).map_err(|e| e.to_string());
+                apply(
+                    session,
+                    Message::PageData {
+                        page,
+                        doc_gen,
+                        result,
+                    },
+                );
+                continue;
+            }
+            if let Some(&key) = tabs.render_inflight.iter().next() {
+                let render_gen = tabs.render_inflight_gen[&key];
+                apply(
+                    session,
+                    Message::Rendered {
+                        page: PageNo::from_index(key.0),
+                        scale: Scale::from_factor(f32::from(key.1) / 1000.0),
+                        rotation: key.2,
+                        doc_gen,
+                        render_gen,
+                        surface: None,
+                    },
+                );
+                continue;
+            }
+            // Outline e caixas não marcam inflight: um empurrão destrava a
+            // fila; sem pedido novo depois dele, o agendador terminou.
+            if kicked {
+                return;
+            }
+            kicked = true;
+            let result = engine.media_boxes().map_err(|e| e.to_string());
+            apply(session, Message::MediaBoxes { doc_gen, result });
+        }
+        panic!("o agendador não parou de pedir trabalho");
+    }
+
+    /// Fixture de 16 páginas: "sumário" aparece uma vez em cada uma.
+    fn sumario_session() -> Option<Session> {
+        let path = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+            .join("../../public/samples/sumario-folio.pdf");
+        let bytes = std::fs::read(&path).ok()?;
+        let mut ready =
+            Document::from_bytes(OpenSource::Path(path), Arc::<[u8]>::from(bytes)).ok()?;
+        ready.view_mode = ViewMode::Single;
+        ready.pages_open = false;
+        Some(Session::Ready(Tabs::single(ready)))
+    }
+
+    #[test]
+    fn search_scans_pages_outside_the_reading_window() {
+        isolated(|| {
+            let Some(mut session) = sumario_session() else {
+                return;
+            };
+            drain_work(&mut session);
+            apply(&mut session, Message::SearchChanged("sumário".into()));
+            let Session::Ready(ready) = &session else {
+                unreachable!()
+            };
+            assert!(ready.search_scanning(), "páginas sem texto na fila");
+            drain_work(&mut session);
+            let Session::Ready(ready) = &session else {
+                unreachable!()
+            };
+            let pages: Vec<u32> = ready.search.hits().iter().map(|h| h.page.index()).collect();
+            assert_eq!(pages, (0..16).collect::<Vec<u32>>(), "um hit por página");
+            assert!(!ready.search_scanning(), "varredura terminou");
+        });
+    }
+
+    #[test]
+    fn reading_without_search_keeps_text_loading_near_the_page() {
+        isolated(|| {
+            let Some(mut session) = sumario_session() else {
+                return;
+            };
+            drain_work(&mut session);
+            let Session::Ready(ready) = &session else {
+                unreachable!()
+            };
+            let loaded = ready.pages.text.iter().filter(|t| t.is_some()).count();
+            assert!(loaded < 16, "sem busca, só a vizinhança: {loaded} páginas");
+        });
     }
 
     #[test]
