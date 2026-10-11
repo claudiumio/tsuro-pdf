@@ -344,16 +344,22 @@ fn middle_truncate(name: &str, max: usize) -> String {
 
 /// Contador da busca (#43): `None` sem consulta, `"0"` sem hits, total puro
 /// digitando (`"12"`) e `"3 de 12"` navegando.
-fn search_count_text(search: &Search) -> Option<String> {
+/// `scanning`: ainda há páginas sem texto na fila da busca — o "…" avisa
+/// que o total pode crescer.
+fn search_count_text(search: &Search, scanning: bool) -> Option<String> {
     if search.query().is_empty() {
         return None;
     }
     let total = search.hits().len();
-    match search.current() {
-        Some(i) if total > 0 => Some(format!("{} de {}", i + 1, total)),
-        _ if total == 0 => Some("0".to_string()),
-        _ => Some(total.to_string()),
-    }
+    let count = match search.current() {
+        Some(i) if total > 0 => format!("{} de {}", i + 1, total),
+        _ => total.to_string(),
+    };
+    Some(if scanning {
+        format!("{count}…")
+    } else {
+        count
+    })
 }
 
 /// Navegação da busca na pílula: contador + ‹ › (só com consulta; botões só
@@ -363,7 +369,7 @@ fn search_nav<'a>(ready: &'a Ready, t: Tokens) -> Element<'a, Message> {
         return Space::with_width(Length::Shrink).into();
     }
     let mut nav = row![].spacing(2).align_y(Alignment::Center);
-    if let Some(count) = search_count_text(&ready.search) {
+    if let Some(count) = search_count_text(&ready.search, ready.search_scanning()) {
         nav = nav.push(text(count).size(11).color(t.muted));
     }
     if !ready.search.hits().is_empty() {
@@ -3090,14 +3096,17 @@ mod tests {
             }],
         };
         let empty = Search::derive("", &[]);
-        assert_eq!(search_count_text(&empty), None);
+        assert_eq!(search_count_text(&empty, false), None);
+        assert_eq!(search_count_text(&empty, true), None);
         let none = Search::derive("zzz", &[Some(layer())]);
-        assert_eq!(search_count_text(&none).as_deref(), Some("0"));
+        assert_eq!(search_count_text(&none, false).as_deref(), Some("0"));
+        assert_eq!(search_count_text(&none, true).as_deref(), Some("0…"));
         let mut two = Search::derive("a", &[Some(layer())]);
-        assert_eq!(search_count_text(&two).as_deref(), Some("2"));
+        assert_eq!(search_count_text(&two, false).as_deref(), Some("2"));
         two.step(1);
-        assert_eq!(search_count_text(&two).as_deref(), Some("1 de 2"));
+        assert_eq!(search_count_text(&two, false).as_deref(), Some("1 de 2"));
+        assert_eq!(search_count_text(&two, true).as_deref(), Some("1 de 2…"));
         two.step(1);
-        assert_eq!(search_count_text(&two).as_deref(), Some("2 de 2"));
+        assert_eq!(search_count_text(&two, false).as_deref(), Some("2 de 2"));
     }
 }
