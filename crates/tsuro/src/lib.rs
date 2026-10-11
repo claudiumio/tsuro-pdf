@@ -1,4 +1,5 @@
 pub mod browse;
+pub mod i18n;
 pub mod kiri;
 pub mod page;
 pub mod positions;

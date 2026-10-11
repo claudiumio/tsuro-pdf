@@ -336,10 +336,11 @@ mod tests {
         // Construct the post-error state without executing PDF tasks or writing user recents.
         desktop.session = Session::Failed {
             source: OpenSource::Path(initial),
-            message: OpenError::Io("missing fixture".into()).to_string(),
+            message: OpenError::Io("missing fixture".into()).message(tsuro::i18n::Lang::Pt),
             recents: Vec::new(),
             gen: 1,
             theme: tsuro::kiri::Theme::Dark,
+            lang: tsuro::i18n::Lang::Pt,
             render_scale: 1.0,
         };
         assert!(!desktop.session.is_opening());

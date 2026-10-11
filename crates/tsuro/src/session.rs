@@ -16,6 +16,7 @@ use crate::browse::{
     push_recent, read_recents, save_recents, EmptyState, FsEntry, Thumb,
 };
 use crate::engine::PdfiumEngine;
+use crate::i18n::Lang;
 use crate::kiri::Theme;
 use crate::page::{
     Bitmap, EngineError, Glyph, MediaBox, Outline, OutlineItem, PageEngine, PageNo, PageSurface,
@@ -24,7 +25,7 @@ use crate::page::{
 use crate::positions::{
     file_identity, find_position, read_positions, record_position, save_positions, DocPosition,
 };
-use crate::prefs::{read_theme, save_theme};
+use crate::prefs::{read_lang, read_theme, save_lang, save_theme};
 use crate::print::{
     print_selection_pdf, write_and_open_print_pdf, PrintOrientation, PrintRange, PrintSelection,
     MAX_COPIES,
@@ -651,24 +652,35 @@ pub(crate) enum PaletteItem {
 }
 
 impl PaletteItem {
-    pub(crate) fn action(id: PaletteAction) -> Self {
+    pub(crate) fn action(id: PaletteAction, lang: Lang) -> Self {
         let (title, hint) = match id {
-            PaletteAction::OpenFile => ("Abrir PDF…", shortcut_hint(&Message::PickFile)),
-            PaletteAction::GoToPage => ("Ir para página…", Some("Digite o número")),
-            PaletteAction::ZoomIn => ("Aumentar zoom", Some("+")),
-            PaletteAction::ZoomOut => ("Diminuir zoom", Some("-")),
-            PaletteAction::RotateView => ("Girar vista (90°)", Some("R")),
-            PaletteAction::OpenPrintDialog => {
-                ("Imprimir…", shortcut_hint(&Message::OpenPrintDialog))
-            }
+            PaletteAction::OpenFile => (
+                lang.pick("Abrir PDF…", "Open PDF…"),
+                shortcut_hint(&Message::PickFile),
+            ),
+            PaletteAction::GoToPage => (
+                lang.pick("Ir para página…", "Go to page…"),
+                Some(lang.pick("Digite o número", "Type a number")),
+            ),
+            PaletteAction::ZoomIn => (lang.pick("Aumentar zoom", "Zoom in"), Some("+")),
+            PaletteAction::ZoomOut => (lang.pick("Diminuir zoom", "Zoom out"), Some("-")),
+            PaletteAction::RotateView => (
+                lang.pick("Girar vista (90°)", "Rotate view (90°)"),
+                Some("R"),
+            ),
+            PaletteAction::OpenPrintDialog => (
+                lang.pick("Imprimir…", "Print…"),
+                shortcut_hint(&Message::OpenPrintDialog),
+            ),
             PaletteAction::SaveCopyRequested => (
-                "Salvar cópia com marcações…",
+                lang.pick("Salvar cópia com marcações…", "Save copy with marks…"),
                 shortcut_hint(&Message::SaveCopyRequested),
             ),
-            PaletteAction::TogglePages => ("Painel de páginas", None),
-            PaletteAction::FocusSearch => {
-                ("Buscar no documento", shortcut_hint(&Message::FocusSearch))
-            }
+            PaletteAction::TogglePages => (lang.pick("Painel de páginas", "Pages panel"), None),
+            PaletteAction::FocusSearch => (
+                lang.pick("Buscar no documento", "Find in document"),
+                shortcut_hint(&Message::FocusSearch),
+            ),
         };
         Self::Action { id, title, hint }
     }
@@ -730,6 +742,7 @@ pub(crate) struct PaletteState {
 /// Transitório por query: digitar recalcula, nunca toca o `Ready.search`.
 #[derive(Debug, Clone, Default)]
 pub(crate) struct PaletteContext {
+    lang: Lang,
     outline: Vec<(String, PageNo)>,
     recents: Vec<PathBuf>,
     dochits: Vec<(PageNo, TextRange, String)>,
@@ -790,11 +803,12 @@ impl PaletteState {
     /// Ordena por (score, fonte, título) e trunca.
     pub(crate) fn refresh(&mut self) {
         let query = self.query.as_str();
+        let lang = self.context.lang;
         let home = self.context.home;
         let mut scored: Vec<(u8, SourceRank, PaletteItem)> = PaletteAction::ALL
             .into_iter()
             .filter(|id| !home || id.on_home())
-            .map(PaletteItem::action)
+            .map(|id| PaletteItem::action(id, lang))
             .filter_map(|item| {
                 palette_match(query, item.title()).map(|score| (score, SourceRank::Action, item))
             })
@@ -1111,6 +1125,7 @@ pub enum Session {
         recents: Vec<PathBuf>,
         gen: u64,
         theme: Theme,
+        lang: Lang,
         /// DPR da janela (1.0 = sem Retina). Via `WindowScale`, como o tema.
         render_scale: f32,
         /// Tique da barra indeterminada de abertura (issue #41): só conta,
@@ -1124,6 +1139,7 @@ pub enum Session {
         recents: Vec<PathBuf>,
         gen: u64,
         theme: Theme,
+        lang: Lang,
         /// DPR da janela (1.0 = sem Retina). Via `WindowScale`, como o tema.
         render_scale: f32,
     },
@@ -1299,6 +1315,7 @@ impl Tabs {
             );
         }
         PaletteContext {
+            lang: ready.lang,
             outline,
             recents,
             dochits,
@@ -1340,6 +1357,12 @@ impl Tabs {
     fn set_theme(&mut self, theme: Theme) {
         for doc in &mut self.docs {
             doc.theme = theme;
+        }
+    }
+
+    fn set_lang(&mut self, lang: Lang) {
+        for doc in &mut self.docs {
+            doc.lang = lang;
         }
     }
 
@@ -1515,6 +1538,8 @@ pub struct Ready {
     media_boxes_issued: bool,
     /// Tema Kiri — sobrevive a `begin_open`/`finish_open`/`close_document`.
     pub theme: Theme,
+    /// Idioma da interface — sobrevive a `begin_open`/`finish_open`/`close_document`.
+    pub lang: Lang,
     /// Menu ⋯ aberto. Só existe em `Ready`; zera ao trocar de documento.
     pub overflow_open: bool,
     /// Grupo Recentes expandido no ⋯; colapsado por padrão. Só existe em
@@ -1587,12 +1612,14 @@ pub struct PrintDialog {
     pub preview: usize,
     pub busy: bool,
     pub error: Option<String>,
+    lang: Lang,
 }
 
 impl PrintDialog {
-    fn fresh(page_count: u32, current: PageNo) -> Self {
+    fn fresh(page_count: u32, current: PageNo, lang: Lang) -> Self {
         let current_1 = current.index().saturating_add(1).min(page_count.max(1));
         Self {
+            lang,
             printers: Vec::new(),
             printers_loading: true,
             selected: None,
@@ -1617,10 +1644,13 @@ impl PrintDialog {
             RangeMode::All => PrintRange::All,
             RangeMode::Current => PrintRange::Current(current),
             RangeMode::Custom => {
-                let from = parse_1based(&self.from_input, page_count)?;
-                let to = parse_1based(&self.to_input, page_count)?;
+                let from = parse_1based(&self.from_input, page_count, self.lang)?;
+                let to = parse_1based(&self.to_input, page_count, self.lang)?;
                 if from > to {
-                    return Err("«De» maior que «Até»".into());
+                    return Err(self
+                        .lang
+                        .pick("«De» maior que «Até»", "«From» is after «To»")
+                        .into());
                 }
                 PrintRange::FromTo {
                     from: PageNo::from_index(from - 1),
@@ -1806,7 +1836,15 @@ fn start_save_dialog(ready: &mut Ready) -> Task<Message> {
         return Task::none();
     };
     if is_same_file(&dest, &source) {
-        ready.save_status = Some("Escolha outro nome — o original nunca é sobrescrito.".into());
+        ready.save_status = Some(
+            ready
+                .lang
+                .pick(
+                    "Escolha outro nome — o original nunca é sobrescrito.",
+                    "Choose another name. The original is never overwritten.",
+                )
+                .into(),
+        );
         return Task::none();
     }
     ready.save_status = None;
@@ -1825,13 +1863,19 @@ fn start_save_dialog(ready: &mut Ready) -> Task<Message> {
     )
 }
 
-fn parse_1based(input: &str, page_count: u32) -> Result<u32, String> {
+fn parse_1based(input: &str, page_count: u32, lang: Lang) -> Result<u32, String> {
     input
         .trim()
         .parse::<u32>()
         .ok()
         .filter(|page| (1..=page_count.max(1)).contains(page))
-        .ok_or_else(|| format!("use páginas de 1 até {}", page_count.max(1)))
+        .ok_or_else(|| {
+            format!(
+                "{} {}",
+                lang.pick("use páginas de 1 até", "use pages from 1 to"),
+                page_count.max(1)
+            )
+        })
 }
 
 struct PageCatalog {
@@ -2235,6 +2279,7 @@ pub enum Message {
         result: Result<(), String>,
     },
     SetTheme(Theme),
+    SetLang(Lang),
     /// Janela informou tamanho + identidade: ajusta viewport e reconsulta o DPR.
     WindowMetrics {
         width: f32,
@@ -2265,20 +2310,34 @@ pub enum Message {
     RecentsReady(Vec<PathBuf>),
 }
 
-#[derive(Debug, Clone, thiserror::Error)]
+#[derive(Debug, Clone)]
 pub enum OpenError {
-    #[error("não foi possível ler o arquivo: {0}")]
     Io(String),
-    #[error("não foi possível abrir o PDF: {0}")]
     Engine(String),
-    #[error("assinaturas: {0}")]
     Sign(String),
+}
+
+impl OpenError {
+    pub fn message(&self, lang: Lang) -> String {
+        match self {
+            OpenError::Io(err) => format!(
+                "{}: {err}",
+                lang.pick("não foi possível ler o arquivo", "could not read the file")
+            ),
+            OpenError::Engine(err) => format!(
+                "{}: {err}",
+                lang.pick("não foi possível abrir o PDF", "could not open the PDF")
+            ),
+            OpenError::Sign(err) => format!("{}: {err}", lang.pick("assinaturas", "signatures")),
+        }
+    }
 }
 
 impl Session {
     pub fn empty() -> Self {
         Session::Empty(EmptyState {
             theme: read_theme(),
+            lang: read_lang(),
             render_scale: 1.0,
             ..EmptyState::default()
         })
@@ -2290,6 +2349,7 @@ impl Session {
             recents: read_recents(),
             gen: 1,
             theme: read_theme(),
+            lang: read_lang(),
             render_scale: 1.0,
             phase: 0,
         }
@@ -2308,7 +2368,10 @@ impl Session {
                     }),
                 )
             }
-            Session::Empty(_) => (self, empty_tasks()),
+            Session::Empty(_) => {
+                let tasks = empty_tasks(self.lang());
+                (self, tasks)
+            }
             _ => (self, Task::none()),
         }
     }
@@ -2465,7 +2528,11 @@ impl Session {
                         // versão; qualquer escrita futura muda de novo e re-tenta.
                         doc.disk_identity = identity;
                         doc.disk_stale = false;
-                        doc.save_status = Some("Falha ao recarregar.".into());
+                        doc.save_status = Some(
+                            doc.lang
+                                .pick("Falha ao recarregar.", "Could not reload the file.")
+                                .into(),
+                        );
                     }
                 }
                 Task::batch([self.schedule_work(), self.nav_follow_active()])
@@ -2831,7 +2898,15 @@ impl Session {
                         if let Some(md) =
                             annotations_markdown(&name, &ready.annotations, &ready.pages.text)
                         {
-                            ready.save_status = Some("Destaques copiados como Markdown.".into());
+                            ready.save_status = Some(
+                                ready
+                                    .lang
+                                    .pick(
+                                        "Destaques copiados como Markdown.",
+                                        "Highlights copied as Markdown.",
+                                    )
+                                    .into(),
+                            );
                             return clipboard::write(md);
                         }
                     }
@@ -3171,7 +3246,11 @@ impl Session {
                 };
                 ready.overflow_open = false;
                 ready.print_status = None;
-                ready.print_dialog = Some(PrintDialog::fresh(ready.page_count(), ready.visible));
+                ready.print_dialog = Some(PrintDialog::fresh(
+                    ready.page_count(),
+                    ready.visible,
+                    ready.lang,
+                ));
                 Task::batch([
                     Task::perform(
                         async move {
@@ -3363,19 +3442,24 @@ impl Session {
                     }
                 };
                 let Some(printer) = dialog.selected_printer().map(|info| info.name.clone()) else {
-                    dialog.error = Some("nenhuma impressora selecionada".into());
+                    dialog.error = Some(
+                        dialog
+                            .lang
+                            .pick("nenhuma impressora selecionada", "no printer selected")
+                            .into(),
+                    );
                     return Task::none();
                 };
                 dialog.busy = true;
                 dialog.error = None;
                 let printer_msg = printer.clone();
+                let lang = dialog.lang;
                 Task::perform(
                     async move {
                         tokio::task::spawn_blocking(move || {
                             match print_job_pdf(&engine, &annotations, selection) {
-                                Ok(pdf) => {
-                                    spool_pdf(&printer, &pdf, &title).map_err(|err| err.to_string())
-                                }
+                                Ok(pdf) => spool_pdf(&printer, &pdf, &title, lang)
+                                    .map_err(|err| err.to_string()),
                                 Err(err) => Err(err.to_string()),
                             }
                         })
@@ -3399,8 +3483,10 @@ impl Session {
                         match result {
                             Ok(job) => {
                                 ready.print_dialog = None;
-                                ready.print_status =
-                                    Some(format!("Enviado para {printer} (job {job})"));
+                                ready.print_status = Some(format!(
+                                    "{} {printer} (job {job})",
+                                    ready.lang.pick("Enviado para", "Sent to")
+                                ));
                             }
                             Err(err) => {
                                 if let Some(dialog) = ready.print_dialog.as_mut() {
@@ -3476,7 +3562,15 @@ impl Session {
                 ready.overflow_open = false;
                 ready.save_status = None;
                 if ready.annotations.is_empty() {
-                    ready.save_status = Some("Nada para salvar — marque o texto primeiro.".into());
+                    ready.save_status = Some(
+                        ready
+                            .lang
+                            .pick(
+                                "Nada para salvar — marque o texto primeiro.",
+                                "Nothing to save. Mark some text first.",
+                            )
+                            .into(),
+                    );
                     return Task::none();
                 }
                 // Assinado: o aviso vem antes do diálogo (a cópia com
@@ -3522,10 +3616,16 @@ impl Session {
                                     .file_name()
                                     .map(|name| name.to_string_lossy().into_owned())
                                     .unwrap_or_else(|| path.display().to_string());
-                                ready.save_status = Some(format!("Cópia salva em {name}"));
+                                ready.save_status = Some(format!(
+                                    "{} {name}",
+                                    ready.lang.pick("Cópia salva em", "Copy saved to")
+                                ));
                             }
                             Err(err) => {
-                                ready.save_status = Some(format!("Falha ao salvar: {err}"));
+                                ready.save_status = Some(format!(
+                                    "{}: {err}",
+                                    ready.lang.pick("Falha ao salvar", "Could not save")
+                                ));
                             }
                         }
                     }
@@ -3540,6 +3640,12 @@ impl Session {
                 self.set_theme(theme);
                 self.close_overflow();
                 let _ = save_theme(theme);
+                Task::none()
+            }
+            Message::SetLang(lang) => {
+                self.set_lang(lang);
+                self.close_overflow();
+                let _ = save_lang(lang);
                 Task::none()
             }
             Message::PagesScrolled(y) => {
@@ -3589,7 +3695,7 @@ impl Session {
                 if let Some(empty) = self.browser_mut() {
                     empty.cwd = path.clone();
                     empty.listing_error = None;
-                    return Task::perform(list_path(path.clone()), move |result| {
+                    return Task::perform(list_path(path.clone(), empty.lang), move |result| {
                         Message::ListingReady {
                             path: path.clone(),
                             result,
@@ -3646,7 +3752,7 @@ impl Session {
     }
 
     pub fn view(&self) -> iced::Element<'_, Message> {
-        crate::view::chrome(self, self.theme())
+        crate::view::chrome(self, self.theme(), self.lang())
     }
 
     pub fn subscription(&self) -> iced::Subscription<Message> {
@@ -3684,6 +3790,7 @@ impl Session {
     pub fn begin_open(&mut self, source: OpenSource) -> Task<Message> {
         let recents = self.recents();
         let theme = self.theme();
+        let lang = self.lang();
         let render_scale = self.render_scale();
         let mut gen = self.open_gen().wrapping_add(1);
         if gen == 0 {
@@ -3703,6 +3810,7 @@ impl Session {
                     recents,
                     gen,
                     theme,
+                    lang,
                     render_scale,
                     phase: 0,
                 };
@@ -3737,6 +3845,7 @@ impl Session {
         };
         let recents = merge_recents(self.recents(), read_recents());
         let theme = self.theme();
+        let lang = self.lang();
         let render_scale = self.render_scale();
         match result {
             Ok(mut ready) => {
@@ -3745,6 +3854,7 @@ impl Session {
                 let _ = save_recents(&recents);
                 ready.recents = recents;
                 ready.theme = theme;
+                ready.lang = lang;
                 ready.render_scale = render_scale;
                 ready.open_gen = gen;
                 ready.disk_identity = file_identity(ready.source.path());
@@ -3780,7 +3890,11 @@ impl Session {
                             .take()
                             .map(|(_, source)| source.path().display().to_string())
                             .unwrap_or_default();
-                        tabs.open_error = Some(format!("Falha ao abrir {name}: {err}"));
+                        tabs.open_error = Some(format!(
+                            "{} {name}: {}",
+                            lang.pick("Falha ao abrir", "Could not open"),
+                            err.message(lang)
+                        ));
                     }
                     return;
                 }
@@ -3797,10 +3911,11 @@ impl Session {
                 let _ = save_recents(&recents);
                 *self = Session::Failed {
                     source,
-                    message: err.to_string(),
+                    message: err.message(lang),
                     recents,
                     gen,
                     theme,
+                    lang,
                     render_scale,
                 };
             }
@@ -3815,6 +3930,7 @@ impl Session {
         }
         let recents = self.recents();
         let theme = self.theme();
+        let lang = self.lang();
         let open_gen = self.open_gen();
         let render_scale = self.render_scale();
         let Session::Ready(tabs) = self else {
@@ -3826,12 +3942,13 @@ impl Session {
             tabs.home = Some(EmptyState {
                 recents,
                 theme,
+                lang,
                 open_gen,
                 render_scale,
                 ..EmptyState::default()
             });
         }
-        empty_tasks()
+        empty_tasks(lang)
     }
 
     /// Prévias dos cartões do Início, uma por vez (a worker do Pdfium é uma
@@ -3900,6 +4017,7 @@ impl Session {
     fn finish_close_document(&mut self) -> Task<Message> {
         let recents = self.recents();
         let theme = self.theme();
+        let lang = self.lang();
         let open_gen = self.open_gen();
         let render_scale = self.render_scale();
         // Toda aba solta o seu documento na worker (issue #40): sem isto o
@@ -3912,11 +4030,12 @@ impl Session {
         *self = Session::Empty(EmptyState {
             recents,
             theme,
+            lang,
             open_gen,
             render_scale,
             ..EmptyState::default()
         });
-        empty_tasks()
+        empty_tasks(lang)
     }
 
     /// Fecha a aba `index` (⌘W ou o × da faixa). A última aba fecha a janela,
@@ -4001,7 +4120,15 @@ impl Session {
         let ready = tabs.active_mut();
         ready.overflow_open = false;
         if ready.annotations.is_empty() {
-            ready.save_status = Some("Nada para salvar — marque o texto primeiro.".into());
+            ready.save_status = Some(
+                ready
+                    .lang
+                    .pick(
+                        "Nada para salvar — marque o texto primeiro.",
+                        "Nothing to save. Mark some text first.",
+                    )
+                    .into(),
+            );
             return Task::none();
         }
         if needs_sign_warning(&ready.signatures) {
@@ -4127,6 +4254,24 @@ impl Session {
         }
     }
 
+    pub fn lang(&self) -> Lang {
+        match self {
+            Session::Empty(empty) => empty.lang,
+            Session::Loading { lang, .. } | Session::Failed { lang, .. } => *lang,
+            Session::Ready(ready) => ready.lang,
+        }
+    }
+
+    fn set_lang(&mut self, lang: Lang) {
+        match self {
+            Session::Empty(empty) => empty.lang = lang,
+            Session::Loading { lang: current, .. } | Session::Failed { lang: current, .. } => {
+                *current = lang
+            }
+            Session::Ready(tabs) => tabs.set_lang(lang),
+        }
+    }
+
     fn close_overflow(&mut self) {
         if let Session::Ready(ready) = self {
             ready.overflow_open = false;
@@ -4161,9 +4306,15 @@ impl Session {
     /// Fontes da paleta da tela para `query`.
     fn palette_context_for(&self, query: &str) -> Option<PaletteContext> {
         match self {
-            Session::Empty(empty) => Some(PaletteContext::home(empty, &[], query)),
+            Session::Empty(empty) => Some(PaletteContext {
+                lang: empty.lang,
+                ..PaletteContext::home(empty, &[], query)
+            }),
             Session::Ready(tabs) => Some(match tabs.home() {
-                Some(home) => PaletteContext::home(home, tabs.docs(), query),
+                Some(home) => PaletteContext {
+                    lang: home.lang,
+                    ..PaletteContext::home(home, tabs.docs(), query)
+                },
                 None => tabs.palette_context(query),
             }),
             _ => None,
@@ -4559,10 +4710,10 @@ async fn thumbnail_task(path: PathBuf, width: u32) -> Option<Bitmap> {
         .flatten()
 }
 
-fn empty_tasks() -> Task<Message> {
+fn empty_tasks(lang: Lang) -> Task<Message> {
     Task::batch([
         Task::perform(load_recents(), Message::RecentsReady),
-        Task::perform(list_path(None), |result| Message::ListingReady {
+        Task::perform(list_path(None, lang), |result| Message::ListingReady {
             path: None,
             result,
         }),
@@ -5858,10 +6009,11 @@ impl Ready {
         // O motor antigo sai da worker antes do Ready cair (Drop não fecha).
         self.close_engine();
         let (visible, zoom, view_mode) = (self.visible, self.zoom, self.view_mode);
-        let (rotation, viewport, theme, scale) = (
+        let (rotation, viewport, theme, lang, scale) = (
             self.view_rotation,
             self.viewport,
             self.theme,
+            self.lang,
             self.render_scale,
         );
         let recents = std::mem::take(&mut self.recents);
@@ -5872,6 +6024,7 @@ impl Ready {
         self.view_rotation = rotation;
         self.viewport = viewport;
         self.theme = theme;
+        self.lang = lang;
         self.render_scale = scale;
         self.recents = recents;
         // Renders do motor antigo em voo voltam com a geração antiga: o guarda
@@ -5886,7 +6039,11 @@ impl Ready {
         }
         self.history.reset(self.visible);
         self.sync_page_input();
-        self.save_status = Some("Documento atualizado.".into());
+        self.save_status = Some(
+            self.lang
+                .pick("Documento atualizado.", "Document updated.")
+                .into(),
+        );
         self.save_position();
     }
 
@@ -6222,6 +6379,7 @@ impl Document {
             recents: Vec::new(),
             render_scale: 1.0,
             theme: Theme::Dark,
+            lang: Lang::Pt,
             overflow_open: false,
             recents_expanded: false,
             about_open: false,
@@ -6345,11 +6503,11 @@ impl std::fmt::Debug for Ready {
 
 impl EmptyState {
     pub fn path_label(&self) -> String {
-        display_path(self.cwd.as_deref())
+        display_path(self.cwd.as_deref(), self.lang)
     }
 
     pub fn parent(&self) -> Option<Option<PathBuf>> {
-        self.cwd.as_ref().map(|cwd| parent_of(cwd))
+        self.cwd.as_ref().map(|cwd| parent_of(cwd, self.lang))
     }
 }
 
@@ -10550,6 +10708,7 @@ mod tests {
             recents: Vec::new(),
             gen: 1,
             theme: Theme::Dark,
+            lang: Lang::Pt,
             render_scale: 1.0,
             phase: 0,
         };
@@ -11229,6 +11388,24 @@ mod tests {
             assert_eq!(Session::empty().theme(), Theme::Light);
             apply(&mut session, Message::SetTheme(Theme::Dark));
             assert_eq!(crate::prefs::read_theme(), Theme::Dark);
+        });
+        let _ = std::fs::remove_file(&prefs);
+    }
+
+    #[test]
+    fn set_lang_updates_state_and_persists() {
+        let prefs =
+            std::env::temp_dir().join(format!("tsuro-prefs-unit-{}-lang", std::process::id()));
+        crate::prefs::with_prefs_path(prefs.clone(), || {
+            let _ = std::fs::remove_file(&prefs);
+            let mut session = Session::empty();
+            assert_eq!(session.lang(), Lang::Pt);
+            apply(&mut session, Message::SetLang(Lang::En));
+            assert_eq!(session.lang(), Lang::En);
+            assert_eq!(crate::prefs::read_lang(), Lang::En);
+            assert_eq!(Session::empty().lang(), Lang::En);
+            apply(&mut session, Message::SetLang(Lang::Pt));
+            assert_eq!(crate::prefs::read_lang(), Lang::Pt);
         });
         let _ = std::fs::remove_file(&prefs);
     }
@@ -13030,7 +13207,7 @@ mod tests {
         use std::collections::HashSet;
         let titles: HashSet<&str> = PaletteAction::ALL
             .iter()
-            .map(|id| match PaletteItem::action(*id) {
+            .map(|id| match PaletteItem::action(*id, Lang::Pt) {
                 PaletteItem::Action { title, .. } => title,
                 other => panic!("esperava Action, veio {other:?}"),
             })
@@ -13051,7 +13228,7 @@ mod tests {
         );
         assert_eq!(PaletteAction::ALL.len(), 9);
         for id in PaletteAction::ALL {
-            match PaletteItem::action(id) {
+            match PaletteItem::action(id, Lang::Pt) {
                 PaletteItem::Action { id: got, hint, .. } => {
                     assert_eq!(got, id);
                     let expect = match id {
@@ -13939,7 +14116,7 @@ mod tests {
     #[test]
     fn palette_scroll_offset_sums_plain_and_sub_rows() {
         let items = vec![
-            PaletteItem::action(PaletteAction::TogglePages),
+            PaletteItem::action(PaletteAction::TogglePages, Lang::Pt),
             PaletteItem::DocHit {
                 page: PageNo::first(),
                 range: TextRange { start: 0, end: 1 },

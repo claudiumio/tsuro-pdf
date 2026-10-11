@@ -5,6 +5,7 @@ use std::path::{Path, PathBuf};
 
 use iced::widget::image;
 
+use crate::i18n::Lang;
 use crate::kiri::Theme;
 use crate::session::PaletteState;
 
@@ -36,6 +37,8 @@ pub struct EmptyState {
     pub open_gen: u64,
     /// Tema Kiri — `Default` é Dark; `Session::empty()` carrega do prefs.
     pub theme: Theme,
+    /// Idioma da interface — `Default` é Pt; `Session::empty()` carrega do prefs.
+    pub lang: Lang,
     /// DPR da janela; 0.0 (`Default`) = desconhecido, `page_scale` trata como 1.0.
     pub render_scale: f32,
     /// Prévias dos cartões de arquivo (recentes e PDFs da pasta), geradas uma
@@ -192,14 +195,14 @@ pub fn merge_recents(primary: Vec<PathBuf>, secondary: Vec<PathBuf>) -> Vec<Path
     out
 }
 
-pub fn special_folders() -> Vec<FsEntry> {
+pub fn special_folders(lang: Lang) -> Vec<FsEntry> {
     let Some(home) = std::env::var_os("HOME").or_else(|| std::env::var_os("USERPROFILE")) else {
         return Vec::new();
     };
     let home = PathBuf::from(home);
     let candidates = [
-        ("Início", home.clone()),
-        ("Documentos", home.join("Documents")),
+        (lang.pick("Início", "Home"), home.clone()),
+        (lang.pick("Documentos", "Documents"), home.join("Documents")),
         ("Downloads", home.join("Downloads")),
         ("Desktop", home.join("Desktop")),
     ];
@@ -214,11 +217,11 @@ pub fn special_folders() -> Vec<FsEntry> {
         .collect()
 }
 
-pub fn list_dir(path: &Path) -> Result<Vec<FsEntry>, String> {
+pub fn list_dir(path: &Path, lang: Lang) -> Result<Vec<FsEntry>, String> {
     let mut entries = Vec::new();
-    let reader = std::fs::read_dir(path).map_err(friendly_list_error)?;
+    let reader = std::fs::read_dir(path).map_err(|err| friendly_list_error(err, lang))?;
     for ent in reader {
-        let ent = ent.map_err(friendly_list_error)?;
+        let ent = ent.map_err(|err| friendly_list_error(err, lang))?;
         let path = ent.path();
         let name = ent.file_name().to_string_lossy().into_owned();
         if name.starts_with('.') {
@@ -237,8 +240,8 @@ pub fn list_dir(path: &Path) -> Result<Vec<FsEntry>, String> {
     Ok(entries)
 }
 
-pub fn parent_of(cwd: &Path) -> Option<PathBuf> {
-    if special_folders().iter().any(|e| e.path == cwd) {
+pub fn parent_of(cwd: &Path, lang: Lang) -> Option<PathBuf> {
+    if special_folders(lang).iter().any(|e| e.path == cwd) {
         return None;
     }
     cwd.parent().map(|p| p.to_path_buf())
@@ -264,30 +267,38 @@ pub fn downloads_dir() -> Option<PathBuf> {
 }
 
 /// PermissionDenied does not distinguish folder permissions from OS consent.
-fn friendly_list_error(e: std::io::Error) -> String {
+fn friendly_list_error(e: std::io::Error, lang: Lang) -> String {
     if e.kind() != std::io::ErrorKind::PermissionDenied {
         return e.to_string();
     }
     if cfg!(target_os = "macos") {
-        "Sem acesso a esta pasta. Confira as permissões da pasta. Se o macOS bloqueou o acesso, confira Ajustes do Sistema › Privacidade e Segurança › Arquivos e Pastas › TsuroPDF.".to_string()
+        lang.pick("Sem acesso a esta pasta. Confira as permissões da pasta. Se o macOS bloqueou o acesso, confira Ajustes do Sistema › Privacidade e Segurança › Arquivos e Pastas › TsuroPDF.", "No access to this folder. Check the folder permissions. If macOS blocked access, check System Settings › Privacy & Security › Files & Folders › TsuroPDF.").to_string()
     } else if cfg!(target_os = "windows") {
-        "Sem acesso a esta pasta. Confira as permissões da pasta no Windows.".to_string()
+        lang.pick(
+            "Sem acesso a esta pasta. Confira as permissões da pasta no Windows.",
+            "No access to this folder. Check the folder permissions in Windows.",
+        )
+        .to_string()
     } else {
-        "Sem acesso a esta pasta (permissão negada).".to_string()
+        lang.pick(
+            "Sem acesso a esta pasta (permissão negada).",
+            "No access to this folder (permission denied).",
+        )
+        .to_string()
     }
 }
 
-pub fn display_path(cwd: Option<&Path>) -> String {
+pub fn display_path(cwd: Option<&Path>, lang: Lang) -> String {
     match cwd {
-        None => "Pastas".to_string(),
+        None => lang.pick("Pastas", "Folders").to_string(),
         Some(path) => path.display().to_string(),
     }
 }
 
-pub async fn list_path(path: Option<PathBuf>) -> Result<Vec<FsEntry>, String> {
+pub async fn list_path(path: Option<PathBuf>, lang: Lang) -> Result<Vec<FsEntry>, String> {
     tokio::task::spawn_blocking(move || match &path {
-        None => Ok(special_folders()),
-        Some(p) => list_dir(p),
+        None => Ok(special_folders(lang)),
+        Some(p) => list_dir(p, lang),
     })
     .await
     .map_err(|e| e.to_string())?
@@ -320,7 +331,7 @@ mod tests {
         std::fs::write(root.join("a.PDF"), b"%PDF").unwrap();
         std::fs::write(root.join("note.txt"), b"hi").unwrap();
         std::fs::write(root.join(".hidden.pdf"), b"%PDF").unwrap();
-        let entries = list_dir(&root).unwrap();
+        let entries = list_dir(&root, Lang::Pt).unwrap();
         let names: Vec<_> = entries.iter().map(|e| e.name.as_str()).collect();
         assert!(names.contains(&"sub"));
         assert!(names.iter().any(|n| n.eq_ignore_ascii_case("a.pdf")));
@@ -436,7 +447,7 @@ mod tests {
     #[test]
     fn list_error_denied_does_not_assume_os_consent_is_the_cause() {
         let denied = std::io::Error::new(std::io::ErrorKind::PermissionDenied, "os error 1");
-        let msg = friendly_list_error(denied);
+        let msg = friendly_list_error(denied, Lang::Pt);
         assert!(msg.starts_with("Sem acesso a esta pasta"), "{msg}");
         if cfg!(target_os = "macos") {
             assert!(msg.contains("permissões da pasta"), "{msg}");
@@ -448,8 +459,8 @@ mod tests {
     #[test]
     fn list_error_other_passes_through() {
         let missing = std::io::Error::new(std::io::ErrorKind::NotFound, "sem tal pasta");
-        assert_eq!(friendly_list_error(missing), "sem tal pasta");
-        assert!(list_dir(Path::new("/tsuro-nao-existe-xyz")).is_err());
+        assert_eq!(friendly_list_error(missing, Lang::Pt), "sem tal pasta");
+        assert!(list_dir(Path::new("/tsuro-nao-existe-xyz"), Lang::Pt).is_err());
     }
 
     #[test]
