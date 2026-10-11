@@ -5,6 +5,7 @@ use std::sync::Arc;
 use iced::clipboard;
 use iced::event::{self, Event};
 use iced::keyboard::{self, key::Named, Key};
+use iced::mouse;
 use iced::widget::{image, scrollable, text_editor};
 use iced::window;
 use iced::Task;
@@ -64,6 +65,67 @@ const LOADING_TICK: std::time::Duration = std::time::Duration::from_millis(90);
 
 /// Poll do auto-reload (issue #46): barato (`stat` por aba), sem watcher.
 const RELOAD_POLL: std::time::Duration = std::time::Duration::from_secs(2);
+
+/// Tique do HUD: um tique inteiro sem mover o mouse esconde a pílula
+/// (some entre 1 e 2 s depois do último movimento).
+const HUD_TICK: std::time::Duration = std::time::Duration::from_secs(1);
+
+/// HUD flutuante (página e zoom), da janela: aparece no primeiro movimento
+/// do mouse e some parado. Mover o mouse não vira mensagem a cada pixel —
+/// só a primeira de cada tique (`wants_cursor`), para não reconstruir a
+/// tela à toa.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) struct HudState {
+    visible: bool,
+    /// Houve movimento desde o último tique.
+    moved: bool,
+    /// Cursor sobre a pílula: não some embaixo da mão.
+    hovered: bool,
+}
+
+impl Default for HudState {
+    fn default() -> Self {
+        // Visível ao abrir: some no primeiro tique se o mouse não mexer.
+        Self {
+            visible: true,
+            moved: false,
+            hovered: false,
+        }
+    }
+}
+
+impl HudState {
+    pub(crate) fn visible(&self) -> bool {
+        self.visible
+    }
+
+    /// Escondido ou sem movimento neste tique: o próximo `CursorMoved`
+    /// interessa. Fora isso, o filtro de eventos ignora o mouse.
+    fn wants_cursor(&self) -> bool {
+        !self.visible || !self.moved
+    }
+
+    fn wake(&mut self) {
+        self.visible = true;
+        self.moved = true;
+    }
+
+    /// `keep`: algo segura a pílula na tela (seleção viva).
+    fn tick(&mut self, keep: bool) {
+        if self.moved {
+            self.moved = false;
+        } else if !self.hovered && !keep {
+            self.visible = false;
+        }
+    }
+
+    fn hover(&mut self, hovered: bool) {
+        self.hovered = hovered;
+        if hovered {
+            self.visible = true;
+        }
+    }
+}
 
 #[derive(Debug, Clone)]
 pub enum OpenSource {
@@ -1025,6 +1087,8 @@ pub struct Tabs {
     /// vivas; abrir um PDF dali vira aba nova e clicar numa aba volta para
     /// ela. `None` = documento ativo na tela.
     home: Option<EmptyState>,
+    /// HUD flutuante: visível ao mover o mouse, some parado.
+    pub(crate) hud: HudState,
 }
 
 /// Fechamento que ainda precisa de confirmação.
@@ -1063,6 +1127,7 @@ impl Tabs {
             palette: None,
             shift_held: false,
             home: None,
+            hud: HudState::default(),
         }
     }
 
@@ -1919,6 +1984,12 @@ pub enum Message {
     Close,
     /// Início (casinha): recentes e pastas por cima das abas, sem fechar nada.
     GoHome,
+    /// Mouse mexeu: o HUD aparece (no máximo uma por tique, ver `HudState`).
+    HudWake,
+    /// Tique do HUD: sem movimento desde o anterior, ele some.
+    HudTick,
+    /// Cursor entrou/saiu da pílula do HUD.
+    HudHover(bool),
     /// Fecha a aba ativa (⌘W); se for a última, fecha a janela (→ `Empty`).
     CloseTabActive,
     /// Fecha a aba `usize` (o × da faixa de abas).
@@ -2352,6 +2423,25 @@ impl Session {
             }
             Message::Close => self.close_document(),
             Message::GoHome => self.go_home(),
+            Message::HudWake => {
+                if let Session::Ready(tabs) = self {
+                    tabs.hud.wake();
+                }
+                Task::none()
+            }
+            Message::HudTick => {
+                if let Session::Ready(tabs) = self {
+                    let keep = tabs.selection_plain_text().is_some();
+                    tabs.hud.tick(keep);
+                }
+                Task::none()
+            }
+            Message::HudHover(hovered) => {
+                if let Session::Ready(tabs) = self {
+                    tabs.hud.hover(hovered);
+                }
+                Task::none()
+            }
             Message::CloseTabActive => {
                 let index = match self {
                     Session::Ready(tabs) => tabs.active_index(),
@@ -3460,27 +3550,14 @@ impl Session {
     }
 
     pub fn subscription(&self) -> iced::Subscription<Message> {
-        let events = event::listen_with(|event, status, id| match event {
-            Event::Window(window::Event::FileDropped(path)) => Some(Message::FileDropped(path)),
-            Event::Window(window::Event::CloseRequested) => Some(Message::CloseWindow(id)),
-            Event::Window(window::Event::Unfocused) => Some(Message::DragCancelled),
-            Event::Window(window::Event::Opened { size, .. })
-            | Event::Window(window::Event::Resized(size)) => Some(Message::WindowMetrics {
-                width: size.width,
-                // A faixa de abas encolhe o painel; quem desconta é
-                // `WindowMetrics` (a altura da faixa é estado, não evento).
-                height: (size.height - crate::view::CHROME_HEIGHT).max(1.0),
-                id,
-            }),
-            Event::Keyboard(keyboard::Event::KeyPressed { key, modifiers, .. }) => {
-                keyboard_message(key, modifiers, status)
-            }
-            // Shift para o Shift+Enter: vale com foco ou sem (o submit lê).
-            Event::Keyboard(keyboard::Event::ModifiersChanged(modifiers)) => {
-                Some(Message::ModifiersChanged(modifiers))
-            }
-            _ => None,
-        });
+        // O mouse só entra no filtro quando o HUD quer saber dele: fora isso,
+        // mover o cursor não gera mensagem nenhuma (nem redesenho).
+        let wants_cursor = matches!(self, Session::Ready(tabs) if tabs.hud.wants_cursor());
+        let events = if wants_cursor {
+            event::listen_with(event_with_cursor)
+        } else {
+            event::listen_with(window_event)
+        };
         // Tique só enquanto a primeira aba carrega: a barra indeterminada
         // (view.rs) precisa de repintura; parado o app não redesenha à toa.
         if matches!(self, Session::Loading { .. }) {
@@ -3488,12 +3565,17 @@ impl Session {
                 events,
                 iced::time::every(LOADING_TICK).map(|_| Message::LoadingTick),
             ])
-        } else if matches!(self, Session::Ready(_)) {
+        } else if let Session::Ready(tabs) = self {
             // Poll de auto-reload (issue #46): `Ready` sempre tem aba aberta.
-            iced::Subscription::batch([
+            let mut subs = vec![
                 events,
                 iced::time::every(RELOAD_POLL).map(|_| Message::FileTick),
-            ])
+            ];
+            // Tique do HUD só com ele na tela: escondido, nada roda.
+            if tabs.hud.visible() {
+                subs.push(iced::time::every(HUD_TICK).map(|_| Message::HudTick));
+            }
+            iced::Subscription::batch(subs)
         } else {
             events
         }
@@ -4197,6 +4279,39 @@ impl Session {
             return page_data_task(ready.engine.clone(), page, doc_gen);
         }
         Task::none()
+    }
+}
+
+/// Eventos da janela e do teclado que viram mensagem (sem mouse).
+fn window_event(event: Event, status: event::Status, id: window::Id) -> Option<Message> {
+    match event {
+        Event::Window(window::Event::FileDropped(path)) => Some(Message::FileDropped(path)),
+        Event::Window(window::Event::CloseRequested) => Some(Message::CloseWindow(id)),
+        Event::Window(window::Event::Unfocused) => Some(Message::DragCancelled),
+        Event::Window(window::Event::Opened { size, .. })
+        | Event::Window(window::Event::Resized(size)) => Some(Message::WindowMetrics {
+            width: size.width,
+            // A faixa de abas encolhe o painel; quem desconta é
+            // `WindowMetrics` (a altura da faixa é estado, não evento).
+            height: (size.height - crate::view::CHROME_HEIGHT).max(1.0),
+            id,
+        }),
+        Event::Keyboard(keyboard::Event::KeyPressed { key, modifiers, .. }) => {
+            keyboard_message(key, modifiers, status)
+        }
+        // Shift para o Shift+Enter: vale com foco ou sem (o submit lê).
+        Event::Keyboard(keyboard::Event::ModifiersChanged(modifiers)) => {
+            Some(Message::ModifiersChanged(modifiers))
+        }
+        _ => None,
+    }
+}
+
+/// `window_event` + o primeiro movimento do mouse para o HUD.
+fn event_with_cursor(event: Event, status: event::Status, id: window::Id) -> Option<Message> {
+    match event {
+        Event::Mouse(mouse::Event::CursorMoved { .. }) => Some(Message::HudWake),
+        other => window_event(other, status, id),
     }
 }
 
@@ -7174,6 +7289,76 @@ mod tests {
         let mut session = Session::empty();
         apply(&mut session, Message::GoHome);
         assert!(matches!(session, Session::Empty(_)));
+    }
+
+    fn hud(session: &Session) -> HudState {
+        match session {
+            Session::Ready(tabs) => tabs.hud,
+            _ => panic!("sem abas"),
+        }
+    }
+
+    #[test]
+    fn hud_hides_when_the_mouse_rests_and_wakes_on_move() {
+        let Some(ready) = sample_ready() else {
+            return;
+        };
+        let mut session = Session::Ready(Tabs::single(ready));
+        assert!(hud(&session).visible(), "visível ao abrir");
+        apply(&mut session, Message::HudTick);
+        assert!(!hud(&session).visible(), "um tique parado esconde");
+        apply(&mut session, Message::HudWake);
+        assert!(hud(&session).visible(), "mexer o mouse mostra");
+        // Mexeu neste tique: atravessa o próximo, some no seguinte.
+        apply(&mut session, Message::HudTick);
+        assert!(hud(&session).visible());
+        apply(&mut session, Message::HudTick);
+        assert!(!hud(&session).visible());
+    }
+
+    #[test]
+    fn hud_stays_while_the_cursor_is_on_it() {
+        let Some(ready) = sample_ready() else {
+            return;
+        };
+        let mut session = Session::Ready(Tabs::single(ready));
+        apply(&mut session, Message::HudHover(true));
+        apply(&mut session, Message::HudTick);
+        apply(&mut session, Message::HudTick);
+        assert!(hud(&session).visible());
+        apply(&mut session, Message::HudHover(false));
+        apply(&mut session, Message::HudTick);
+        assert!(!hud(&session).visible());
+    }
+
+    #[test]
+    fn mouse_moves_reach_update_only_when_the_hud_asks() {
+        let moved = || {
+            Event::Mouse(mouse::Event::CursorMoved {
+                position: iced::Point::ORIGIN,
+            })
+        };
+        let id = window::Id::unique();
+        assert!(matches!(
+            event_with_cursor(moved(), event::Status::Ignored, id),
+            Some(Message::HudWake)
+        ));
+        assert!(window_event(moved(), event::Status::Ignored, id).is_none());
+        // Primeiro movimento do tique interessa; o resto do tique, não.
+        let mut state = HudState::default();
+        assert!(state.wants_cursor());
+        state.wake();
+        assert!(
+            !state.wants_cursor(),
+            "o resto do tique fica fora do update"
+        );
+        state.tick(false);
+        assert!(state.wants_cursor());
+        state.tick(false);
+        assert!(
+            !state.visible() && state.wants_cursor(),
+            "escondido, acorda"
+        );
     }
 
     #[test]
