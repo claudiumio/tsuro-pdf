@@ -401,15 +401,21 @@ fn page_data_from_doc(
     Ok((media, text))
 }
 
+/// `FPDF_GetPageSizeByIndexF` lê só o dicionário da página: carregar cada
+/// página (`pages().get`) custava ~140 ms em 400 páginas com a worker presa.
+/// Mesmo tamanho de `media_of` (inclui o `/Rotate` do arquivo).
 fn media_boxes_from_doc(document: &PdfDocument<'_>) -> Result<Vec<MediaBox>, EngineError> {
-    let total = u32::from(document.pages().len());
+    let pages = document.pages();
+    let total = u32::from(pages.len());
     let mut boxes = Vec::with_capacity(total as usize);
     for index in 0..total {
-        let page = document
-            .pages()
-            .get(page_index(PageNo::from_index(index))?)
+        let size = pages
+            .page_size(page_index(PageNo::from_index(index))?)
             .map_err(|e| EngineError(e.to_string()))?;
-        boxes.push(media_of(&page));
+        boxes.push(MediaBox {
+            width: size.width().value,
+            height: size.height().value,
+        });
     }
     Ok(boxes)
 }
@@ -935,6 +941,75 @@ mod tests {
             assert!((box_.height - media.height).abs() < 0.01);
             assert!(box_.width > 1.0 && box_.height > 1.0);
         }
+    }
+
+    /// PDF gerado no teste (`public/samples/` é read-only): uma página por
+    /// `(largura, altura, /Rotate)`, cada uma pintada de vermelho puro.
+    fn synthetic_pdf(pages: &[(f32, f32, i32)]) -> Arc<[u8]> {
+        use pdf_writer::{Content, Finish, Pdf, Rect, Ref};
+        let mut pdf = Pdf::new();
+        let catalog = Ref::new(1);
+        let tree = Ref::new(2);
+        let ids: Vec<(Ref, Ref)> = (0..pages.len() as i32)
+            .map(|i| (Ref::new(3 + 2 * i), Ref::new(4 + 2 * i)))
+            .collect();
+        pdf.catalog(catalog).pages(tree);
+        pdf.pages(tree)
+            .kids(ids.iter().map(|(page, _)| *page))
+            .count(pages.len() as i32);
+        for (&(width, height, rotate), &(page_id, content_id)) in pages.iter().zip(&ids) {
+            let mut page = pdf.page(page_id);
+            page.media_box(Rect::new(0.0, 0.0, width, height))
+                .parent(tree)
+                .contents(content_id)
+                .rotate(rotate);
+            page.finish();
+            let mut content = Content::new();
+            content.set_fill_rgb(1.0, 0.0, 0.0);
+            content.rect(0.0, 0.0, width, height);
+            content.fill_nonzero();
+            pdf.stream(content_id, &content.finish());
+        }
+        Arc::from(pdf.finish())
+    }
+
+    #[test]
+    fn media_boxes_by_index_match_loaded_pages_with_rotate() {
+        let pages = [(612.0, 792.0, 0), (612.0, 792.0, 90), (300.0, 200.0, 270)];
+        let Ok(engine) = PdfiumEngine::open(synthetic_pdf(&pages)) else {
+            return; // sem Pdfium ao lado do binário de teste
+        };
+        let boxes = engine.media_boxes().expect("caixas");
+        assert_eq!(boxes.len(), pages.len());
+        for (index, box_) in boxes.iter().enumerate() {
+            let (media, _) = engine
+                .page_data(PageNo::from_index(index as u32))
+                .expect("page data");
+            assert!((box_.width - media.width).abs() < 0.01, "página {index}");
+            assert!((box_.height - media.height).abs() < 0.01, "página {index}");
+        }
+        // `/Rotate 90` troca os lados, como `media_of` (página carregada).
+        assert!((boxes[1].width - 792.0).abs() < 0.01);
+        assert!((boxes[1].height - 612.0).abs() < 0.01);
+    }
+
+    #[test]
+    fn render_writes_rgba_channel_order() {
+        let Ok(engine) = PdfiumEngine::open(synthetic_pdf(&[(100.0, 100.0, 0)])) else {
+            return;
+        };
+        let surface = engine
+            .render(PageNo::first(), Scale::from_factor(1.0), 0)
+            .expect("render");
+        let bitmap = &surface.bitmap;
+        assert_eq!(
+            bitmap.rgba.len(),
+            (bitmap.width * bitmap.height * 4) as usize
+        );
+        let center = ((bitmap.height / 2 * bitmap.width + bitmap.width / 2) * 4) as usize;
+        // Vermelho puro em RGBA: o `image::Handle::from_rgba` da sessão conta
+        // com o byte order invertido que o pdfium-render liga por padrão.
+        assert_eq!(&bitmap.rgba[center..center + 4], &[255, 0, 0, 255]);
     }
 
     #[test]
