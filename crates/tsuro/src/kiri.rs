@@ -319,6 +319,49 @@ pub fn recent_card_style(tokens: Tokens) -> impl Fn(&iced::Theme) -> container::
     }
 }
 
+/// Cartão do Início (pasta ou PDF): fundo `elevated`, borda `line` que vira
+/// `accent` no hover — o cartão inteiro é o botão.
+pub fn home_card_style(tokens: Tokens) -> impl Fn(&iced::Theme, button::Status) -> button::Style {
+    move |_, status| {
+        let hot = matches!(status, button::Status::Hovered | button::Status::Pressed);
+        button::Style {
+            background: Some(Background::Color(tokens.elevated)),
+            text_color: tokens.ink,
+            border: Border {
+                color: if hot { tokens.accent } else { tokens.line },
+                width: 1.0,
+                radius: 10.0.into(),
+            },
+            shadow: Shadow::default(),
+        }
+    }
+}
+
+/// Área da prévia no cartão do Início: fundo `surface`, cantos 8px.
+pub fn home_preview_style(tokens: Tokens) -> impl Fn(&iced::Theme) -> container::Style {
+    move |_| container::Style {
+        background: Some(Background::Color(tokens.surface)),
+        border: Border {
+            radius: 8.0.into(),
+            ..Border::default()
+        },
+        ..container::Style::default()
+    }
+}
+
+/// Folha de papel no lugar da prévia que ainda não chegou (ou não abriu).
+pub fn home_page_style(tokens: Tokens) -> impl Fn(&iced::Theme) -> container::Style {
+    move |_| container::Style {
+        background: Some(Background::Color(tokens.page)),
+        border: Border {
+            color: tokens.line,
+            width: 1.0,
+            radius: 2.0.into(),
+        },
+        ..container::Style::default()
+    }
+}
+
 /// Moldura da folha PDF: sempre branca, uma sombra leve.
 pub fn page_frame(tokens: &Tokens) -> impl Fn(&iced::Theme) -> container::Style {
     let t = *tokens;
