@@ -588,6 +588,7 @@ pub enum OutlineKey {
 /// Ação da paleta (#45). Ids congelados; a fatia 2 despacha o catálogo.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum PaletteAction {
+    OpenFile,
     GoToPage,
     ZoomIn,
     ZoomOut,
@@ -599,7 +600,8 @@ pub(crate) enum PaletteAction {
 }
 
 impl PaletteAction {
-    pub(crate) const ALL: [PaletteAction; 8] = [
+    pub(crate) const ALL: [PaletteAction; 9] = [
+        PaletteAction::OpenFile,
         PaletteAction::GoToPage,
         PaletteAction::ZoomIn,
         PaletteAction::ZoomOut,
@@ -609,6 +611,11 @@ impl PaletteAction {
         PaletteAction::TogglePages,
         PaletteAction::FocusSearch,
     ];
+
+    /// Vale no Início? Lá o documento está escondido: só abrir.
+    fn on_home(self) -> bool {
+        matches!(self, PaletteAction::OpenFile)
+    }
 }
 
 /// Item da paleta (#45).
@@ -631,6 +638,10 @@ pub(crate) enum PaletteItem {
     Recent {
         path: PathBuf,
     },
+    /// PDF da pasta aberta no Início.
+    File {
+        path: PathBuf,
+    },
     GlobalHit {
         path: PathBuf,
         page: PageNo,
@@ -642,6 +653,7 @@ pub(crate) enum PaletteItem {
 impl PaletteItem {
     pub(crate) fn action(id: PaletteAction) -> Self {
         let (title, hint) = match id {
+            PaletteAction::OpenFile => ("Abrir PDF…", shortcut_hint(&Message::PickFile)),
             PaletteAction::GoToPage => ("Ir para página…", Some("Digite o número")),
             PaletteAction::ZoomIn => ("Aumentar zoom", Some("+")),
             PaletteAction::ZoomOut => ("Diminuir zoom", Some("-")),
@@ -666,7 +678,7 @@ impl PaletteItem {
             Self::Action { title, .. } => title,
             Self::DocHit { excerpt, .. } | Self::GlobalHit { excerpt, .. } => excerpt,
             Self::OutlineRow { title, .. } => title,
-            Self::Recent { path } => path
+            Self::Recent { path } | Self::File { path } => path
                 .file_name()
                 .and_then(|name| name.to_str())
                 .or_else(|| path.as_os_str().to_str())
@@ -678,7 +690,10 @@ impl PaletteItem {
         match self {
             Self::Action { hint, .. } => *hint,
             Self::GlobalHit { path, .. } => path.file_name().and_then(|name| name.to_str()),
-            Self::DocHit { .. } | Self::OutlineRow { .. } | Self::Recent { .. } => None,
+            Self::DocHit { .. }
+            | Self::OutlineRow { .. }
+            | Self::Recent { .. }
+            | Self::File { .. } => None,
         }
     }
 
@@ -688,6 +703,7 @@ impl PaletteItem {
             Self::DocHit { .. } => "search",
             Self::OutlineRow { .. } => "file-text",
             Self::Recent { .. } => "folder",
+            Self::File { .. } => "file-text",
             Self::GlobalHit { .. } => "pages",
         }
     }
@@ -709,7 +725,8 @@ pub(crate) struct PaletteState {
 }
 
 /// Fontes da paleta que dependem do documento aberto, como dados planos.
-/// Só `Tabs::palette_context` constrói — sempre sem o documento atual.
+/// `Tabs::palette_context` constrói a do documento (sempre sem o documento
+/// atual); `PaletteContext::home`, a do Início.
 /// Transitório por query: digitar recalcula, nunca toca o `Ready.search`.
 #[derive(Debug, Clone, Default)]
 pub(crate) struct PaletteContext {
@@ -717,6 +734,10 @@ pub(crate) struct PaletteContext {
     recents: Vec<PathBuf>,
     dochits: Vec<(PageNo, TextRange, String)>,
     global: Vec<(PathBuf, PageNo, TextRange, String)>,
+    /// PDFs da pasta aberta (só no Início).
+    files: Vec<PathBuf>,
+    /// Paleta do Início: sem as ações que agem no documento.
+    home: bool,
 }
 
 impl PaletteState {
@@ -769,8 +790,10 @@ impl PaletteState {
     /// Ordena por (score, fonte, título) e trunca.
     pub(crate) fn refresh(&mut self) {
         let query = self.query.as_str();
+        let home = self.context.home;
         let mut scored: Vec<(u8, SourceRank, PaletteItem)> = PaletteAction::ALL
             .into_iter()
+            .filter(|id| !home || id.on_home())
             .map(PaletteItem::action)
             .filter_map(|item| {
                 palette_match(query, item.title()).map(|score| (score, SourceRank::Action, item))
@@ -780,6 +803,7 @@ impl PaletteState {
         scored.extend(self.context.docs_scored(query));
         scored.extend(self.context.global_scored(query));
         scored.extend(self.context.recents_scored(query));
+        scored.extend(self.context.files_scored(query));
         scored
             .sort_by_cached_key(|(score, rank, item)| (*score, *rank, item.title().to_lowercase()));
         scored.truncate(PALETTE_ITEM_CAP);
@@ -830,9 +854,46 @@ enum SourceRank {
     Doc,
     Global,
     Recent,
+    File,
 }
 
 impl PaletteContext {
+    /// Fontes do Início: todos os recentes, os PDFs da pasta aberta e o texto
+    /// já extraído das abas abertas (nenhuma está na tela).
+    fn home(home: &EmptyState, docs: &[Ready], query: &str) -> Self {
+        let files = home
+            .listing
+            .iter()
+            .filter(|entry| !entry.is_dir && !home.recents.contains(&entry.path))
+            .take(PALETTE_SOURCE_CAP)
+            .map(|entry| entry.path.clone())
+            .collect();
+        let mut global = Vec::new();
+        for doc in docs {
+            let path = doc.source.path().to_path_buf();
+            global.extend(
+                Search::derive_capped(query, &doc.pages.text, PALETTE_SOURCE_CAP)
+                    .hits()
+                    .iter()
+                    .map(|hit| {
+                        (
+                            path.clone(),
+                            hit.page,
+                            hit.range,
+                            hit_excerpt(&doc.pages.text, hit),
+                        )
+                    }),
+            );
+        }
+        Self {
+            recents: home.recents.clone(),
+            files,
+            global,
+            home: true,
+            ..Self::default()
+        }
+    }
+
     /// Linhas do sumário casadas com a query.
     fn outline_scored(&self, query: &str) -> Vec<(u8, SourceRank, PaletteItem)> {
         self.outline
@@ -903,6 +964,17 @@ impl PaletteContext {
                 let recent = PaletteItem::Recent { path: path.clone() };
                 palette_match(query, recent.title())
                     .map(|score| (score, SourceRank::Recent, recent))
+            })
+            .collect()
+    }
+
+    /// PDFs da pasta do Início casados pelo nome do arquivo.
+    fn files_scored(&self, query: &str) -> Vec<(u8, SourceRank, PaletteItem)> {
+        self.files
+            .iter()
+            .filter_map(|path| {
+                let file = PaletteItem::File { path: path.clone() };
+                palette_match(query, file.title()).map(|score| (score, SourceRank::File, file))
             })
             .collect()
     }
@@ -1143,6 +1215,7 @@ impl Tabs {
         self.close_ask.is_some()
     }
 
+    #[cfg(test)]
     pub(crate) fn palette_open(&self) -> bool {
         self.palette.is_some()
     }
@@ -1230,6 +1303,7 @@ impl Tabs {
             recents,
             dochits,
             global,
+            ..PaletteContext::default()
         }
     }
 
@@ -2246,6 +2320,7 @@ impl Session {
                     &message,
                     Message::PickFile
                         | Message::OpenRecent(_)
+                        | Message::OpenPalette
                         | Message::Close
                         | Message::CloseTab(_)
                         | Message::SelectTab(_)
@@ -2253,6 +2328,17 @@ impl Session {
                 ))
         {
             return Task::none();
+        }
+        // Paleta aberta come ↑/↓/Enter — também a do Início, onde as teclas
+        // do documento ficam bloqueadas logo abaixo.
+        if let Message::OutlineKey(cmd) = &message {
+            if self.shown_palette().is_some() {
+                return match cmd {
+                    OutlineKey::Prev => self.palette_move(-1),
+                    OutlineKey::Next => self.palette_move(1),
+                    OutlineKey::Activate => self.palette_confirm(),
+                };
+            }
         }
         // Início aberto: o documento ativo está escondido, então o que age
         // nele não faz nada. Abrir, trocar/fechar abas e Esc seguem.
@@ -3047,14 +3133,6 @@ impl Session {
                 let Session::Ready(ready) = self else {
                     return Task::none();
                 };
-                // Paleta aberta come ↑/↓/Enter; fechada, o sumário segue como hoje.
-                if ready.palette_open() {
-                    return match cmd {
-                        OutlineKey::Prev => self.palette_move(-1),
-                        OutlineKey::Next => self.palette_move(1),
-                        OutlineKey::Activate => self.palette_confirm(),
-                    };
-                }
                 if !ready.outline_open || ready.outline.is_none() {
                     return Task::none();
                 }
@@ -3126,12 +3204,12 @@ impl Session {
                         return Task::none();
                     }
                 }
+                // Paleta (do documento ou do Início) desfaz sozinha; o segundo
+                // Esc segue o cascade.
+                if self.shown_palette().is_some() {
+                    return self.palette_close();
+                }
                 if let Session::Ready(ready) = self {
-                    // Paleta desfaz sozinha; o segundo Esc segue o cascade.
-                    if ready.palette_open() {
-                        ready.palette = None;
-                        return Task::none();
-                    }
                     if ready.close_ask.is_some() {
                         ready.close_ask = None;
                         return Task::none();
@@ -4055,24 +4133,63 @@ impl Session {
         }
     }
 
+    /// Paleta da tela: a do Início (vazio ou por cima das abas) ou a do
+    /// documento ativo. `None` = tela sem paleta (abrindo, erro).
+    fn palette_slot(&mut self) -> Option<&mut Option<PaletteState>> {
+        match self {
+            Session::Empty(empty) => Some(&mut empty.palette),
+            Session::Ready(tabs) => Some(match tabs.home.as_mut() {
+                Some(home) => &mut home.palette,
+                None => &mut tabs.palette,
+            }),
+            _ => None,
+        }
+    }
+
+    /// A paleta aberta na tela, se houver.
+    fn shown_palette(&self) -> Option<&PaletteState> {
+        match self {
+            Session::Empty(empty) => empty.palette.as_ref(),
+            Session::Ready(tabs) => match tabs.home() {
+                Some(home) => home.palette.as_ref(),
+                None => tabs.palette(),
+            },
+            _ => None,
+        }
+    }
+
+    /// Fontes da paleta da tela para `query`.
+    fn palette_context_for(&self, query: &str) -> Option<PaletteContext> {
+        match self {
+            Session::Empty(empty) => Some(PaletteContext::home(empty, &[], query)),
+            Session::Ready(tabs) => Some(match tabs.home() {
+                Some(home) => PaletteContext::home(home, tabs.docs(), query),
+                None => tabs.palette_context(query),
+            }),
+            _ => None,
+        }
+    }
+
     fn open_palette(&mut self) -> Task<Message> {
-        let Session::Ready(tabs) = self else {
-            return Task::none();
-        };
-        if tabs.palette_open() {
+        if self.shown_palette().is_some() {
             // Já aberta: só refoca (Ctrl+K repetido não apaga a query).
             return iced::widget::text_input::focus(crate::view::palette_input_id());
         }
-        tabs.overflow_open = false;
-        let context = tabs.palette_context("");
-        tabs.palette = Some(PaletteState::fresh(context));
+        let Some(context) = self.palette_context_for("") else {
+            return Task::none();
+        };
+        if let Session::Ready(tabs) = self {
+            tabs.overflow_open = false;
+        }
+        if let Some(slot) = self.palette_slot() {
+            *slot = Some(PaletteState::fresh(context));
+        }
         iced::widget::text_input::focus(crate::view::palette_input_id())
     }
 
     fn palette_query(&mut self, query: String) -> Task<Message> {
-        if let Session::Ready(tabs) = self {
-            let context = tabs.palette_context(&query);
-            if let Some(palette) = tabs.palette.as_mut() {
+        if let Some(context) = self.palette_context_for(&query) {
+            if let Some(Some(palette)) = self.palette_slot() {
                 palette.set_query_with(context, query);
             }
         }
@@ -4080,10 +4197,7 @@ impl Session {
     }
 
     fn palette_move(&mut self, step: i32) -> Task<Message> {
-        let Session::Ready(tabs) = self else {
-            return Task::none();
-        };
-        let Some(palette) = tabs.palette.as_mut() else {
+        let Some(Some(palette)) = self.palette_slot() else {
             return Task::none();
         };
         palette.move_by(step);
@@ -4098,10 +4212,9 @@ impl Session {
     }
 
     fn run_action(&mut self, id: PaletteAction) -> Task<Message> {
-        if let Session::Ready(tabs) = self {
-            tabs.palette = None;
-        }
+        let _ = self.palette_close();
         match id {
+            PaletteAction::OpenFile => self.update(Message::PickFile),
             PaletteAction::GoToPage => {
                 iced::widget::text_input::focus(crate::view::page_input_id())
             }
@@ -4116,16 +4229,12 @@ impl Session {
     }
 
     fn palette_confirm(&mut self) -> Task<Message> {
-        let confirmed = if let Session::Ready(tabs) = self {
-            tabs.palette.as_ref().and_then(|palette| {
-                palette
-                    .selected_item()
-                    .cloned()
-                    .map(|item| (item, palette.query().to_owned()))
-            })
-        } else {
-            None
-        };
+        let confirmed = self.shown_palette().and_then(|palette| {
+            palette
+                .selected_item()
+                .cloned()
+                .map(|item| (item, palette.query().to_owned()))
+        });
         match confirmed {
             None => self.palette_close(),
             Some((PaletteItem::Action { id, .. }, _)) => self.run_action(id),
@@ -4133,9 +4242,9 @@ impl Session {
                 let _ = self.palette_close();
                 self.outline_jump(page)
             }
-            Some((PaletteItem::Recent { path }, _)) => {
+            Some((PaletteItem::Recent { path } | PaletteItem::File { path }, _)) => {
                 let _ = self.palette_close();
-                self.update(Message::OpenRecent(path))
+                self.open_or_select(path)
             }
             Some((PaletteItem::DocHit { page, range, .. }, query)) => {
                 let _ = self.palette_close();
@@ -4170,21 +4279,35 @@ impl Session {
     }
 
     fn palette_close(&mut self) -> Task<Message> {
-        if let Session::Ready(tabs) = self {
-            tabs.palette = None;
+        if let Some(slot) = self.palette_slot() {
+            *slot = None;
         }
         Task::none()
     }
 
     fn palette_select(&mut self, index: usize) -> Task<Message> {
-        if let Session::Ready(tabs) = self {
-            if let Some(palette) = tabs.palette.as_mut() {
-                if index < palette.items.len() {
-                    palette.selected = Some(index);
-                }
+        if let Some(Some(palette)) = self.palette_slot() {
+            if index < palette.items.len() {
+                palette.selected = Some(index);
             }
         }
         self.palette_confirm()
+    }
+
+    /// Arquivo já aberto numa aba vira troca de aba (sem duplicar o
+    /// documento); senão abre como os recentes.
+    fn open_or_select(&mut self, path: PathBuf) -> Task<Message> {
+        let tab = match self {
+            Session::Ready(tabs) => tabs
+                .docs
+                .iter()
+                .position(|doc| doc.source.path() == path.as_path()),
+            _ => None,
+        };
+        match tab {
+            Some(index) => self.select_tab(index),
+            None => self.update(Message::OpenRecent(path)),
+        }
     }
 
     fn render_scale(&self) -> f32 {
@@ -4418,7 +4541,6 @@ fn acts_on_active_document(message: &Message) -> bool {
             | Message::DeleteSelectedAnnot
             | Message::NoteSave
             | Message::OutlineKey(_)
-            | Message::OpenPalette
             | Message::OpenPrintDialog
             | Message::SaveCopyRequested
             | Message::HistoryBack
@@ -7446,6 +7568,97 @@ mod tests {
         let mut session = Session::empty();
         apply(&mut session, Message::GoHome);
         assert!(matches!(session, Session::Empty(_)));
+    }
+
+    fn home_palette(session: &Session) -> Option<&PaletteState> {
+        match session {
+            Session::Empty(empty) => empty.palette.as_ref(),
+            Session::Ready(tabs) => tabs.home().expect("Início aberto").palette.as_ref(),
+            _ => panic!("sem Início"),
+        }
+    }
+
+    fn palette_kinds(palette: &PaletteState) -> Vec<String> {
+        palette
+            .items()
+            .iter()
+            .map(|item| match item {
+                PaletteItem::Action { title, .. } => format!("action {title}"),
+                PaletteItem::Recent { .. } => format!("recent {}", item.title()),
+                PaletteItem::File { .. } => format!("file {}", item.title()),
+                other => format!("{other:?}"),
+            })
+            .collect()
+    }
+
+    #[test]
+    fn palette_on_empty_screen_opens_files_without_document_actions() {
+        let entry = |name: &str, is_dir: bool| FsEntry {
+            path: PathBuf::from("/docs").join(name),
+            name: name.into(),
+            is_dir,
+        };
+        let mut session = Session::Empty(EmptyState {
+            recents: vec![PathBuf::from("/docs/atas.pdf")],
+            cwd: Some(PathBuf::from("/docs")),
+            listing: vec![
+                entry("pasta", true),
+                entry("atas.pdf", false),
+                entry("balanco.pdf", false),
+            ],
+            ..EmptyState::default()
+        });
+        apply(&mut session, Message::OpenPalette);
+        let palette = home_palette(&session).expect("paleta aberta");
+        // Só abrir: o resto agiria num documento que não está na tela. O
+        // recente não se repete como PDF da pasta, e pastas não entram.
+        assert_eq!(
+            palette_kinds(palette),
+            ["action Abrir PDF…", "recent atas.pdf", "file balanco.pdf"]
+        );
+        apply(&mut session, Message::PaletteQuery("bal".into()));
+        assert_eq!(
+            palette_kinds(home_palette(&session).unwrap()),
+            ["file balanco.pdf"]
+        );
+        apply(&mut session, Message::PaletteQuery(String::new()));
+        // ↑/↓ andam na lista; Esc fecha só a paleta.
+        apply(&mut session, Message::OutlineKey(OutlineKey::Next));
+        assert_eq!(home_palette(&session).unwrap().selected(), Some(1));
+        apply(&mut session, Message::ClosePrintDialog);
+        assert!(home_palette(&session).is_none());
+        assert!(matches!(session, Session::Empty(_)));
+    }
+
+    #[test]
+    fn palette_over_home_switches_to_the_open_tab() {
+        isolated(|| {
+            let Some(mut session) = sumario_session() else {
+                return;
+            };
+            apply(&mut session, Message::GoHome);
+            let open = home_tabs(&session).active().source.path().to_path_buf();
+            if let Session::Ready(tabs) = &mut session {
+                tabs.home.as_mut().unwrap().recents = vec![open];
+            }
+            apply(&mut session, Message::OpenPalette);
+            let tabs = home_tabs(&session);
+            assert!(tabs.palette().is_none(), "a paleta é a do Início");
+            assert_eq!(
+                palette_kinds(home_palette(&session).unwrap()),
+                ["action Abrir PDF…", "recent sumario-folio.pdf"]
+            );
+            // Ações do documento continuam bloqueadas com o Início na tela.
+            apply(&mut session, Message::PaletteQuery("zoom".into()));
+            assert!(home_palette(&session).unwrap().items().is_empty());
+            // O recente já está numa aba: volta para ela, sem abrir de novo.
+            apply(&mut session, Message::PaletteQuery("sumario".into()));
+            apply(&mut session, Message::PaletteConfirm);
+            let tabs = home_tabs(&session);
+            assert!(tabs.home().is_none());
+            assert_eq!(tabs.len(), 1);
+            assert!(tabs.pending_gen().is_none());
+        });
     }
 
     fn thumbs(session: &Session) -> Vec<(String, &'static str)> {
@@ -12644,7 +12857,7 @@ mod tests {
                 assert!(tabs.palette_open());
                 let palette = tabs.palette().expect("aberta");
                 assert!(palette.query().is_empty());
-                assert_eq!(palette.items().len(), 8);
+                assert_eq!(palette.items().len(), PaletteAction::ALL.len());
                 assert_eq!(palette.selected(), Some(0));
                 assert!(palette
                     .items()
@@ -12672,9 +12885,6 @@ mod tests {
             Session::Ready(tabs) => assert!(!tabs.palette_open()),
             other => panic!("esperava Ready, veio {other:?}"),
         }
-        let mut empty = Session::empty();
-        apply(&mut empty, Message::OpenPalette);
-        assert!(matches!(empty, Session::Empty(_)));
     }
 
     #[test]
@@ -12805,7 +13015,7 @@ mod tests {
     }
 
     #[test]
-    fn catalog_all_eight_titles() {
+    fn catalog_all_nine_titles() {
         use std::collections::HashSet;
         let titles: HashSet<&str> = PaletteAction::ALL
             .iter()
@@ -12817,6 +13027,7 @@ mod tests {
         assert_eq!(
             titles,
             HashSet::from([
+                "Abrir PDF…",
                 "Ir para página…",
                 "Aumentar zoom",
                 "Diminuir zoom",
@@ -12827,12 +13038,13 @@ mod tests {
                 "Buscar no documento",
             ])
         );
-        assert_eq!(PaletteAction::ALL.len(), 8);
+        assert_eq!(PaletteAction::ALL.len(), 9);
         for id in PaletteAction::ALL {
             match PaletteItem::action(id) {
                 PaletteItem::Action { id: got, hint, .. } => {
                     assert_eq!(got, id);
                     let expect = match id {
+                        PaletteAction::OpenFile => shortcut_hint(&Message::PickFile),
                         PaletteAction::GoToPage => Some("Digite o número"),
                         PaletteAction::ZoomIn => Some("+"),
                         PaletteAction::ZoomOut => Some("-"),
@@ -13281,6 +13493,7 @@ mod tests {
                         PaletteItem::OutlineRow { .. } => "outline",
                         PaletteItem::DocHit { .. } => "doc",
                         PaletteItem::Recent { .. } => "recent",
+                        PaletteItem::File { .. } => "file",
                         PaletteItem::GlobalHit { .. } => "global",
                     })
                     .collect();
@@ -13480,6 +13693,7 @@ mod tests {
                 TextRange { start: 0, end: 6 },
                 "relato vizinho".into(),
             )],
+            ..PaletteContext::default()
         };
         palette.set_query_with(context, "relato".into());
         let mut kinds: Vec<&str> = palette
@@ -13491,6 +13705,7 @@ mod tests {
                 PaletteItem::DocHit { .. } => "doc",
                 PaletteItem::GlobalHit { .. } => "global",
                 PaletteItem::Recent { .. } => "recent",
+                PaletteItem::File { .. } => "file",
             })
             .collect();
         kinds.dedup();
@@ -13745,9 +13960,7 @@ mod tests {
             .collect();
         let context = PaletteContext {
             outline,
-            recents: Vec::new(),
-            dochits: Vec::new(),
-            global: Vec::new(),
+            ..PaletteContext::default()
         };
         let mut palette = PaletteState::fresh(PaletteContext::default());
         palette.set_query_with(context, "relato".into());

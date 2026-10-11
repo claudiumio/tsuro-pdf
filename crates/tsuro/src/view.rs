@@ -112,6 +112,16 @@ pub fn chrome(session: &Session, theme: Theme) -> Element<'_, Message> {
         ..container::Style::default()
     })
     .into();
+    let empty = || -> Element<'_, Message> { Space::new(Length::Shrink, Length::Shrink).into() };
+    // Tela vazia: `stack![janela, paleta]` sempre, pelo mesmo motivo abaixo
+    // (abrir a paleta não pode zerar a rolagem da grade).
+    if let Session::Empty(home) = session {
+        let overlay = match home.palette.as_ref() {
+            Some(palette) => palette_layer(palette, t),
+            None => empty(),
+        };
+        return stack![main, overlay].into();
+    }
     let Session::Ready(tabs) = session else {
         return main;
     };
@@ -120,7 +130,6 @@ pub fn chrome(session: &Session, theme: Theme) -> Element<'_, Message> {
     // a forma da raiz recriava o estado de todos os widgets — a rolagem do
     // contínuo voltava ao topo ao abrir um menu ou selecionar texto, e o
     // campo de busca perdia o foco a cada tique do HUD.
-    let empty = || -> Element<'_, Message> { Space::new(Length::Shrink, Length::Shrink).into() };
     // HUD flutuante (Stitch): pílula bottom-center sobre o canvas, sob os
     // modais — que escurecem por cima e capturam tudo. Some com o mouse
     // parado (ver `HudState`).
@@ -129,10 +138,15 @@ pub fn chrome(session: &Session, theme: Theme) -> Element<'_, Message> {
     } else {
         empty()
     };
+    // Com o Início por cima, a paleta na tela é a dele.
+    let palette = match tabs.home() {
+        Some(home) => home.palette.as_ref(),
+        None => tabs.palette(),
+    };
     let overlay = if tabs.close_prompt() {
         // Fechar com marcações sujas fica por cima dos outros modais.
         close_prompt_layer(t)
-    } else if let Some(palette) = tabs.palette() {
+    } else if let Some(palette) = palette {
         palette_layer(palette, t)
     } else if let Some(dialog) = tabs.print_dialog.as_ref() {
         // Modal de impressão captura tudo; menu ⋯ nunca abre junto (fecha ao abrir).
