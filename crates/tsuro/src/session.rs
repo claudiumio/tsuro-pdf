@@ -13,13 +13,13 @@ use tsuro_sign::{analyze_pdf, PdfAnalysis};
 
 use crate::browse::{
     display_path, drop_recent, is_pdf, list_path, load_recents, merge_recents, parent_of,
-    push_recent, read_recents, save_recents, EmptyState, FsEntry,
+    push_recent, read_recents, save_recents, EmptyState, FsEntry, Thumb,
 };
 use crate::engine::PdfiumEngine;
 use crate::kiri::Theme;
 use crate::page::{
-    EngineError, Glyph, MediaBox, Outline, OutlineItem, PageEngine, PageNo, PageSurface, Quad,
-    Scale, TextLayer, Viewport,
+    Bitmap, EngineError, Glyph, MediaBox, Outline, OutlineItem, PageEngine, PageNo, PageSurface,
+    Quad, Scale, TextLayer, Viewport,
 };
 use crate::positions::{
     file_identity, find_position, read_positions, record_position, save_positions, DocPosition,
@@ -65,6 +65,9 @@ const LOADING_TICK: std::time::Duration = std::time::Duration::from_millis(90);
 
 /// Poll do auto-reload (issue #46): barato (`stat` por aba), sem watcher.
 const RELOAD_POLL: std::time::Duration = std::time::Duration::from_secs(2);
+
+/// Quantos PDFs da pasta aberta ganham prévia no Início (os recentes, sempre).
+const HOME_LISTING_THUMBS: usize = 24;
 
 /// Tique do HUD: um tique inteiro sem mover o mouse esconde a pílula
 /// (some entre 1 e 2 s depois do último movimento).
@@ -2179,6 +2182,11 @@ pub enum Message {
         path: Option<PathBuf>,
         result: Result<Vec<FsEntry>, String>,
     },
+    /// Prévia de um cartão do Início (`None` = o arquivo não abriu).
+    ThumbReady {
+        path: PathBuf,
+        result: Option<Bitmap>,
+    },
     OpenRecent(PathBuf),
     RecentsReady(Vec<PathBuf>),
 }
@@ -3527,7 +3535,21 @@ impl Session {
                         }
                     }
                 }
-                Task::none()
+                self.schedule_thumb()
+            }
+            Message::ThumbReady { path, result } => {
+                if let Some(empty) = self.browser_mut() {
+                    let thumb = match result {
+                        Some(bitmap) => Thumb::Ready(image::Handle::from_rgba(
+                            bitmap.width,
+                            bitmap.height,
+                            bitmap.rgba,
+                        )),
+                        None => Thumb::Failed,
+                    };
+                    empty.thumbs.insert(path, thumb);
+                }
+                self.schedule_thumb()
             }
             Message::RecentsReady(recents) => {
                 match self {
@@ -3540,7 +3562,7 @@ impl Session {
                     }
                     Session::Failed { .. } => {}
                 }
-                Task::none()
+                self.schedule_thumb()
             }
         }
     }
@@ -3732,6 +3754,46 @@ impl Session {
             });
         }
         empty_tasks()
+    }
+
+    /// Prévias dos cartões do Início, uma por vez (a worker do Pdfium é uma
+    /// só): recentes primeiro, depois os PDFs da pasta aberta.
+    fn schedule_thumb(&mut self) -> Task<Message> {
+        let Some(home) = self.browser_mut() else {
+            return Task::none();
+        };
+        if home
+            .thumbs
+            .values()
+            .any(|thumb| matches!(thumb, Thumb::Pending))
+        {
+            return Task::none();
+        }
+        let listed = home
+            .listing
+            .iter()
+            .filter(|entry| !entry.is_dir)
+            .take(HOME_LISTING_THUMBS)
+            .map(|entry| &entry.path);
+        let Some(path) = home
+            .recents
+            .iter()
+            .chain(listed)
+            .find(|path| !home.thumbs.contains_key(*path))
+            .cloned()
+        else {
+            return Task::none();
+        };
+        home.thumbs.insert(path.clone(), Thumb::Pending);
+        // Na densidade da tela (Retina = 2×): sem pixel a mais em memória.
+        let scale = home.render_scale.clamp(1.0, 3.0);
+        let width = (crate::view::HOME_PREVIEW_W * scale).round() as u32;
+        Task::perform(thumbnail_task(path.clone(), width), move |result| {
+            Message::ThumbReady {
+                path: path.clone(),
+                result,
+            }
+        })
     }
 
     /// Navegador de pastas da tela: o da tela vazia ou o do Início aberto
@@ -4363,6 +4425,16 @@ fn acts_on_active_document(message: &Message) -> bool {
             | Message::HistoryForward
             | Message::SetViewMode(_)
     )
+}
+
+/// Prévia de um cartão do Início fora do executor async (o Pdfium lê o
+/// arquivo). Falha vira `None`: o cartão mostra o ícone.
+async fn thumbnail_task(path: PathBuf, width: u32) -> Option<Bitmap> {
+    let aspect = crate::view::HOME_PREVIEW_H / crate::view::HOME_PREVIEW_W;
+    tokio::task::spawn_blocking(move || PdfiumEngine::thumbnail(&path, width, aspect).ok())
+        .await
+        .ok()
+        .flatten()
 }
 
 fn empty_tasks() -> Task<Message> {
@@ -7377,6 +7449,125 @@ mod tests {
         let mut session = Session::empty();
         apply(&mut session, Message::GoHome);
         assert!(matches!(session, Session::Empty(_)));
+    }
+
+    fn thumbs(session: &Session) -> Vec<(String, &'static str)> {
+        let home = match session {
+            Session::Empty(empty) => empty,
+            Session::Ready(tabs) => tabs.home().expect("Início aberto"),
+            _ => panic!("sem Início"),
+        };
+        let mut out: Vec<(String, &'static str)> = home
+            .thumbs
+            .iter()
+            .map(|(path, thumb)| {
+                let state = match thumb {
+                    Thumb::Pending => "pending",
+                    Thumb::Ready(_) => "ready",
+                    Thumb::Failed => "failed",
+                };
+                (path.display().to_string(), state)
+            })
+            .collect();
+        out.sort();
+        out
+    }
+
+    fn pdf_entry(name: &str) -> FsEntry {
+        FsEntry {
+            path: PathBuf::from(format!("/pasta/{name}")),
+            name: name.into(),
+            is_dir: false,
+        }
+    }
+
+    #[test]
+    fn home_thumbs_go_one_at_a_time_recents_first() {
+        let mut session = Session::empty();
+        apply(
+            &mut session,
+            Message::RecentsReady(vec![PathBuf::from("/r/a.pdf"), PathBuf::from("/r/b.pdf")]),
+        );
+        assert_eq!(thumbs(&session), vec![("/r/a.pdf".into(), "pending")]);
+        apply(
+            &mut session,
+            Message::ListingReady {
+                path: None,
+                result: Ok(vec![pdf_entry("c.pdf")]),
+            },
+        );
+        assert_eq!(thumbs(&session).len(), 1, "uma prévia por vez");
+        // Falha não trava a fila: vira ícone e a próxima sai.
+        apply(
+            &mut session,
+            Message::ThumbReady {
+                path: PathBuf::from("/r/a.pdf"),
+                result: None,
+            },
+        );
+        apply(
+            &mut session,
+            Message::ThumbReady {
+                path: PathBuf::from("/r/b.pdf"),
+                result: Some(Bitmap {
+                    width: 1,
+                    height: 1,
+                    rgba: vec![255; 4],
+                }),
+            },
+        );
+        assert_eq!(
+            thumbs(&session),
+            vec![
+                ("/pasta/c.pdf".into(), "pending"),
+                ("/r/a.pdf".into(), "failed"),
+                ("/r/b.pdf".into(), "ready"),
+            ]
+        );
+    }
+
+    #[test]
+    fn home_thumbs_cap_the_pdfs_of_the_open_folder() {
+        let mut session = Session::empty();
+        let many: Vec<FsEntry> = (0..40).map(|i| pdf_entry(&format!("{i:02}.pdf"))).collect();
+        apply(
+            &mut session,
+            Message::ListingReady {
+                path: None,
+                result: Ok(many),
+            },
+        );
+        for _ in 0..60 {
+            let pending = thumbs(&session)
+                .into_iter()
+                .find(|(_, state)| *state == "pending");
+            let Some((path, _)) = pending else {
+                break;
+            };
+            apply(
+                &mut session,
+                Message::ThumbReady {
+                    path: PathBuf::from(path),
+                    result: None,
+                },
+            );
+        }
+        assert_eq!(thumbs(&session).len(), HOME_LISTING_THUMBS);
+    }
+
+    #[test]
+    fn home_over_tabs_gets_thumbs_too() {
+        isolated(|| {
+            let Some(mut session) = sumario_session() else {
+                return;
+            };
+            apply(&mut session, Message::GoHome);
+            apply(
+                &mut session,
+                Message::RecentsReady(vec![PathBuf::from("/r/a.pdf")]),
+            );
+            assert_eq!(thumbs(&session), vec![("/r/a.pdf".into(), "pending")]);
+        });
     }
 
     fn hud(session: &Session) -> HudState {

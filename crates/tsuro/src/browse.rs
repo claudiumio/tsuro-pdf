@@ -1,6 +1,9 @@
 #[cfg(test)]
 use std::cell::RefCell;
+use std::collections::HashMap;
 use std::path::{Path, PathBuf};
+
+use iced::widget::image;
 
 use crate::kiri::Theme;
 
@@ -34,6 +37,18 @@ pub struct EmptyState {
     pub theme: Theme,
     /// DPR da janela; 0.0 (`Default`) = desconhecido, `page_scale` trata como 1.0.
     pub render_scale: f32,
+    /// Prévias dos cartões de arquivo (recentes e PDFs da pasta), geradas uma
+    /// por vez. Ausente = ainda não pedida.
+    pub thumbs: HashMap<PathBuf, Thumb>,
+}
+
+/// Prévia do topo da 1ª página de um cartão do Início.
+#[derive(Debug, Clone)]
+pub enum Thumb {
+    Pending,
+    Ready(image::Handle),
+    /// Não abriu (senha, arquivo sumido, corrompido): o cartão mostra o ícone.
+    Failed,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]

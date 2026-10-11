@@ -65,6 +65,15 @@ enum Request {
         page: PageNo,
         reply: mpsc::Sender<Result<(MediaBox, TextLayer), EngineError>>,
     },
+    /// Prévia do topo da 1ª página de um arquivo no disco (cartões do Início).
+    /// O Pdfium lê do arquivo só o que precisa e o documento não fica aberto.
+    Thumbnail {
+        path: PathBuf,
+        width: u32,
+        /// Altura ÷ largura do recorte (o topo da página).
+        aspect: f32,
+        reply: mpsc::Sender<Result<Bitmap, EngineError>>,
+    },
     /// Caixa de uma página, sem carregar a página nem o texto: o render e a
     /// impressão só precisam do tamanho.
     MediaBox {
@@ -213,6 +222,18 @@ fn serve(incoming: mpsc::Receiver<Request>) {
                     page_data_from_doc(doc, page)
                 }));
             }
+            Request::Thumbnail {
+                path,
+                width,
+                aspect,
+                reply,
+            } => {
+                let result = match LIBRARY.as_ref() {
+                    Ok(library) => thumbnail_from_file(&library.0, &path, width, aspect),
+                    Err(err) => Err(EngineError(err.clone())),
+                };
+                let _ = reply.send(result);
+            }
             Request::MediaBox {
                 doc_id,
                 page,
@@ -321,6 +342,23 @@ impl PdfiumEngine {
             page,
             reply,
         })
+    }
+
+    /// Prévia do topo da 1ª página de `path`, com `width` px de largura e
+    /// altura `width × aspect` (menos, se a página for mais baixa). Não abre
+    /// aba: o arquivo é lido sob demanda e fechado em seguida.
+    pub fn thumbnail(path: &Path, width: u32, aspect: f32) -> Result<Bitmap, EngineError> {
+        let (reply, answer) = mpsc::channel();
+        worker()
+            .requests
+            .send(Request::Thumbnail {
+                path: path.to_path_buf(),
+                width,
+                aspect,
+                reply,
+            })
+            .map_err(|_| EngineError(WORKER_GONE.into()))?;
+        answer.recv().map_err(|_| EngineError(WORKER_GONE.into()))?
     }
 
     /// Largura e altura de cada página, sem extrair texto.
@@ -591,6 +629,40 @@ fn render_target_px(page_w: f32, page_h: f32, factor: f32) -> Result<RenderTarge
     Ok(RenderTarget {
         width: i32::try_from(width).map_err(|_| EngineError(RENDER_TOO_LARGE.into()))?,
         height: i32::try_from(height).map_err(|_| EngineError(RENDER_TOO_LARGE.into()))?,
+    })
+}
+
+/// Renderiza a 1ª página na largura pedida e corta o topo: o cartão mostra o
+/// cabeçalho do documento, e guardar só o recorte economiza memória.
+fn thumbnail_from_file(
+    pdfium: &Pdfium,
+    path: &Path,
+    width: u32,
+    aspect: f32,
+) -> Result<Bitmap, EngineError> {
+    let document = pdfium
+        .load_pdf_from_file(path, None)
+        .map_err(|e| EngineError(format!("não foi possível abrir o PDF: {e}")))?;
+    let page = document
+        .pages()
+        .get(0)
+        .map_err(|e| EngineError(e.to_string()))?;
+    let (page_w, page_h) = (page.width().value, page.height().value);
+    let target = render_target_px(page_w, page_h, width as f32 / page_w.max(1.0))?;
+    let config = PdfRenderConfig::new().set_fixed_size(target.width, target.height);
+    let bitmap = page
+        .render_with_config(&config)
+        .map_err(|e| EngineError(e.to_string()))?;
+    let width = bitmap.width() as u32;
+    let height = bitmap.height() as u32;
+    let mut rgba = bitmap.as_rgba_bytes();
+    // Linhas de cima para baixo: truncar mantém o topo.
+    let crop = ((width as f32 * aspect).round() as u32).clamp(1, height);
+    rgba.truncate((width * crop * 4) as usize);
+    Ok(Bitmap {
+        width,
+        height: crop,
+        rgba,
     })
 }
 
@@ -1028,6 +1100,27 @@ mod tests {
         // `/Rotate 90` troca os lados, como `media_of` (página carregada).
         assert!((boxes[1].width - 792.0).abs() < 0.01);
         assert!((boxes[1].height - 612.0).abs() < 0.01);
+    }
+
+    #[test]
+    fn thumbnail_crops_the_top_of_the_first_page() {
+        let path = std::env::temp_dir().join(format!("tsuro-thumb-{}.pdf", std::process::id()));
+        std::fs::write(&path, synthetic_pdf(&[(100.0, 200.0, 0)])).expect("pdf temporário");
+        let thumb = PdfiumEngine::thumbnail(&path, 80, 0.75);
+        let _ = std::fs::remove_file(&path);
+        let Ok(thumb) = thumb else {
+            return; // sem Pdfium ao lado do binário de teste
+        };
+        // 100×200 pt a 80 px de largura = 80×160; o recorte fica com o topo.
+        assert_eq!((thumb.width, thumb.height), (80, 60));
+        assert_eq!(thumb.rgba.len(), 80 * 60 * 4);
+        assert_eq!(&thumb.rgba[..4], &[255, 0, 0, 255], "RGBA, como o render");
+    }
+
+    #[test]
+    fn thumbnail_of_a_missing_file_is_an_error() {
+        let path = std::env::temp_dir().join("tsuro-thumb-nao-existe.pdf");
+        assert!(PdfiumEngine::thumbnail(&path, 80, 0.75).is_err());
     }
 
     /// O Pdfium empresta os bytes do `LiveDoc` (sem cópia): a worker tem de

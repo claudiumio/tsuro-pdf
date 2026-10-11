@@ -10,7 +10,7 @@ use iced::{mouse, Alignment, Background, Border, Color, Element, Length, Padding
 use iced::{Rectangle, Size};
 use tsuro_sign::SignatureStatus;
 
-use crate::browse::{EmptyState, FsEntry};
+use crate::browse::{EmptyState, FsEntry, Thumb};
 use crate::kiri::{self, Theme, Tokens};
 use crate::page::{MediaBox, PageNo};
 use crate::print::{PrintOrientation, MAX_COPIES};
@@ -1849,184 +1849,257 @@ impl Program<Message> for EmptyDash {
     }
 }
 
-/// Estado vazio (Stitch): dropzone tracejada, grid de "Documentos recentes"
-/// e, abaixo, o navegador de pastas de sempre (o Stitch não o mostra, mas o
-/// comportamento fica — só discreto, sem título próprio).
+/// Início em grade: barra de abrir (arrastar ou botão) e, abaixo, cartões —
+/// recentes com a prévia do topo da 1ª página, pastas da pasta aberta e os
+/// PDFs dela. A grade quebra conforme a largura; o conteúdo fica numa coluna
+/// central com largura máxima.
 /// `tabs_open`: Início por cima das abas — o título não diz "nenhum
 /// documento" com documentos abertos na faixa acima.
 fn empty_browser(empty: &EmptyState, tabs_open: bool, t: Tokens) -> Element<'_, Message> {
-    let mut path_row = row![].spacing(6).align_y(Alignment::Center);
+    let mut content = column![open_bar(tabs_open, t)].spacing(14);
+
+    content = content.push(home_section(t, "Recentes", Some(empty.recents.len())));
+    if empty.recents.is_empty() {
+        content = content.push(text("Nenhum arquivo recente.").size(13).color(t.muted));
+    } else {
+        content = content.push(home_grid(
+            empty
+                .recents
+                .iter()
+                .map(|path| file_card(path, empty.thumbs.get(path), t)),
+        ));
+    }
+
+    // Pastas: título, caminho atual e voltar na mesma linha.
+    let mut folders_head = row![home_section(t, "Pastas", None)]
+        .spacing(10)
+        .align_y(Alignment::Center);
     if let Some(parent) = empty.parent() {
-        path_row = path_row.push(tip(
-            control(
+        folders_head = folders_head.push(tip(
+            control_seg(
                 t,
                 button(kiri::ori!("chevron-left")).on_press(Message::BrowseTo(parent)),
             ),
             "Voltar",
         ));
     }
-    path_row = path_row.push(text(empty.path_label()).size(14).color(t.muted));
-
-    let mut listing = column![].spacing(4);
-    if let Some(err) = &empty.listing_error {
-        listing = listing.push(text(err).size(13).color(t.muted));
-    } else if empty.listing.is_empty() {
-        listing = listing.push(text("Nenhuma pasta ou PDF aqui.").size(13).color(t.muted));
-    } else {
-        for entry in &empty.listing {
-            listing = listing.push(entry_row(entry, t));
-        }
-    }
-
-    let mut recents = column![].spacing(10).width(Length::Fill);
-    if empty.recents.is_empty() {
-        recents = recents.push(text("Nenhum arquivo recente.").size(13).color(t.muted));
-    } else {
-        for chunk in empty.recents.chunks(3) {
-            let mut line = row![].spacing(10).width(Length::Fill);
-            for path in chunk {
-                line = line.push(empty_card(path, t));
-            }
-            // Espaços fecham a linha: 3 colunas de largura igual.
-            for _ in chunk.len()..3 {
-                line = line.push(Space::with_width(Length::Fill));
-            }
-            recents = recents.push(line);
-        }
-    }
-
-    let header = row![
-        section_title("Documentos recentes", t),
-        container(
-            text(empty.recents.len().to_string())
-                .size(10)
+    // Na raiz o título já diz tudo; dentro de uma pasta, o caminho (longo
+    // perde o meio, o fim — a pasta atual — fica legível).
+    if empty.cwd.is_some() {
+        folders_head = folders_head.push(
+            text(middle_truncate(&empty.path_label(), 72))
+                .size(13)
                 .color(t.muted)
+                .wrapping(text::Wrapping::None),
+        );
+    }
+    content = content.push(folders_head);
+    let folders: Vec<&FsEntry> = empty.listing.iter().filter(|e| e.is_dir).collect();
+    let pdfs: Vec<&FsEntry> = empty.listing.iter().filter(|e| !e.is_dir).collect();
+    if let Some(err) = &empty.listing_error {
+        content = content.push(text(err).size(13).color(t.muted));
+    } else if empty.listing.is_empty() {
+        content = content.push(text("Nenhuma pasta ou PDF aqui.").size(13).color(t.muted));
+    } else if !folders.is_empty() {
+        content = content.push(home_grid(folders.iter().map(|entry| folder_card(entry, t))));
+    }
+    if !pdfs.is_empty() {
+        content = content.push(home_section(t, "PDFs nesta pasta", Some(pdfs.len())));
+        content = content
+            .push(home_grid(pdfs.iter().map(|entry| {
+                file_card(&entry.path, empty.thumbs.get(&entry.path), t)
+            })));
+    }
+
+    scrollable(
+        container(
+            content
+                .max_width(HOME_MAX_W)
+                .padding(Padding::from([12, 16])),
         )
-        .padding(Padding::from([1, 6]))
-        .style(kiri::empty_badge_style(t)),
-    ]
-    .spacing(8)
-    .align_y(Alignment::Center);
-
-    let drop_h = 248.0;
-    let dropzone = container(
-        container(stack![
-            Canvas::new(EmptyDash { color: t.line })
-                .width(Length::Fill)
-                .height(Length::Fixed(drop_h)),
-            container(
-                column![
-                    container(
-                        image(image::Handle::from_bytes(
-                            &include_bytes!("../../../public/tsuro-horizontal-pdf.png")[..],
-                        ))
-                        .width(Length::Fixed(200.0)),
-                    )
-                    .padding(8)
-                    .style(kiri::logo_stage_style()),
-                    text(if tabs_open {
-                        "Abrir outro documento"
-                    } else {
-                        "Nenhum documento aberto"
-                    })
-                    .size(18),
-                    text("Arraste e solte um arquivo PDF aqui")
-                        .size(13)
-                        .color(t.muted),
-                    button(text("Abrir PDF").size(13))
-                        .padding(Padding::from([6, 14]))
-                        .style(kiri::hud_primary_style(t))
-                        .on_press(Message::PickFile),
-                ]
-                .spacing(10)
-                .align_x(Alignment::Center),
-            )
-            .width(Length::Fill)
-            .height(Length::Fixed(drop_h))
-            .center_x(Length::Fill)
-            .center_y(Length::Fixed(drop_h))
-            .padding(20),
-        ])
         .width(Length::Fill)
-        .max_width(560.0)
-        .style(kiri::empty_drop_style(t)),
+        .center_x(Length::Fill),
     )
-    .width(Length::Fill)
-    .center_x(Length::Fill);
-
-    column![
-        dropzone,
-        header,
-        scrollable(recents)
-            .width(Length::Fill)
-            .height(Length::FillPortion(2)),
-        path_row,
-        scrollable(listing)
-            .width(Length::Fill)
-            .height(Length::FillPortion(3)),
-    ]
-    .spacing(10)
     .width(Length::Fill)
     .height(Length::Fill)
     .into()
 }
 
-/// Card de recente: ícone `file-text`, nome do arquivo e pasta-mãe — o único
-/// meta que o estado tem (sem tamanho, data ou páginas: não existem aqui).
-fn empty_card(path: &std::path::Path, t: Tokens) -> Element<'static, Message> {
+/// Largura máxima do conteúdo do Início (cabem 5 cartões por linha).
+const HOME_MAX_W: f32 = 1000.0;
+/// Cartão do Início e a área da página dentro da prévia (a prévia do motor
+/// vem recortada nessa proporção — ver `Session::schedule_thumb`).
+const HOME_CARD_W: f32 = 184.0;
+pub const HOME_PREVIEW_W: f32 = 144.0;
+pub const HOME_PREVIEW_H: f32 = 108.0;
+/// Respiro da página dentro da área de prévia (topo e laterais).
+const HOME_PAGE_INSET_TOP: f32 = 12.0;
+const HOME_PAGE_INSET_X: f32 = (HOME_CARD_W - 12.0 - HOME_PREVIEW_W) / 2.0;
+
+/// Barra de abrir: soltar o PDF em qualquer lugar da janela abre; aqui fica o
+/// convite e o botão, numa faixa baixa tracejada (a tela é dos cartões).
+fn open_bar(tabs_open: bool, t: Tokens) -> Element<'static, Message> {
+    let bar_h = 88.0;
+    container(stack![
+        Canvas::new(EmptyDash { color: t.line })
+            .width(Length::Fill)
+            .height(Length::Fixed(bar_h)),
+        container(
+            row![
+                container(
+                    image(image::Handle::from_bytes(
+                        &include_bytes!("../../../public/tsuro-horizontal-pdf.png")[..],
+                    ))
+                    .width(Length::Fixed(120.0)),
+                )
+                .padding(6)
+                .style(kiri::logo_stage_style()),
+                column![
+                    text(if tabs_open {
+                        "Abrir outro documento"
+                    } else {
+                        "Nenhum documento aberto"
+                    })
+                    .size(16),
+                    text("Arraste e solte um arquivo PDF aqui")
+                        .size(12)
+                        .color(t.muted),
+                ]
+                .spacing(4),
+                Space::with_width(Length::Fill),
+                button(text("Abrir PDF").size(13))
+                    .padding(Padding::from([6, 14]))
+                    .style(kiri::hud_primary_style(t))
+                    .on_press(Message::PickFile),
+            ]
+            .spacing(16)
+            .align_y(Alignment::Center),
+        )
+        .width(Length::Fill)
+        .height(Length::Fixed(bar_h))
+        .center_y(Length::Fixed(bar_h))
+        .padding(Padding::from([0, 18])),
+    ])
+    .width(Length::Fill)
+    .style(kiri::empty_drop_style(t))
+    .into()
+}
+
+/// Título de seção do Início, com contador opcional.
+fn home_section(t: Tokens, label: &'static str, count: Option<usize>) -> Element<'static, Message> {
+    let mut head = row![section_title(label, t)]
+        .spacing(8)
+        .align_y(Alignment::Center);
+    if let Some(count) = count {
+        head = head.push(
+            container(text(count.to_string()).size(10).color(t.muted))
+                .padding(Padding::from([1, 6]))
+                .style(kiri::empty_badge_style(t)),
+        );
+    }
+    head.into()
+}
+
+/// Grade que quebra conforme a largura disponível.
+fn home_grid<'a>(cards: impl Iterator<Item = Element<'a, Message>>) -> Element<'a, Message> {
+    row(cards).spacing(14).wrap().into()
+}
+
+/// Cartão de PDF: topo da 1ª página (papel em branco enquanto a prévia não
+/// chega ou se o arquivo não abrir), nome e pasta.
+fn file_card<'a>(path: &std::path::Path, thumb: Option<&Thumb>, t: Tokens) -> Element<'a, Message> {
+    let page: Element<'a, Message> = match thumb {
+        Some(Thumb::Ready(handle)) => image(handle.clone())
+            .width(Length::Fixed(HOME_PREVIEW_W))
+            .height(Length::Fixed(HOME_PREVIEW_H))
+            .content_fit(iced::ContentFit::Cover)
+            .into(),
+        _ => container(Space::new(
+            Length::Fixed(HOME_PREVIEW_W),
+            Length::Fixed(HOME_PREVIEW_H),
+        ))
+        .style(kiri::home_page_style(t))
+        .into(),
+    };
+    let preview = container(page).padding(Padding {
+        top: HOME_PAGE_INSET_TOP,
+        right: HOME_PAGE_INSET_X,
+        bottom: 0.0,
+        left: HOME_PAGE_INSET_X,
+    });
     let name = path
         .file_name()
         .map(|n| n.to_string_lossy().into_owned())
         .unwrap_or_else(|| path.display().to_string());
-    let mut info = column![text(name).size(13)].spacing(2);
-    if let Some(parent) = path.parent().and_then(|p| p.file_name()) {
-        info = info.push(
-            text(parent.to_string_lossy().into_owned())
-                .size(11)
-                .color(t.muted),
-        );
-    }
-    container(
-        button(
-            row![kiri::ori!("file-text"), info]
-                .spacing(8)
-                .align_y(Alignment::Center)
-                .width(Length::Fill),
-        )
-        .width(Length::Fill)
-        .padding(0)
-        .style(control_style(t, false))
-        .on_press(Message::OpenRecent(path.to_path_buf())),
+    let parent = path
+        .parent()
+        .and_then(|p| p.file_name())
+        .map(|p| p.to_string_lossy().into_owned())
+        .unwrap_or_default();
+    home_card(
+        t,
+        preview.into(),
+        kiri::ori!("file-text"),
+        name,
+        parent,
+        Message::OpenRecent(path.to_path_buf()),
     )
-    .width(Length::Fill)
-    .padding(12)
-    .style(kiri::recent_card_style(t))
-    .into()
 }
 
-fn entry_row(entry: &FsEntry, t: Tokens) -> Element<'static, Message> {
-    let message = if entry.is_dir {
-        Message::BrowseTo(Some(entry.path.clone()))
-    } else {
-        Message::OpenRecent(entry.path.clone())
-    };
-    let glyph: Element<'static, Message> = if entry.is_dir {
-        kiri::ori!("folder")
-    } else {
-        kiri::ori!("file-text")
-    };
-    control(
+/// Cartão de pasta: ícone grande no lugar da prévia.
+fn folder_card<'a>(entry: &FsEntry, t: Tokens) -> Element<'a, Message> {
+    let preview = container(kiri::ori_icon("folder", 44.0))
+        .center_x(Length::Fill)
+        .center_y(Length::Fill);
+    home_card(
         t,
-        button(
-            row![glyph, text(entry.name.clone()).size(14)]
-                .spacing(8)
-                .align_y(Alignment::Center),
-        )
-        .width(Length::Fill)
-        .on_press(message),
+        preview.into(),
+        kiri::ori!("folder"),
+        entry.name.clone(),
+        "Pasta".into(),
+        Message::BrowseTo(Some(entry.path.clone())),
     )
-    .width(Length::Fill)
-    .into()
+}
+
+/// Moldura comum dos cartões: área de prévia em cima, ícone + nome + detalhe
+/// embaixo; o cartão inteiro é o botão.
+fn home_card<'a>(
+    t: Tokens,
+    preview: Element<'a, Message>,
+    glyph: Element<'static, Message>,
+    title: String,
+    detail: String,
+    message: Message,
+) -> Element<'a, Message> {
+    let preview = container(preview)
+        .width(Length::Fill)
+        .height(Length::Fixed(HOME_PAGE_INSET_TOP + HOME_PREVIEW_H))
+        .clip(true)
+        .style(kiri::home_preview_style(t));
+    let footer = row![
+        glyph,
+        column![
+            text(middle_truncate(&title, 22))
+                .size(13)
+                .wrapping(text::Wrapping::None),
+            text(middle_truncate(&detail, 26))
+                .size(11)
+                .color(t.muted)
+                .wrapping(text::Wrapping::None),
+        ]
+        .spacing(2),
+    ]
+    .spacing(8)
+    .align_y(Alignment::Center)
+    .padding(Padding::from([8, 4]));
+    tip_owned(
+        button(column![preview, footer])
+            .width(Length::Fixed(HOME_CARD_W))
+            .padding(6)
+            .style(kiri::home_card_style(t))
+            .on_press(message),
+        title,
+    )
 }
 
 fn ready_body(tabs: &Tabs, t: Tokens) -> Element<'_, Message> {
