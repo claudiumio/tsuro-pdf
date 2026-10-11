@@ -55,7 +55,7 @@ enum Request {
     /// Carrega os bytes e devolve o `doc_id` com que a worker vai servir o
     /// documento (ids são da worker: quem abre não escolhe).
     Open {
-        bytes: Vec<u8>,
+        bytes: Arc<[u8]>,
         reply: mpsc::Sender<Result<(u64, u32), EngineError>>,
     },
     /// Esquece o documento (aba fechada). Sem resposta: é limpeza.
@@ -148,11 +148,25 @@ fn worker() -> Arc<Shared> {
     WORKER.clone()
 }
 
-/// Documento aberto mais os bytes com que ele foi carregado. `save_copy`
-/// relê `bytes` num documento temporário para não gravar no vivo.
+/// Documento aberto mais os bytes com que ele foi carregado. O Pdfium lê
+/// direto de `bytes` (sem cópia própria) e `save_copy` os relê num documento
+/// temporário para não gravar no vivo.
+///
+/// A ordem dos campos é contrato: `document` cai antes de `bytes`, que ele
+/// empresta (ver `static_bytes`).
 struct LiveDoc {
     document: PdfDocument<'static>,
-    bytes: Vec<u8>,
+    bytes: Arc<[u8]>,
+}
+
+/// Empréstimo `'static` dos bytes de um `LiveDoc` para o Pdfium.
+///
+/// SAFETY: os bytes vivem no heap do `Arc`, que não se move nem muda, e o
+/// `LiveDoc` guarda esse `Arc` junto do documento que empresta deles — com
+/// `document` declarado antes, ele cai primeiro. O empréstimo nunca sai da
+/// worker.
+fn static_bytes(bytes: &Arc<[u8]>) -> &'static [u8] {
+    unsafe { &*Arc::as_ptr(bytes) }
 }
 
 /// Corpo da worker: a `Pdfium` do processo (static) e um `PdfDocument` por
@@ -170,7 +184,9 @@ fn serve(incoming: mpsc::Receiver<Request>) {
                         continue;
                     }
                 };
-                match pdfium.load_pdf_from_byte_vec(bytes.clone(), None) {
+                // Sem cópia: um PDF grande ficava duas vezes na memória (três
+                // no pico da abertura).
+                match pdfium.load_pdf_from_byte_slice(static_bytes(&bytes), None) {
                     Ok(document) => {
                         let doc_id = next_id;
                         next_id += 1;
@@ -239,7 +255,7 @@ fn serve(incoming: mpsc::Receiver<Request>) {
                         continue;
                     }
                 };
-                let result = match pdfium.load_pdf_from_byte_vec(bytes, None) {
+                let result = match pdfium.load_pdf_from_byte_slice(&bytes, None) {
                     Ok(scratch) => save_copy_from_doc(&scratch, &annotations),
                     Err(e) => Err(EngineError(format!("{ANNOT_SAVE_FAILED}: {e}"))),
                 };
@@ -366,10 +382,7 @@ impl PageEngine for PdfiumEngine {
         let (reply, answer) = mpsc::channel();
         worker
             .requests
-            .send(Request::Open {
-                bytes: bytes.to_vec(),
-                reply,
-            })
+            .send(Request::Open { bytes, reply })
             .map_err(|_| EngineError(WORKER_GONE.into()))?;
         let (doc_id, page_count) = answer
             .recv()
@@ -1015,6 +1028,25 @@ mod tests {
         // `/Rotate 90` troca os lados, como `media_of` (página carregada).
         assert!((boxes[1].width - 792.0).abs() < 0.01);
         assert!((boxes[1].height - 612.0).abs() < 0.01);
+    }
+
+    /// O Pdfium empresta os bytes do `LiveDoc` (sem cópia): a worker tem de
+    /// segurá-los enquanto o documento vive e soltá-los ao fechar.
+    #[test]
+    fn worker_keeps_bytes_while_open_and_drops_them_on_close() {
+        let bytes = synthetic_pdf(&[(100.0, 100.0, 0)]);
+        let weak = Arc::downgrade(&bytes);
+        let Ok(engine) = PdfiumEngine::open(bytes) else {
+            return;
+        };
+        assert!(weak.upgrade().is_some(), "a worker guarda os bytes");
+        engine
+            .render(PageNo::first(), Scale::from_factor(1.0), 0)
+            .expect("render com os bytes só na worker");
+        engine.close();
+        // Canal em ordem: este pedido só volta depois do Close.
+        assert!(engine.media(PageNo::first()).is_err(), "documento fechado");
+        assert!(weak.upgrade().is_none(), "fechar solta os bytes");
     }
 
     #[test]
