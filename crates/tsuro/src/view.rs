@@ -188,7 +188,7 @@ fn hud_icon(
     message: Message,
 ) -> Element<'static, Message> {
     tip(
-        control_seg(t, button(kiri::ori_icon(file, 16.0))).on_press(message),
+        control_seg(t, button(seg_icon(file))).on_press(message),
         label,
     )
 }
@@ -300,12 +300,34 @@ fn control_active(
         .style(control_style(t, active))
 }
 
-/// Botão-ícone 30×30 para dentro de segmentos (`kiri::seg_style` + padding 2).
+/// Ícone dos botões da barra: 20px + padding 8 = os 36px da barra.
+const BAR_ICON: f32 = 20.0;
+/// Ícone dos segmentos (◀▶, −/+, marcar, HUD): 18px + padding 4 = 26px, a
+/// mesma altura de antes (16 + 5).
+const SEG_ICON: f32 = 18.0;
+
+/// Botão-ícone 36×36 da barra (casa, abrir, painéis, ⋯).
+fn bar_button(
+    t: Tokens,
+    file: &str,
+    active: bool,
+) -> iced::widget::button::Button<'static, Message> {
+    button(kiri::ori_icon(file, BAR_ICON))
+        .padding(8)
+        .style(control_style(t, active))
+}
+
+fn seg_icon(file: &str) -> Element<'static, Message> {
+    kiri::ori_icon(file, SEG_ICON)
+}
+
+/// Botão-ícone 26px de altura para dentro de segmentos (`kiri::seg_style` +
+/// padding 2 = 30px).
 fn control_seg(
     t: Tokens,
     btn: iced::widget::button::Button<'_, Message>,
 ) -> iced::widget::button::Button<'_, Message> {
-    btn.padding(Padding::from([5, 6]))
+    btn.padding(Padding::from([4, 5]))
         .style(control_style(t, false))
 }
 
@@ -329,7 +351,7 @@ fn identity_tip(path: &std::path::Path) -> String {
 
 fn open_button(t: Tokens) -> Element<'static, Message> {
     tip(
-        control(t, button(kiri::ori!("folder")).on_press(Message::PickFile)),
+        bar_button(t, "folder", false).on_press(Message::PickFile),
         "Abrir PDF",
     )
 }
@@ -337,10 +359,7 @@ fn open_button(t: Tokens) -> Element<'static, Message> {
 /// Casinha: com abas abertas mostra o Início por cima delas (`GoHome`);
 /// carregando/erro não têm aba a preservar e fecham (`Close`).
 fn home_button(t: Tokens, message: Message) -> Element<'static, Message> {
-    tip(
-        control(t, button(kiri::ori!("home")).on_press(message)),
-        "Início",
-    )
+    tip(bar_button(t, "home", false).on_press(message), "Início")
 }
 
 /// Moldura da toolbar Kiri: 36px, fundo `chrome`, respiro horizontal 8px.
@@ -407,14 +426,14 @@ fn search_nav<'a>(ready: &'a Ready, t: Tokens) -> Element<'a, Message> {
         nav = nav.push(tip(
             control_seg(
                 t,
-                button(kiri::ori!("chevron-left")).on_press(Message::SearchPrev),
+                button(seg_icon("chevron-left")).on_press(Message::SearchPrev),
             ),
             "Anterior (Shift+Enter)",
         ));
         nav = nav.push(tip(
             control_seg(
                 t,
-                button(kiri::ori!("chevron-right")).on_press(Message::SearchNext),
+                button(seg_icon("chevron-right")).on_press(Message::SearchNext),
             ),
             "Próximo (Enter)",
         ));
@@ -505,7 +524,7 @@ fn topbar(session: &Session, t: Tokens) -> Element<'_, Message> {
                         tip(
                             control_seg(
                                 t,
-                                button(kiri::ori!("chevron-left"))
+                                button(seg_icon("chevron-left"))
                                     .on_press(Message::Nav(NavCmd::Previous))
                             ),
                             "Página anterior"
@@ -513,7 +532,7 @@ fn topbar(session: &Session, t: Tokens) -> Element<'_, Message> {
                         tip(
                             control_seg(
                                 t,
-                                button(kiri::ori!("chevron-right"))
+                                button(seg_icon("chevron-right"))
                                     .on_press(Message::Nav(NavCmd::Next))
                             ),
                             "Próxima página"
@@ -543,10 +562,7 @@ fn topbar(session: &Session, t: Tokens) -> Element<'_, Message> {
         let zoom_seg = container(
             row![
                 tip(
-                    control_seg(
-                        t,
-                        button(kiri::ori!("minus")).on_press(Message::SetZoom(out))
-                    ),
+                    control_seg(t, button(seg_icon("minus")).on_press(Message::SetZoom(out))),
                     "Diminuir zoom (-)"
                 ),
                 tip(
@@ -560,16 +576,13 @@ fn topbar(session: &Session, t: Tokens) -> Element<'_, Message> {
                     "Zoom atual",
                 ),
                 tip(
-                    control_seg(
-                        t,
-                        button(kiri::ori!("plus")).on_press(Message::SetZoom(into))
-                    ),
+                    control_seg(t, button(seg_icon("plus")).on_press(Message::SetZoom(into))),
                     "Aumentar zoom (+)"
                 ),
                 tip(
                     control_seg(
                         t,
-                        button(kiri::ori!("fit-width")).on_press(Message::SetZoom(Zoom::Width))
+                        button(seg_icon("fit-width")).on_press(Message::SetZoom(Zoom::Width))
                     ),
                     "Ajustar à largura"
                 ),
@@ -581,11 +594,8 @@ fn topbar(session: &Session, t: Tokens) -> Element<'_, Message> {
         .style(kiri::seg_style(t));
 
         // Copiar/fechar/fit-page vivem no menu ⋯ (`overflow_menu`).
-        let shield = control_active(
-            t,
-            button(kiri::ori!("shield")).on_press(Message::ToggleSignatures),
-            ready.signatures_open,
-        );
+        let shield =
+            bar_button(t, "shield", ready.signatures_open).on_press(Message::ToggleSignatures);
         let dot = kiri::status_dot_color(t, ready.signatures.signatures.iter().map(|s| s.status));
         let shield_el: Element<'_, Message> = match dot {
             Some(dot) => tip(
@@ -622,11 +632,7 @@ fn topbar(session: &Session, t: Tokens) -> Element<'_, Message> {
         };
         let mut right = row![
             tip(
-                control_active(
-                    t,
-                    button(kiri::ori!("pages")).on_press(Message::TogglePages),
-                    ready.pages_open
-                ),
+                bar_button(t, "pages", ready.pages_open).on_press(Message::TogglePages),
                 "Páginas"
             ),
             shield_el,
@@ -634,11 +640,7 @@ fn topbar(session: &Session, t: Tokens) -> Element<'_, Message> {
         .spacing(4)
         .align_y(Alignment::Center);
         right = right.push(tip(
-            control_active(
-                t,
-                button(kiri::ori!("more")).on_press(Message::ToggleOverflow),
-                ready.overflow_open,
-            ),
+            bar_button(t, "more", ready.overflow_open).on_press(Message::ToggleOverflow),
             "Mais opções",
         ));
 
@@ -653,7 +655,7 @@ fn topbar(session: &Session, t: Tokens) -> Element<'_, Message> {
             pill,
             Space::with_width(Length::Fill),
         ]
-        .spacing(4)
+        .spacing(6)
         .align_y(Alignment::Center);
         if ready.selection_plain_text().is_some() {
             let hint = |key: &'static str| {
@@ -677,7 +679,7 @@ fn topbar(session: &Session, t: Tokens) -> Element<'_, Message> {
                     tip(
                         control_seg(
                             t,
-                            button(tool(kiri::ori!("highlighter"), "Destacar", "H"))
+                            button(tool(seg_icon("highlighter"), "Destacar", "H"))
                                 .on_press(Message::Annotate(AnnotKind::Highlight))
                         ),
                         "Destacar (H)"
@@ -685,7 +687,7 @@ fn topbar(session: &Session, t: Tokens) -> Element<'_, Message> {
                     tip(
                         control_seg(
                             t,
-                            button(tool(kiri::ori!("underline"), "Sublinhar", "U"))
+                            button(tool(seg_icon("underline"), "Sublinhar", "U"))
                                 .on_press(Message::Annotate(AnnotKind::Underline))
                         ),
                         "Sublinhar (U)"
@@ -693,7 +695,7 @@ fn topbar(session: &Session, t: Tokens) -> Element<'_, Message> {
                     tip(
                         control_seg(
                             t,
-                            button(tool(kiri::ori!("strike"), "Riscar", "S"))
+                            button(tool(seg_icon("strike"), "Riscar", "S"))
                                 .on_press(Message::Annotate(AnnotKind::Strikeout))
                         ),
                         "Riscar (S)"
@@ -701,7 +703,7 @@ fn topbar(session: &Session, t: Tokens) -> Element<'_, Message> {
                     tip(
                         control_seg(
                             t,
-                            button(tool(kiri::ori!("note"), "Nota", "N"))
+                            button(tool(seg_icon("note"), "Nota", "N"))
                                 .on_press(Message::Annotate(AnnotKind::Note))
                         ),
                         "Nota (N)"
@@ -1296,17 +1298,13 @@ fn selection_bar_layer(ready: &Ready, t: Tokens) -> Element<'_, Message> {
     let bar = container(
         row![
             seg(
-                kiri::ori!("highlighter"),
+                seg_icon("highlighter"),
                 "Destacar (H)",
                 AnnotKind::Highlight
             ),
-            seg(
-                kiri::ori!("underline"),
-                "Sublinhar (U)",
-                AnnotKind::Underline
-            ),
-            seg(kiri::ori!("strike"), "Riscar (S)", AnnotKind::Strikeout),
-            seg(kiri::ori!("note"), "Nota (N)", AnnotKind::Note),
+            seg(seg_icon("underline"), "Sublinhar (U)", AnnotKind::Underline),
+            seg(seg_icon("strike"), "Riscar (S)", AnnotKind::Strikeout),
+            seg(seg_icon("note"), "Nota (N)", AnnotKind::Note),
         ]
         .spacing(0)
         .align_y(Alignment::Center),
@@ -1892,7 +1890,7 @@ fn empty_browser(empty: &EmptyState, tabs_open: bool, t: Tokens) -> Element<'_, 
         folders_head = folders_head.push(tip(
             control_seg(
                 t,
-                button(kiri::ori!("chevron-left")).on_press(Message::BrowseTo(parent)),
+                button(seg_icon("chevron-left")).on_press(Message::BrowseTo(parent)),
             ),
             "Voltar",
         ));

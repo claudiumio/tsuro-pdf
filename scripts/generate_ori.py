@@ -118,10 +118,14 @@ ICONS = {
         ("stroke", "MID", 2, "M17 20.5H20.5V17", None, None),
     ],
     "fit-width": [
-        ("path", "MID", "M7 11H17V13H7Z"),
-        ("path", "DARK", "M7 12H17V13H7Z"),
-        ("path", "HI", "M7 9.3V14.7L3.5 12Z"),
-        ("path", "HI", "M17 9.3V14.7L20.5 12Z"),
+        # Pontas largas, com a metade de baixo em MID: só HI sumia no tema
+        # claro, e o ícone virava um "−" ao lado do − do zoom.
+        ("path", "MID", "M7.5 11H16.5V13H7.5Z"),
+        ("path", "DARK", "M7.5 12H16.5V13H7.5Z"),
+        ("path", "HI", "M7.5 8V12H2.5Z"),
+        ("path", "MID", "M7.5 12V16L2.5 12Z"),
+        ("path", "HI", "M16.5 8V12H21.5Z"),
+        ("path", "MID", "M16.5 12V16L21.5 12Z"),
     ],
     "highlighter": [
         ("path", "MID", "M5.44 15.44L15.44 5.44L18.56 8.56L8.56 18.56Z"),
