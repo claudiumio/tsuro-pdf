@@ -112,63 +112,58 @@ pub fn chrome(session: &Session, theme: Theme) -> Element<'_, Message> {
         ..container::Style::default()
     })
     .into();
-    // HUD flutuante (Stitch): pílula bottom-center sobre o canvas, sob os
-    // modais — que escurecem por cima e capturam tudo.
-    let main = match session {
-        // Some com o mouse parado (ver `HudState`): a leitura fica limpa.
-        // Escondido vira um espaço vazio, sem sair da árvore: trocar o tipo
-        // da raiz (`stack` ↔ `container`) recriaria o estado de todos os
-        // widgets — foco da busca, rolagem — a cada tique do HUD.
-        Session::Ready(ready) if ready.home().is_none() => {
-            let layer: Element<'_, Message> = if ready.hud.visible() {
-                hud(ready, t)
-            } else {
-                Space::new(Length::Shrink, Length::Shrink).into()
-            };
-            stack![main, layer].into()
-        }
-        _ => main,
+    let Session::Ready(tabs) = session else {
+        return main;
     };
-    match session {
+    // Com documento aberto a raiz é sempre `stack![janela, HUD, camada]`: o
+    // que não está na tela vira um espaço vazio, sem sair da árvore. Trocar
+    // a forma da raiz recriava o estado de todos os widgets — a rolagem do
+    // contínuo voltava ao topo ao abrir um menu ou selecionar texto, e o
+    // campo de busca perdia o foco a cada tique do HUD.
+    let empty = || -> Element<'_, Message> { Space::new(Length::Shrink, Length::Shrink).into() };
+    // HUD flutuante (Stitch): pílula bottom-center sobre o canvas, sob os
+    // modais — que escurecem por cima e capturam tudo. Some com o mouse
+    // parado (ver `HudState`).
+    let hud_layer = if tabs.home().is_none() && tabs.hud.visible() {
+        hud(tabs, t)
+    } else {
+        empty()
+    };
+    let overlay = if tabs.close_prompt() {
         // Fechar com marcações sujas fica por cima dos outros modais.
-        Session::Ready(ready) if ready.close_prompt() => stack![main, close_prompt_layer(t)].into(),
-        Session::Ready(tabs) if tabs.palette_open() => stack![
-            main,
-            palette_layer(tabs.palette().as_ref().expect("checked above"), t)
-        ]
-        .into(),
+        close_prompt_layer(t)
+    } else if let Some(palette) = tabs.palette() {
+        palette_layer(palette, t)
+    } else if let Some(dialog) = tabs.print_dialog.as_ref() {
         // Modal de impressão captura tudo; menu ⋯ nunca abre junto (fecha ao abrir).
-        Session::Ready(ready) if ready.print_dialog.is_some() => {
-            let dialog = ready.print_dialog.as_ref().expect("checked above");
-            stack![main, print_layer(ready, dialog, t)].into()
-        }
+        print_layer(tabs, dialog, t)
+    } else if tabs.note_draft.is_some() {
         // Post-it (issue #30): editor ancorado no trecho da nota. Sem modal
         // centrado — só o fundo escurece e cancela no clique (como o de
         // impressão), que também captura os cliques de fora.
-        Session::Ready(ready) if ready.note_draft.is_some() => {
-            stack![main, note_layer(ready, t)].into()
-        }
+        note_layer(tabs, t)
+    } else if tabs.save_warning {
         // Aviso de documento assinado (⋯ → Salvar cópia): captura tudo.
-        Session::Ready(ready) if ready.save_warning => stack![main, save_warning_layer(t)].into(),
+        save_warning_layer(t)
+    } else if tabs.about_open {
         // Sobre (Ajuda): cartão de versão; fundo e Esc fecham.
-        Session::Ready(ready) if ready.about_open => stack![main, about_layer(t)].into(),
+        about_layer(t)
+    } else if tabs.settings_open {
         // Configurações (Ajuda): abre por cima do Sobre; fundo e Esc fecham.
-        Session::Ready(ready) if ready.settings_open => {
-            stack![main, settings_layer(ready, t)].into()
-        }
+        settings_layer(tabs, t)
+    } else if tabs.overflow_open {
         // Overlay visual: só os botões capturam clique, o resto atravessa.
-        Session::Ready(ready) if ready.overflow_open => {
-            stack![main, overflow_layer(ready, t)].into()
-        }
+        overflow_layer(tabs, t)
+    } else if tabs.home().is_none() && tabs.selection_bar_pos().is_some() {
         // Mini-toolbar da seleção (issue #51): sem dim nem captura — só os
         // quatro botões recebem clique, o resto atravessa para a folha. Os
         // diálogos acima têm precedência; `Annotate` limpa a seleção e a
         // barra some sozinha.
-        Session::Ready(ready) if ready.home().is_none() && ready.selection_bar_pos().is_some() => {
-            stack![main, selection_bar_layer(ready, t)].into()
-        }
-        _ => main,
-    }
+        selection_bar_layer(tabs, t)
+    } else {
+        empty()
+    };
+    stack![main, hud_layer, overlay].into()
 }
 
 /// Botão-ícone da pílula do HUD: Ori + tooltip, no tamanho dos segmentos.
