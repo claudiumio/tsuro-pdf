@@ -4241,31 +4241,46 @@ impl Session {
         let Session::Ready(ready) = self else {
             return Task::none();
         };
-        // Carregamento preguiçoso do outline: um por documento, fire-and-forget.
-        if ready.outline.is_none() && !ready.outline_load_issued {
-            ready.outline_load_issued = true;
-            let doc_gen = ready.open_gen;
-            return outline_task(ready.engine.clone(), doc_gen);
-        }
         if !ready.page_data_inflight.is_empty() || !ready.render_inflight.is_empty() {
             return Task::none();
         }
         ready.evict_unused();
+        // A página na tela primeiro, e o render só precisa do tamanho dela:
+        // sem caixa (posição restaurada), as caixas vêm antes — baratas, sem
+        // carregar página nem texto.
+        if ready.loaded_media(ready.visible).is_none() && ready.needs_media_boxes() {
+            ready.media_boxes_issued = true;
+            let doc_gen = ready.open_gen;
+            return media_boxes_task(ready.engine.clone(), doc_gen);
+        }
         if let Some(task) = ready.request_visible_render() {
             return task;
+        }
+        // Outline depois da primeira página na tela: um por documento.
+        if ready.outline.is_none() && !ready.outline_load_issued {
+            ready.outline_load_issued = true;
+            let doc_gen = ready.open_gen;
+            return outline_task(ready.engine.clone(), doc_gen);
         }
         if ready.needs_media_boxes() {
             ready.media_boxes_issued = true;
             let doc_gen = ready.open_gen;
             return media_boxes_task(ready.engine.clone(), doc_gen);
         }
-        if let Some(page) = ready.next_page_data_target() {
+        // Texto da página na tela (seleção, busca) antes do prefetch.
+        if ready.wants_page_data(ready.visible) {
+            let page = ready.visible;
             let doc_gen = ready.open_gen;
             ready.page_data_inflight.insert(page.index());
             return page_data_task(ready.engine.clone(), page, doc_gen);
         }
         if let Some(task) = ready.request_speculative_render() {
             return task;
+        }
+        if let Some(page) = ready.next_page_data_target() {
+            let doc_gen = ready.open_gen;
+            ready.page_data_inflight.insert(page.index());
+            return page_data_task(ready.engine.clone(), page, doc_gen);
         }
         let thumb = ready.request_thumb_render();
         if !ready.render_inflight.is_empty() {
@@ -5806,7 +5821,7 @@ impl Ready {
             let v = self.visible.index().min(end);
             for i in (v..end).chain(start..v) {
                 let page = PageNo::from_index(i);
-                if !self.has_page_data(page) {
+                if self.loaded_media(page).is_none() {
                     continue;
                 }
                 let scale = self.page_scale(page);
@@ -5824,9 +5839,7 @@ impl Ready {
             return None;
         }
         let page = PageNo::from_index(next_idx);
-        if !self.has_page_data(page) {
-            return None;
-        }
+        self.loaded_media(page)?;
         Some((page, self.page_scale(page), self.view_rotation))
     }
 
@@ -5855,7 +5868,8 @@ impl Ready {
         if !self.render_inflight.is_empty() {
             return None;
         }
-        if !self.has_page_data(self.visible) {
+        // Só o tamanho: o texto da página não muda o bitmap.
+        if self.loaded_media(self.visible).is_none() {
             return None;
         }
         let page = self.visible;
@@ -5883,7 +5897,7 @@ impl Ready {
         if self
             .surface(self.visible, self.page_scale(self.visible))
             .is_none()
-            || !self.has_page_data(self.visible)
+            || self.loaded_media(self.visible).is_none()
         {
             return None;
         }
@@ -6081,17 +6095,17 @@ async fn open_ready(source: OpenSource) -> Result<Ready, OpenError> {
 }
 
 impl PageCatalog {
-    // ponytail: abre com a primeira pagina; resto por demanda em PageData
+    /// Abre só com o tamanho da primeira página: o texto (o passo caro)
+    /// chega depois do primeiro render, por `PageData`.
     fn extract_first(engine: &PdfiumEngine) -> Result<Self, OpenError> {
         let total = engine.page_count();
         let mut media: Vec<Option<MediaBox>> = vec![None; total as usize];
-        let mut text: Vec<Option<TextLayer>> = vec![None; total as usize];
+        let text: Vec<Option<TextLayer>> = vec![None; total as usize];
         if total > 0 {
-            let (first_media, first_text) = engine
-                .page_data(PageNo::first())
+            let first_media = engine
+                .media(PageNo::first())
                 .map_err(|e: EngineError| OpenError::Engine(e.to_string()))?;
             media[0] = Some(first_media);
-            text[0] = Some(first_text);
         }
         Ok(PageCatalog { total, media, text })
     }
@@ -7150,6 +7164,80 @@ mod tests {
         ready.view_mode = ViewMode::Single;
         ready.pages_open = false;
         Some(Session::Ready(Tabs::single(ready)))
+    }
+
+    fn ready_mut(session: &mut Session) -> &mut Ready {
+        match session {
+            Session::Ready(tabs) => tabs,
+            _ => panic!("sem abas"),
+        }
+    }
+
+    #[test]
+    fn open_brings_page_size_without_text() {
+        let Some(mut session) = sumario_session() else {
+            return;
+        };
+        let ready = ready_mut(&mut session);
+        assert!(ready.loaded_media(PageNo::first()).is_some());
+        assert!(ready.pages.text[0].is_none(), "texto só depois do render");
+    }
+
+    #[test]
+    fn first_request_after_open_is_the_visible_render() {
+        isolated(|| {
+            let Some(mut session) = sumario_session() else {
+                return;
+            };
+            let _ = session.schedule_work();
+            let ready = ready_mut(&mut session);
+            assert!(
+                ready.render_inflight.iter().any(|key| key.0 == 0),
+                "render da página 1 primeiro"
+            );
+            assert!(ready.page_data_inflight.is_empty(), "texto espera o render");
+            assert!(!ready.outline_load_issued, "sumário espera o render");
+        });
+    }
+
+    #[test]
+    fn jump_to_unvisited_page_renders_before_reading_text() {
+        isolated(|| {
+            let Some(mut session) = sumario_session() else {
+                return;
+            };
+            drain_work(&mut session);
+            let far = PageNo::from_index(12);
+            let ready = ready_mut(&mut session);
+            assert!(ready.pages.text[12].is_none());
+            ready.visible = far;
+            let _ = session.schedule_work();
+            let ready = ready_mut(&mut session);
+            assert!(ready.render_inflight.iter().any(|key| key.0 == 12));
+            assert!(!ready.page_data_inflight.contains(&12));
+        });
+    }
+
+    #[test]
+    fn restored_page_without_size_asks_sizes_before_rendering() {
+        isolated(|| {
+            let Some(mut session) = sumario_session() else {
+                return;
+            };
+            let ready = ready_mut(&mut session);
+            ready.visible = PageNo::from_index(9);
+            assert!(ready.loaded_media(ready.visible).is_none());
+            let _ = session.schedule_work();
+            let ready = ready_mut(&mut session);
+            assert!(ready.media_boxes_issued, "caixas antes de tudo");
+            assert!(ready.render_inflight.is_empty() && ready.page_data_inflight.is_empty());
+            let doc_gen = ready.open_gen;
+            let result = ready.engine.media_boxes().map_err(|e| e.to_string());
+            apply(&mut session, Message::MediaBoxes { doc_gen, result });
+            let ready = ready_mut(&mut session);
+            assert!(ready.render_inflight.iter().any(|key| key.0 == 9));
+            assert!(ready.page_data_inflight.is_empty(), "texto ainda espera");
+        });
     }
 
     #[test]
@@ -10706,10 +10794,17 @@ mod tests {
         assert!(!ready.prefetch_fits_budget(next, huge));
     }
 
+    /// Documento aberto com o texto da 1ª página já chegado: a abertura só
+    /// traz o tamanho, e o `PageData` vem depois do primeiro render. Os
+    /// testes de seleção e notas partem desse estado.
     fn sample_ready() -> Option<Ready> {
         let path = sample_pdf();
         let bytes = std::fs::read(&path).ok()?;
-        Document::from_bytes(OpenSource::Path(path), Arc::<[u8]>::from(bytes)).ok()
+        let mut ready =
+            Document::from_bytes(OpenSource::Path(path), Arc::<[u8]>::from(bytes)).ok()?;
+        let (_, text) = ready.engine.page_data(PageNo::first()).ok()?;
+        ready.pages.text[0] = Some(text);
+        Some(ready)
     }
 
     #[test]
