@@ -2898,7 +2898,8 @@ impl Session {
                     open_default_apps_settings();
                 }
                 // Windows bloqueia troca silenciosa de padrão (UserChoice com
-                // hash); macOS não expõe sem bridge objc. Nos dois casos o
+                // hash); no macOS a troca é do usuário no Finder (a ponte em
+                // `native_open` só recebe os arquivos). Nos dois casos o
                 // caminho honesto é a tela do SO — no macOS via o Sobre.
                 #[cfg(not(target_os = "windows"))]
                 {
@@ -4028,6 +4029,10 @@ impl Session {
         }
     }
 
+    pub fn is_opening(&self) -> bool {
+        self.loading_gen().is_some()
+    }
+
     /// Geração do documento que está carregando: a primeira aba (`Loading`) ou
     /// a aba nova pendente de uma janela já aberta (issue #40).
     fn loading_gen(&self) -> Option<u64> {
@@ -4349,10 +4354,6 @@ pub(crate) fn keyboard_message(
     }
 }
 
-/// Rótulo do atalho no menu ⋯ (#42): `None` = sem tecla ou com a dica na
-/// toolbar (H/U/S/N, F3, Ctrl+F, +/-, setas de página). Cobertura travada em
-/// `every_keyboard_shortcut_has_a_menu_hint_or_exemption` — atalho novo no
-/// `keyboard_message` sem rótulo aqui (ou isenção) quebra o teste.
 /// Abre o painel de apps padrão do Windows (Configurações). Fire-and-forget:
 /// falhar aqui não pode quebrar a sessão; o usuário segue no app.
 #[cfg(target_os = "windows")]
@@ -4428,6 +4429,10 @@ fn update_available(current: &str, latest: &str) -> bool {
     }
 }
 
+/// Rótulo do atalho no menu ⋯ (#42): `None` = sem tecla ou com a dica na
+/// toolbar (H/U/S/N, F3, Ctrl+F, +/-, setas de página). Cobertura travada em
+/// `every_keyboard_shortcut_has_a_menu_hint_or_exemption` — atalho novo no
+/// `keyboard_message` sem rótulo aqui (ou isenção) quebra o teste.
 pub(crate) fn shortcut_hint(msg: &Message) -> Option<&'static str> {
     match msg {
         Message::PickFile => Some(if cfg!(target_os = "macos") {

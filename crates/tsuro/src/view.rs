@@ -1439,7 +1439,7 @@ fn about_card(t: Tokens) -> Element<'static, Message> {
             .style(kiri::menu_item_style(t))
             .on_press(Message::ToggleAbout),
     ];
-    // Sem API pública de padrão sem bridge objc: o caminho é o Finder.
+    // macOS: trocar o leitor padrão é escolha do usuário no Finder.
     if cfg!(target_os = "macos") {
         body = body.push(
             text(
