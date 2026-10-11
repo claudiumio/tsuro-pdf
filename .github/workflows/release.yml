@@ -104,17 +104,18 @@ jobs:
           sha256sum * | tee SHA256SUMS
           NOTES="$(mktemp)"
           cat >"$NOTES" <<EOF
-          TsuroPDF ${GITHUB_REF_NAME} — paleta de comandos, menu ⋯ e aceleradores
+          TsuroPDF ${GITHUB_REF_NAME} — Início em grade, Configurações e leitura mais leve
 
-          Novidades desde a v0.3.1:
+          Novidades desde a v0.4.0:
 
-          - **Paleta de comandos** (#45): acesso rápido a todas as ações sem sair do teclado.
-          - **Menu ⋯**: dicas de atalho, grupos Arquivo/Editar/Ver/Ir/Ajuda, Abrir recente e Recentes colapsável (#42).
-          - **Aceleradores padrão** de teclado e identidade da faixa de abas (#72, #75).
-          - **Busca**: navegar entre ocorrências, sem salto ao digitar, acertos com acentos (#43).
-          - **Auto-reload**: recarrega quando o arquivo muda no disco (#46).
-          - **Marcar texto**: copiar destaques como Markdown (#50); a impressão inclui as marcações (#86).
-          - **Assinaturas**: checagem RSA antes do status intacto; fim do crash com objetos aninhados (#85, #87).
+          - **Início em grade** (#113): pastas e PDFs em cartões, com prévia da primeira página; a casinha abre o Início por cima das abas, sem fechá-las (#108).
+          - **Configurações** (#105): tema, leitor padrão, acesso a pastas, idioma e checagem de versão num só diálogo.
+          - **Leitor de PDF do sistema** (#103): abre pelo Finder e pelo Explorer, e o menu Ajuda ganha Definir como leitor padrão.
+          - **Paleta Ctrl+K também no Início** (#115): abrir, recentes, PDFs da pasta e texto das abas abertas.
+          - **Abertura mais rápida e leve**: primeira página na tela antes do texto e do sumário (#110); tamanhos de página sem carregar páginas (#106); PDF grande abre na metade do tempo e da memória (#112); o texto de documentos densos ocupa 5× menos memória (#114).
+          - **Busca**: varre o documento inteiro, não só as páginas perto da leitura (#107).
+          - **Leitura**: HUD some com o mouse parado (#109); menus, diálogos e seleção não voltam a rolagem ao topo (#111); ícones da barra maiores e ↔ legível no tema claro (#116).
+          - **Pastas**: mensagem clara quando o sistema nega acesso, sem sondagem na abertura (#104).
           EOF
           # PRs mergeadas com @autores (visibilidade open-source; rodapé Full
           # Changelog próprio do template, então filtra o gerado). Falha aqui
@@ -130,7 +131,7 @@ jobs:
           } >>"$NOTES"
           cat >>"$NOTES" <<EOF
 
-          **Full Changelog**: https://github.com/claudioorjunior/tsuro-pdf/compare/v0.3.1...${GITHUB_REF_NAME}
+          **Full Changelog**: https://github.com/claudioorjunior/tsuro-pdf/compare/v0.4.0...${GITHUB_REF_NAME}
 
           Instalação:
 
