@@ -7331,6 +7331,39 @@ mod tests {
         assert!(!hud(&session).visible());
     }
 
+    /// Forma da árvore de widgets: só a contagem de filhos, recursiva.
+    fn tree_shape(tree: &iced::advanced::widget::Tree) -> String {
+        let kids: Vec<String> = tree.children.iter().map(tree_shape).collect();
+        format!("{}[{}]", tree.children.len(), kids.join(","))
+    }
+
+    /// Trocar a raiz (`stack` ↔ `container`) a cada tique recriava o estado
+    /// de todos os widgets: o campo de busca perdia o foco no meio da
+    /// digitação e as letras viravam atalhos (o "r" girava a página).
+    #[test]
+    fn hud_toggle_keeps_the_widget_tree_shape() {
+        use iced::advanced::widget::Tree;
+        let Some(ready) = sample_ready() else {
+            return;
+        };
+        let mut session = Session::Ready(Tabs::single(ready));
+        let tree = |s: &Session| Tree::new(&s.view());
+        let visible = tree(&session);
+        apply(&mut session, Message::HudTick);
+        assert!(!hud(&session).visible());
+        let hidden = tree(&session);
+        assert_eq!(
+            visible.children.len(),
+            hidden.children.len(),
+            "raiz estável"
+        );
+        assert_eq!(
+            tree_shape(&visible.children[0]),
+            tree_shape(&hidden.children[0]),
+            "a janela embaixo do HUD não muda de forma"
+        );
+    }
+
     #[test]
     fn mouse_moves_reach_update_only_when_the_hud_asks() {
         let moved = || {

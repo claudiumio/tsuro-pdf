@@ -116,8 +116,16 @@ pub fn chrome(session: &Session, theme: Theme) -> Element<'_, Message> {
     // modais — que escurecem por cima e capturam tudo.
     let main = match session {
         // Some com o mouse parado (ver `HudState`): a leitura fica limpa.
-        Session::Ready(ready) if ready.home().is_none() && ready.hud.visible() => {
-            stack![main, hud(ready, t)].into()
+        // Escondido vira um espaço vazio, sem sair da árvore: trocar o tipo
+        // da raiz (`stack` ↔ `container`) recriaria o estado de todos os
+        // widgets — foco da busca, rolagem — a cada tique do HUD.
+        Session::Ready(ready) if ready.home().is_none() => {
+            let layer: Element<'_, Message> = if ready.hud.visible() {
+                hud(ready, t)
+            } else {
+                Space::new(Length::Shrink, Length::Shrink).into()
+            };
+            stack![main, layer].into()
         }
         _ => main,
     };
