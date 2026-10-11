@@ -115,7 +115,18 @@ pub fn chrome(session: &Session, theme: Theme) -> Element<'_, Message> {
     // HUD flutuante (Stitch): pílula bottom-center sobre o canvas, sob os
     // modais — que escurecem por cima e capturam tudo.
     let main = match session {
-        Session::Ready(ready) if ready.home().is_none() => stack![main, hud(ready, t)].into(),
+        // Some com o mouse parado (ver `HudState`): a leitura fica limpa.
+        // Escondido vira um espaço vazio, sem sair da árvore: trocar o tipo
+        // da raiz (`stack` ↔ `container`) recriaria o estado de todos os
+        // widgets — foco da busca, rolagem — a cada tique do HUD.
+        Session::Ready(ready) if ready.home().is_none() => {
+            let layer: Element<'_, Message> = if ready.hud.visible() {
+                hud(ready, t)
+            } else {
+                Space::new(Length::Shrink, Length::Shrink).into()
+            };
+            stack![main, layer].into()
+        }
         _ => main,
     };
     match session {
@@ -232,12 +243,17 @@ fn hud(ready: &Ready, t: Tokens) -> Element<'_, Message> {
             .align_y(Alignment::Center),
         );
     }
+    // Cursor sobre a pílula a segura na tela (não some embaixo da mão).
     container(
-        container(pill)
-            .height(Length::Fixed(28.0))
-            .align_y(Alignment::Center)
-            .padding(Padding::from([4, 6]))
-            .style(kiri::hud_style(t)),
+        mouse_area(
+            container(pill)
+                .height(Length::Fixed(28.0))
+                .align_y(Alignment::Center)
+                .padding(Padding::from([4, 6]))
+                .style(kiri::hud_style(t)),
+        )
+        .on_enter(Message::HudHover(true))
+        .on_exit(Message::HudHover(false)),
     )
     .width(Length::Fill)
     .height(Length::Fill)
