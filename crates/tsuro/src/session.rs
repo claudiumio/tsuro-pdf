@@ -7425,31 +7425,36 @@ mod tests {
         format!("{}[{}]", tree.children.len(), kids.join(","))
     }
 
-    /// Trocar a raiz (`stack` ↔ `container`) a cada tique recriava o estado
-    /// de todos os widgets: o campo de busca perdia o foco no meio da
-    /// digitação e as letras viravam atalhos (o "r" girava a página).
-    #[test]
-    fn hud_toggle_keeps_the_widget_tree_shape() {
+    /// `message` liga ou desliga uma camada (HUD, menu, diálogo): a raiz e a
+    /// janela embaixo dela não podem mudar de forma, senão o iced recria o
+    /// estado de todos os widgets — a rolagem do contínuo voltava ao topo
+    /// ao abrir o ⋯ ou selecionar texto, e a busca perdia o foco a cada
+    /// tique do HUD (as letras viravam atalhos: o "r" girava a página).
+    fn assert_window_shape_kept(session: &mut Session, message: Message) {
         use iced::advanced::widget::Tree;
+        let before = Tree::new(&session.view());
+        apply(session, message);
+        let after = Tree::new(&session.view());
+        assert_eq!(before.children.len(), after.children.len(), "raiz estável");
+        assert_eq!(
+            tree_shape(&before.children[0]),
+            tree_shape(&after.children[0]),
+            "a janela embaixo da camada não muda de forma"
+        );
+    }
+
+    #[test]
+    fn layers_keep_the_window_tree_shape() {
         let Some(ready) = sample_ready() else {
             return;
         };
         let mut session = Session::Ready(Tabs::single(ready));
-        let tree = |s: &Session| Tree::new(&s.view());
-        let visible = tree(&session);
-        apply(&mut session, Message::HudTick);
+        assert_window_shape_kept(&mut session, Message::HudTick);
         assert!(!hud(&session).visible());
-        let hidden = tree(&session);
-        assert_eq!(
-            visible.children.len(),
-            hidden.children.len(),
-            "raiz estável"
-        );
-        assert_eq!(
-            tree_shape(&visible.children[0]),
-            tree_shape(&hidden.children[0]),
-            "a janela embaixo do HUD não muda de forma"
-        );
+        assert_window_shape_kept(&mut session, Message::ToggleOverflow);
+        assert_window_shape_kept(&mut session, Message::ToggleOverflow);
+        assert_window_shape_kept(&mut session, Message::ToggleAbout);
+        assert_window_shape_kept(&mut session, Message::ClosePrintDialog);
     }
 
     #[test]
