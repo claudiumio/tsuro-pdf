@@ -2098,12 +2098,7 @@ fn short_name(path: &std::path::Path) -> String {
 /// Painel de navegação (Stitch sidebar): cabeçalho `Navegação`, abas segmentadas
 /// Miniaturas | Sumário e lista virtualizada (miniaturas ou sumário).
 fn pages_panel(ready: &Ready, t: Tokens) -> Element<'_, Message> {
-    let mut col = column![column![
-        text("Navegação").size(13).color(t.ink),
-        text("Documento ativo").size(11).color(t.muted),
-    ]
-    .spacing(2),]
-    .spacing(8);
+    let mut col = column![text("Navegação").size(13).color(t.ink)].spacing(8);
     if ready.outline.is_some() {
         col = col.push(panel_tabs(ready, t));
     }
@@ -2120,21 +2115,25 @@ fn pages_panel(ready: &Ready, t: Tokens) -> Element<'_, Message> {
         .into()
 }
 
-/// Controle segmentado Miniaturas | Sumário (só quando o PDF tem outline).
+/// Controle segmentado Páginas | Sumário (só quando o PDF tem outline).
 fn panel_tabs(ready: &Ready, t: Tokens) -> Element<'_, Message> {
+    // Rótulo curto e sem quebra: no painel de 156px "Miniaturas" partia em
+    // duas linhas. "Páginas" é o mesmo nome do botão que abre o painel.
     let seg = |label: &'static str, active: bool, msg: Message| {
-        button(text(label).size(12))
-            .width(Length::Fill)
-            .padding(Padding::from([5, 8]))
-            .style(kiri::panel_seg_style(t, active))
-            .on_press(msg)
+        button(
+            text(label)
+                .size(12)
+                .wrapping(text::Wrapping::None)
+                .width(Length::Fill)
+                .align_x(Alignment::Center),
+        )
+        .width(Length::Fill)
+        .padding(Padding::from([5, 8]))
+        .style(kiri::panel_seg_style(t, active))
+        .on_press(msg)
     };
     container(row![
-        seg(
-            "Miniaturas",
-            !ready.outline_open,
-            Message::OutlineTab(false)
-        ),
+        seg("Páginas", !ready.outline_open, Message::OutlineTab(false)),
         seg("Sumário", ready.outline_open, Message::OutlineTab(true)),
     ])
     .padding(Padding::from(2))
