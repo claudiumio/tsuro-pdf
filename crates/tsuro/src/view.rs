@@ -6,6 +6,7 @@ use iced::widget::{
     button, column, container, image, mouse_area, pick_list, row, scrollable, stack, text,
     text_editor, text_input, tooltip, Canvas, Space,
 };
+use iced::{font, Font};
 use iced::{mouse, Alignment, Background, Border, Color, Element, Length, Padding, Point, Task};
 use iced::{Rectangle, Size};
 use tsuro_sign::SignatureStatus;
@@ -2063,6 +2064,7 @@ fn empty_browser(empty: &EmptyState, tabs_open: bool, t: Tokens) -> Element<'_, 
 
     content = content.push(home_section(
         t,
+        kiri::ori_icon("pages", 22.0),
         t.lang.pick("Recentes", "Recent"),
         Some(empty.recents.len()),
     ));
@@ -2082,9 +2084,14 @@ fn empty_browser(empty: &EmptyState, tabs_open: bool, t: Tokens) -> Element<'_, 
     }
 
     // Pastas: título, caminho atual e voltar na mesma linha.
-    let mut folders_head = row![home_section(t, t.lang.pick("Pastas", "Folders"), None)]
-        .spacing(10)
-        .align_y(Alignment::Center);
+    let mut folders_head = row![home_section(
+        t,
+        kiri::ori_icon("folder", 22.0),
+        t.lang.pick("Pastas", "Folders"),
+        None,
+    )]
+    .spacing(10)
+    .align_y(Alignment::Center);
     if let Some(parent) = empty.parent() {
         folders_head = folders_head.push(tip(
             control_seg(
@@ -2098,8 +2105,8 @@ fn empty_browser(empty: &EmptyState, tabs_open: bool, t: Tokens) -> Element<'_, 
     // perde o meio, o fim — a pasta atual — fica legível).
     if empty.cwd.is_some() {
         folders_head = folders_head.push(
-            text(middle_truncate(&empty.path_label(), 72))
-                .size(13)
+            text(middle_truncate(&empty.path_label(), FOLDER_PATH_CHARS))
+                .size(12)
                 .color(t.muted)
                 .wrapping(text::Wrapping::None),
         );
@@ -2124,6 +2131,7 @@ fn empty_browser(empty: &EmptyState, tabs_open: bool, t: Tokens) -> Element<'_, 
     if !pdfs.is_empty() {
         content = content.push(home_section(
             t,
+            kiri::ori_icon("file-text", 22.0),
             t.lang.pick("PDFs nesta pasta", "PDFs in this folder"),
             Some(pdfs.len()),
         ));
@@ -2211,24 +2219,48 @@ fn open_bar(tabs_open: bool, t: Tokens) -> Element<'static, Message> {
     .into()
 }
 
-/// Título de seção do Início, com contador opcional.
-fn home_section(t: Tokens, label: &'static str, count: Option<usize>) -> Element<'static, Message> {
-    let mut head = row![section_title(label, t)]
-        .spacing(8)
-        .align_y(Alignment::Center);
+const FOLDER_PATH_CHARS: usize = 40;
+
+fn home_section(
+    t: Tokens,
+    icon: Element<'static, Message>,
+    label: &'static str,
+    count: Option<usize>,
+) -> Element<'static, Message> {
+    let mut head = row![
+        icon,
+        text(label)
+            .size(15)
+            .font(Font {
+                weight: font::Weight::Semibold,
+                ..Font::default()
+            })
+            .color(t.ink)
+    ]
+    .spacing(10)
+    .align_y(Alignment::Center);
     if let Some(count) = count {
         head = head.push(
-            container(text(count.to_string()).size(10).color(t.muted))
+            container(text(count.to_string()).size(12).color(t.muted))
                 .padding(Padding::from([1, 6]))
                 .style(kiri::empty_badge_style(t)),
         );
     }
-    head.into()
+    head.push(
+        container(Space::with_height(Length::Fixed(1.0)))
+            .width(Length::Fill)
+            .style(move |_| container::Style {
+                background: Some(Background::Color(t.line)),
+                ..container::Style::default()
+            }),
+    )
+    .into()
 }
 
-/// Grade que quebra conforme a largura disponível.
 fn home_grid<'a>(cards: impl Iterator<Item = Element<'a, Message>>) -> Element<'a, Message> {
-    row(cards).spacing(14).wrap().into()
+    container(row(cards).spacing(14).wrap())
+        .center_x(Length::Fill)
+        .into()
 }
 
 /// Cartão de PDF: topo da 1ª página (papel em branco enquanto a prévia não
