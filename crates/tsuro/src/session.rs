@@ -5081,9 +5081,14 @@ async fn install_update(tag: String) -> Result<PathBuf, UpdateError> {
 fn pending_update(ready: PathBuf) -> update::Pending {
     #[cfg(target_os = "windows")]
     {
+        // `install_release` já exigiu que o app rodando seja a instalação
+        // por usuário, então `current_exe` é o mesmo `.exe` a reabrir.
+        let exe = update::installed_exe_path()
+            .or_else(|| std::env::current_exe().ok())
+            .unwrap_or_default();
         update::Pending::Installer {
             installer: ready,
-            exe: update::installed_exe_path().unwrap_or(ready),
+            exe,
         }
     }
     #[cfg(not(target_os = "windows"))]
