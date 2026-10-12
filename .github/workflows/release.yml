@@ -4,6 +4,11 @@ on:
   push:
     tags: ["v*"]
   workflow_dispatch:
+    inputs:
+      tag:
+        description: "Publicar como esta tag (ex.: v0.5.0); vazio = só gera os instaladores"
+        required: false
+        default: ""
 
 permissions:
   contents: write
@@ -86,7 +91,8 @@ jobs:
 
   publish:
     needs: [macos, windows]
-    if: startsWith(github.ref, 'refs/tags/v')
+    # Tag enviada, ou disparo manual com `tag` (o próprio job cria a tag).
+    if: startsWith(github.ref, 'refs/tags/v') || inputs.tag != ''
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
@@ -96,7 +102,16 @@ jobs:
       - name: Publicar GitHub Release
         env:
           GH_TOKEN: ${{ github.token }}
+          INPUT_TAG: ${{ inputs.tag }}
         run: |
+          export TAG="${INPUT_TAG:-$GITHUB_REF_NAME}"
+          if [ -n "$INPUT_TAG" ]; then
+            # Disparo manual: a tag tem de bater com a versão do Cargo.toml e
+            # nasce no commit que acabou de ser compilado e testado.
+            VERSION="$(sed -n 's/^version = "\(.*\)"/\1/p' Cargo.toml | head -n 1)"
+            test "$TAG" = "v$VERSION"
+            gh api "repos/$GITHUB_REPOSITORY/git/refs" -f "ref=refs/tags/$TAG" -f "sha=$GITHUB_SHA"
+          fi
           mkdir -p out
           find artifacts -type f \( -name '*.dmg' -o -name '*.exe' \) -exec cp {} out/ \;
           test "$(find out -type f | wc -l)" -ge 2
@@ -104,7 +119,7 @@ jobs:
           sha256sum * | tee SHA256SUMS
           NOTES="$(mktemp)"
           cat >"$NOTES" <<EOF
-          TsuroPDF ${GITHUB_REF_NAME} — Início em grade, Configurações e leitura mais leve
+          TsuroPDF ${TAG} — Início em grade, Configurações e leitura mais leve
 
           Novidades desde a v0.4.0:
 
@@ -121,8 +136,8 @@ jobs:
           # Changelog próprio do template, então filtra o gerado). Falha aqui
           # não bloqueia a release: registra o aviso nas notas.
           {
-            PREV="$(gh release list --json tagName --jq "[.[].tagName | select(. != env.GITHUB_REF_NAME)] | .[0] // empty")"
-            ARGS=(-f "tag_name=$GITHUB_REF_NAME")
+            PREV="$(gh release list --json tagName --jq "[.[].tagName | select(. != env.TAG)] | .[0] // empty")"
+            ARGS=(-f "tag_name=$TAG")
             [ -n "$PREV" ] && ARGS+=(-f "previous_tag_name=$PREV")
             echo ""
             gh api "repos/$GITHUB_REPOSITORY/releases/generate-notes" "${ARGS[@]}" --jq .body \
@@ -131,7 +146,7 @@ jobs:
           } >>"$NOTES"
           cat >>"$NOTES" <<EOF
 
-          **Full Changelog**: https://github.com/claudioorjunior/tsuro-pdf/compare/v0.4.0...${GITHUB_REF_NAME}
+          **Full Changelog**: https://github.com/claudioorjunior/tsuro-pdf/compare/v0.4.0...${TAG}
 
           Instalação:
 
@@ -142,4 +157,4 @@ jobs:
 
           SHA-256 em \`SHA256SUMS\`. Instalador terminal: \`bun run install:tsuro -- --install\`.
           EOF
-          gh release create "$GITHUB_REF_NAME" --title "TsuroPDF ${GITHUB_REF_NAME}" --notes-file "$NOTES" ./*
+          gh release create "$TAG" --title "TsuroPDF ${TAG}" --notes-file "$NOTES" ./*
