@@ -21,7 +21,7 @@ const REPO: &str = "claudiumio/tsuro-pdf";
 const APP_NAME: &str = "TsuroPDF.app";
 #[cfg(target_os = "windows")]
 /// Pasta da instalação por usuário, onde o NSIS põe o `.exe`.
-const INSTALL_DIR: [&str; 4] = ["LOCALAPPDATA", "Programs", "TsuroPDF", "TsuroPDF.exe"];
+const INSTALL_DIR: [&str; 3] = ["LOCALAPPDATA", "Programs", "TsuroPDF"];
 #[cfg(target_os = "windows")]
 /// `%LOCALAPPDATA%\TsuroPDF\update\`: onde o instalador validado aguarda o app fechar.
 const UPDATE_DIR: [&str; 3] = ["LOCALAPPDATA", "TsuroPDF", "update"];
@@ -162,7 +162,9 @@ fn staged_installer(update_dir: &Path, asset_name: &str) -> PathBuf {
 /// (Recusa `cargo run` e cópias soltas — o instalador as ignoraria.)
 #[cfg(target_os = "windows")]
 fn is_installed_exe(exe: &Path, install_dir: &Path) -> bool {
-    exe == installed_exe(install_dir)
+    // Caminhos no Windows não diferenciam maiúsculas.
+    exe.to_string_lossy()
+        .eq_ignore_ascii_case(&installed_exe(install_dir).to_string_lossy())
 }
 
 /// Aceita só o instalador do TsuroPDF com nome de asset exato.
@@ -670,6 +672,20 @@ mod tests {
         assert!(
             !is_installed_exe(Path::new(r"C:\Program Files\TsuroPDF\TsuroPDF.exe"), dir,),
             "só a pasta por usuário do NSIS vale"
+        );
+    }
+
+    #[cfg(target_os = "windows")]
+    #[test]
+    fn installed_exe_path_is_the_nsis_per_user_exe() {
+        let local = std::env::var_os("LOCALAPPDATA").expect("LOCALAPPDATA no Windows");
+        let expected = Path::new(&local).join(r"Programs\TsuroPDF\TsuroPDF.exe");
+        assert_eq!(installed_exe_path(), Some(expected.clone()));
+        let dir = windows_path(&INSTALL_DIR).unwrap();
+        assert!(is_installed_exe(&expected, &dir));
+        assert!(
+            is_installed_exe(Path::new(&expected.to_string_lossy().to_uppercase()), &dir),
+            "maiúsculas não importam no Windows"
         );
     }
 
