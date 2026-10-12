@@ -198,8 +198,8 @@ fn powershell_script(pid: u32, installer: &Path, exe: &Path) -> String {
          }} catch {{}}; \
          if (-not $ok) {{ exit 1 }}",
         pid = pid,
-        installer = ps_quote(installer),
-        exe = ps_quote(exe),
+        installer = ps_quote(&installer.to_string_lossy()),
+        exe = ps_quote(&exe.to_string_lossy()),
     )
 }
 
