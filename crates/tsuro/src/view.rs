@@ -1744,15 +1744,61 @@ fn settings_card(settings: &SettingsPanel, t: Tokens) -> Element<'static, Messag
                 .size(12)
                 .color(t.muted),
         ),
-        UpdateState::Available(tag) => body.push(
+        UpdateState::Available(tag) => body
+            .push(
+                text(format!(
+                    "{}: {tag}",
+                    t.lang
+                        .pick("Nova versão disponível", "New version available")
+                ))
+                .size(12)
+                .color(t.accent),
+            )
+            .push(update_action(t, tag)),
+        UpdateState::Installing(tag) => body.push(
             text(format!(
-                "{}: {tag}",
+                "{} {tag}…",
                 t.lang
-                    .pick("Nova versão disponível", "New version available")
+                    .pick("Baixando e instalando", "Downloading and installing")
             ))
             .size(12)
-            .color(t.accent),
+            .color(t.muted),
         ),
+        UpdateState::Installed(tag) => body
+            .push(
+                text(format!(
+                    "{tag} {}",
+                    t.lang.pick(
+                        "instalada. Reinicie para usar.",
+                        "installed. Restart to use it."
+                    )
+                ))
+                .size(12)
+                .color(t.accent),
+            )
+            .push(menu_item(
+                t,
+                "rotate",
+                t.lang.pick("Reiniciar agora", "Restart now"),
+                Message::RestartToUpdate,
+                false,
+            )),
+        UpdateState::InstallFailed(tag, error) => body
+            .push(text(error.message(t.lang)).size(12).color(t.muted))
+            .push(menu_item(
+                t,
+                "save",
+                t.lang.pick("Tentar de novo", "Try again"),
+                Message::InstallUpdate(tag.clone()),
+                false,
+            ))
+            .push(menu_item(
+                t,
+                "file-text",
+                t.lang.pick("Abrir página da release", "Open release page"),
+                Message::OpenReleasePage(tag.clone()),
+                false,
+            )),
         UpdateState::Idle | UpdateState::Failed => body,
     };
     body = body.push(
@@ -3274,6 +3320,29 @@ fn signatures_panel(ready: &Ready, t: Tokens) -> Element<'_, Message> {
         .padding(6)
         .style(kiri::panel_bg_style(t))
         .into()
+}
+
+/// Ação da versão nova: instalar pelo app no macOS; nos demais, a página da
+/// release (o instalador do Windows ainda é manual).
+fn update_action(t: Tokens, tag: &str) -> Element<'static, Message> {
+    if cfg!(target_os = "macos") {
+        menu_item(
+            t,
+            "save",
+            t.lang.pick("Atualizar agora", "Update now"),
+            Message::InstallUpdate(tag.to_string()),
+            false,
+        )
+    } else {
+        menu_item(
+            t,
+            "file-text",
+            t.lang
+                .pick("Baixar na página da release", "Download from release page"),
+            Message::OpenReleasePage(tag.to_string()),
+            false,
+        )
+    }
 }
 
 /// Título de seção de painel: label-caps 10px, maiúsculas, `muted`.
