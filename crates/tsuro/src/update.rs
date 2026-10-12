@@ -6,7 +6,10 @@
 //!
 //! No macOS o `.app` novo é copiado ao lado do instalado e trocado por
 //! `rename` no mesmo volume; o processo em execução segue com o binário
-//! antigo mapeado até reiniciar. Windows ainda abre a página da release.
+//! antigo mapeado até reiniciar. No Windows o instalador NSIS (`setup.exe`)
+//! só corre depois que o app fecha — o `.exe` em execução fica travado —
+//! então ele é baixado e validado para `%LOCALAPPDATA%\TsuroPDF\update\` e
+//! um helper PowerShell o instala em silêncio ao sair.
 
 use std::path::{Path, PathBuf};
 use std::sync::Mutex;
@@ -16,6 +19,12 @@ use crate::i18n::Lang;
 const REPO: &str = "claudiumio/tsuro-pdf";
 #[cfg(target_os = "macos")]
 const APP_NAME: &str = "TsuroPDF.app";
+#[cfg(target_os = "windows")]
+/// Pasta da instalação por usuário, onde o NSIS põe o `.exe`.
+const INSTALL_DIR: [&str; 3] = ["LOCALAPPDATA", "Programs", "TsuroPDF"];
+#[cfg(target_os = "windows")]
+/// `%LOCALAPPDATA%\TsuroPDF\update\`: onde o instalador validado aguarda o app fechar.
+const UPDATE_DIR: [&str; 3] = ["LOCALAPPDATA", "TsuroPDF", "update"];
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum UpdateError {
@@ -130,6 +139,90 @@ pub(crate) fn installed_bundle(exe: &Path) -> Result<PathBuf, UpdateError> {
         .ok_or(UpdateError::NotInstalled)
 }
 
+/// Caminho do `.exe` dentro de uma pasta de instalação por usuário.
+#[cfg(target_os = "windows")]
+fn installed_exe(dir: &Path) -> PathBuf {
+    dir.join("TsuroPDF.exe")
+}
+
+/// `.exe` da instalação por usuário (`%LOCALAPPDATA%\Programs\TsuroPDF`):
+/// o que o helper reabre depois de instalar.
+#[cfg(target_os = "windows")]
+pub(crate) fn installed_exe_path() -> Option<PathBuf> {
+    windows_path(&INSTALL_DIR).map(|dir| installed_exe(&dir))
+}
+
+/// Caminho do instalador já validado, onde o helper PowerShell o busca.
+#[cfg(target_os = "windows")]
+fn staged_installer(update_dir: &Path, asset_name: &str) -> PathBuf {
+    update_dir.join(asset_name)
+}
+
+/// O executável está dentro de uma pasta de instalação por usuário?
+/// (Recusa `cargo run` e cópias soltas — o instalador as ignoraria.)
+#[cfg(target_os = "windows")]
+fn is_installed_exe(exe: &Path, install_dir: &Path) -> bool {
+    // Caminhos no Windows não diferenciam maiúsculas.
+    exe.to_string_lossy()
+        .eq_ignore_ascii_case(&installed_exe(install_dir).to_string_lossy())
+}
+
+/// Aceita só o instalador do TsuroPDF com nome de asset exato.
+/// (Impede o helper rodar um `.exe` qualquer plantado na pasta de update.)
+#[cfg(target_os = "windows")]
+fn is_safe_asset_name(name: &str) -> bool {
+    let Some(rest) = name.strip_prefix("TsuroPDF-") else {
+        return false;
+    };
+    let Some(version) = rest.strip_suffix("-x86_64-pc-windows-msvc-setup.exe") else {
+        return false;
+    };
+    !version.is_empty()
+        && version
+            .bytes()
+            .all(|b| b.is_ascii_alphanumeric() || matches!(b, b'.' | b'-' | b'+'))
+}
+
+/// Espera este processo sair, roda o instalador em silêncio e reabre o app.
+/// PowerShell por ser o que já vem no Windows e conseguir esperar o PID.
+#[cfg(target_os = "windows")]
+fn powershell_script(pid: u32, installer: &Path, exe: &Path) -> String {
+    format!(
+        "$ErrorActionPreference='Stop'; \
+         $ok=$false; \
+         try {{ \
+           Wait-Process -Id {pid} -ErrorAction SilentlyContinue; \
+           Start-Process -FilePath {installer} -ArgumentList '/S' -Wait; \
+           if (Test-Path -LiteralPath {exe}) {{ \
+             Start-Process -FilePath {exe}; \
+             $ok=$true \
+           }} \
+         }} catch {{}}; \
+         if (-not $ok) {{ exit 1 }}",
+        pid = pid,
+        installer = ps_quote(&installer.to_string_lossy()),
+        exe = ps_quote(&exe.to_string_lossy()),
+    )
+}
+
+/// Literal PowerShell entre aspas simples; `'` interno dobra (`''`).
+#[cfg(target_os = "windows")]
+fn ps_quote(s: &str) -> String {
+    format!("'{}'", s.replace('\'', "''"))
+}
+
+/// Argumentos do helper: só o script, que já leva os caminhos embutidos.
+#[cfg(target_os = "windows")]
+fn powershell_args(script: &str) -> Vec<String> {
+    vec![
+        "-NoProfile".to_string(),
+        "-WindowStyle".to_string(),
+        "Hidden".to_string(),
+        "-Command".to_string(),
+        script.to_string(),
+    ]
+}
+
 /// `CFBundleShortVersionString` de um `Info.plist` XML.
 pub(crate) fn plist_version(xml: &str) -> Option<&str> {
     let rest = xml.split_once("<key>CFBundleShortVersionString</key>")?.1;
@@ -138,16 +231,108 @@ pub(crate) fn plist_version(xml: &str) -> Option<&str> {
 }
 
 /// Baixa, valida e instala a release `tag` no lugar do app em execução.
-/// Bloqueante: o chamador roda em `spawn_blocking`.
+/// Bloqueante: o chamador roda em `spawn_blocking`. No macOS devolve o `.app`
+/// novo; no Windows devolve o instalador validado, que só roda ao sair.
 pub(crate) fn install_release(tag: &str) -> Result<PathBuf, UpdateError> {
+    #[cfg(target_os = "windows")]
+    {
+        install_release_windows(tag)
+    }
+    #[cfg(not(target_os = "windows"))]
+    {
+        let source = release_source(tag).ok_or(UpdateError::Unsupported)?;
+        if !cfg!(target_os = "macos") {
+            return Err(UpdateError::Unsupported);
+        }
+        let exe = std::env::current_exe().map_err(|_| UpdateError::NotInstalled)?;
+        let bundle = installed_bundle(&exe)?;
+        install_from(&source, tag, &bundle)?;
+        Ok(bundle)
+    }
+}
+
+/// Windows: baixa `SHA256SUMS` + `setup.exe` para `%LOCALAPPDATA%\TsuroPDF\update\`,
+/// confere a soma e devolve o instalador. O `.exe` em execução fica travado,
+/// então a instalação em si fica para `relaunch_if_armed`.
+#[cfg(target_os = "windows")]
+fn install_release_windows(tag: &str) -> Result<PathBuf, UpdateError> {
     let source = release_source(tag).ok_or(UpdateError::Unsupported)?;
-    if !cfg!(target_os = "macos") {
+    if !is_safe_asset_name(&source.asset_name) {
         return Err(UpdateError::Unsupported);
     }
     let exe = std::env::current_exe().map_err(|_| UpdateError::NotInstalled)?;
-    let bundle = installed_bundle(&exe)?;
-    install_from(&source, tag, &bundle)?;
-    Ok(bundle)
+    let install_dir = windows_path(&INSTALL_DIR).ok_or(UpdateError::Install)?;
+    if !is_installed_exe(&exe, &install_dir) {
+        return Err(UpdateError::NotInstalled);
+    }
+    let update_dir = windows_path(&UPDATE_DIR).ok_or(UpdateError::Install)?;
+    let installer = staged_installer(&update_dir, &source.asset_name);
+    std::fs::create_dir_all(&update_dir).map_err(|_| UpdateError::Download)?;
+
+    let sums = curl_text(&source.sums_url)?;
+    let expected = expected_sha256(&sums, &source.asset_name).ok_or(UpdateError::Checksum)?;
+    let _ = std::fs::remove_file(&installer);
+    curl_file(&source.asset_url, &installer)?;
+    if sha256_of(&installer)? != expected {
+        let _ = std::fs::remove_file(&installer);
+        return Err(UpdateError::Checksum);
+    }
+    Ok(installer)
+}
+
+/// Junta variáveis de ambiente do Windows (`LOCALAPPDATA`, …) num caminho.
+#[cfg(target_os = "windows")]
+fn windows_path(segments: &[&str]) -> Option<PathBuf> {
+    let mut path = PathBuf::from(std::env::var_os(segments[0])?);
+    path.extend(&segments[1..]);
+    Some(path)
+}
+
+/// Hash SHA-256 de um arquivo. PowerShell primeiro (vem em todo Windows);
+/// `certutil` é o plano B das edições sem ele.
+#[cfg(target_os = "windows")]
+fn sha256_of(path: &Path) -> Result<String, UpdateError> {
+    let hex = run_capture(
+        "powershell",
+        &[
+            "-NoProfile".as_ref(),
+            "-Command".as_ref(),
+            format!(
+                "(Get-FileHash -Algorithm SHA256 -LiteralPath {}).Hash",
+                ps_quote(&path.to_string_lossy())
+            )
+            .as_ref(),
+        ],
+    )
+    .or_else(|_| {
+        run_capture(
+            "certutil",
+            &["-hashfile".as_ref(), path.as_os_str(), "SHA256".as_ref()],
+        )
+        .map(|out| {
+            out.split_whitespace()
+                .nth(1)
+                .unwrap_or_default()
+                .to_string()
+        })
+    })?;
+    let hex = hex.trim().to_ascii_lowercase();
+    (hex.len() == 64 && hex.bytes().all(|b| b.is_ascii_hexdigit()))
+        .then_some(hex)
+        .ok_or(UpdateError::Checksum)
+}
+
+/// Roda um comando e devolve o stdout cortado (para saídas curtas: hash).
+#[cfg(target_os = "windows")]
+fn run_capture(program: &str, args: &[&std::ffi::OsStr]) -> Result<String, UpdateError> {
+    let out = std::process::Command::new(program)
+        .args(args)
+        .output()
+        .map_err(|_| UpdateError::Checksum)?;
+    if !out.status.success() {
+        return Err(UpdateError::Checksum);
+    }
+    String::from_utf8(out.stdout).map_err(|_| UpdateError::Checksum)
 }
 
 #[cfg(target_os = "macos")]
@@ -208,7 +393,6 @@ fn swap(bundle: &Path, staged: &Path) -> Result<(), UpdateError> {
     Ok(())
 }
 
-#[cfg(target_os = "macos")]
 fn curl_text(url: &str) -> Result<String, UpdateError> {
     let out = std::process::Command::new("curl")
         .args(["-fsSL", "--max-time", "30", url])
@@ -220,7 +404,6 @@ fn curl_text(url: &str) -> Result<String, UpdateError> {
     String::from_utf8(out.stdout).map_err(|_| UpdateError::Download)
 }
 
-#[cfg(target_os = "macos")]
 fn curl_file(url: &str, dest: &Path) -> Result<(), UpdateError> {
     run(
         "curl",
@@ -249,7 +432,6 @@ fn sha256_of(path: &Path) -> Result<String, UpdateError> {
     }
 }
 
-#[cfg(target_os = "macos")]
 fn run(program: &str, args: &[&std::ffi::OsStr], error: UpdateError) -> Result<(), UpdateError> {
     let status = std::process::Command::new(program)
         .args(args)
@@ -323,40 +505,77 @@ impl Drop for TempDir {
     }
 }
 
-/// App instalado que reabre quando esta janela fechar (Reiniciar).
-static RELAUNCH: Mutex<Option<PathBuf>> = Mutex::new(None);
+/// O que rodar quando a janela fechar: no macOS o `.app` novo; no Windows o
+/// instalador validado e o `.exe` a reabrir depois.
+pub(crate) enum Pending {
+    #[cfg(target_os = "macos")]
+    Bundle(PathBuf),
+    #[cfg(target_os = "windows")]
+    Installer { installer: PathBuf, exe: PathBuf },
+}
 
-pub(crate) fn arm_relaunch(bundle: PathBuf) {
-    *RELAUNCH.lock().unwrap_or_else(|e| e.into_inner()) = Some(bundle);
+/// App instalado que reabre quando esta janela fechar (Reiniciar).
+static RELAUNCH: Mutex<Option<Pending>> = Mutex::new(None);
+
+pub(crate) fn arm_relaunch(pending: Pending) {
+    *RELAUNCH.lock().unwrap_or_else(|e| e.into_inner()) = Some(pending);
 }
 
 pub(crate) fn disarm_relaunch() {
     RELAUNCH.lock().unwrap_or_else(|e| e.into_inner()).take();
 }
 
-/// Chamado no fechamento da janela: se armado, um `sh` espera este processo
-/// terminar e abre o app de novo.
+/// Chamado no fechamento da janela: se armado, um helper espera este processo
+/// terminar e conclui a atualização — `open` no macOS; no Windows o instalador
+/// `/S` (o `.exe` em execução ficaria travado antes disso).
 pub(crate) fn relaunch_if_armed() {
-    let Some(bundle) = RELAUNCH.lock().unwrap_or_else(|e| e.into_inner()).take() else {
+    let Some(pending) = RELAUNCH.lock().unwrap_or_else(|e| e.into_inner()).take() else {
         return;
     };
-    #[cfg(target_os = "macos")]
-    {
-        let _ = std::process::Command::new("/bin/sh")
-            .args([
-                "-c".as_ref(),
-                "while kill -0 \"$1\" 2>/dev/null; do sleep 0.2; done; open \"$2\"".as_ref(),
-                "tsuro-relaunch".as_ref(),
-                std::process::id().to_string().as_ref(),
-                bundle.as_os_str(),
-            ])
-            .stdin(std::process::Stdio::null())
-            .stdout(std::process::Stdio::null())
-            .stderr(std::process::Stdio::null())
-            .spawn();
+    match pending {
+        #[cfg(target_os = "macos")]
+        Pending::Bundle(bundle) => relaunch_bundle(&bundle),
+        #[cfg(target_os = "windows")]
+        Pending::Installer { installer, exe } => spawn_install_helper(installer, exe),
     }
-    #[cfg(not(target_os = "macos"))]
-    let _ = bundle;
+}
+
+#[cfg(target_os = "macos")]
+fn relaunch_bundle(bundle: &Path) {
+    let _ = std::process::Command::new("/bin/sh")
+        .args([
+            "-c".as_ref(),
+            "while kill -0 \"$1\" 2>/dev/null; do sleep 0.2; done; open \"$2\"".as_ref(),
+            "tsuro-relaunch".as_ref(),
+            std::process::id().to_string().as_ref(),
+            bundle.as_os_str(),
+        ])
+        .stdin(std::process::Stdio::null())
+        .stdout(std::process::Stdio::null())
+        .stderr(std::process::Stdio::null())
+        .spawn();
+}
+
+/// Helper destacado e invisível (nenhuma piscada de console): espera o PID do
+/// app sair, instala em silêncio e reabre o `.exe` novo.
+#[cfg(target_os = "windows")]
+fn spawn_install_helper(installer: PathBuf, exe: PathBuf) {
+    use std::os::windows::process::CommandExt;
+    if !installer
+        .file_name()
+        .and_then(|n| n.to_str())
+        .is_some_and(is_safe_asset_name)
+    {
+        return; // nome inesperado na pasta de update: não roda
+    }
+    let script = powershell_script(std::process::id(), &installer, &exe);
+    let _ = std::process::Command::new("powershell")
+        .args(powershell_args(&script))
+        .creation_flags(0x0800_0000) // CREATE_NO_WINDOW
+        .stdin(std::process::Stdio::null())
+        .stdout(std::process::Stdio::null())
+        .stderr(std::process::Stdio::null())
+        .spawn();
 }
 
 #[cfg(test)]
@@ -434,6 +653,111 @@ mod tests {
                    <key>CFBundleShortVersionString</key>\n  <string>0.5.5</string></dict>";
         assert_eq!(plist_version(xml), Some("0.5.5"));
         assert_eq!(plist_version("<dict></dict>"), None);
+    }
+
+    #[cfg(target_os = "windows")]
+    #[test]
+    fn is_installed_exe_accepts_only_the_per_user_install() {
+        let dir = Path::new(r"C:\Users\x\AppData\Local\Programs\TsuroPDF");
+        assert!(is_installed_exe(&dir.join("TsuroPDF.exe"), dir,));
+        assert!(
+            !is_installed_exe(Path::new(r"C:\Users\x\repo\target\debug\TsuroPDF.exe"), dir,),
+            "cargo run não conta como instalado"
+        );
+        assert!(
+            !is_installed_exe(&dir.join("tsuro.exe"), dir),
+            "nome trocado não conta"
+        );
+        // Mesmo nome em outra pasta: instalador por usuário de outro local.
+        assert!(
+            !is_installed_exe(Path::new(r"C:\Program Files\TsuroPDF\TsuroPDF.exe"), dir,),
+            "só a pasta por usuário do NSIS vale"
+        );
+    }
+
+    #[cfg(target_os = "windows")]
+    #[test]
+    fn installed_exe_path_is_the_nsis_per_user_exe() {
+        let local = std::env::var_os("LOCALAPPDATA").expect("LOCALAPPDATA no Windows");
+        let expected = Path::new(&local).join(r"Programs\TsuroPDF\TsuroPDF.exe");
+        assert_eq!(installed_exe_path(), Some(expected.clone()));
+        let dir = windows_path(&INSTALL_DIR).unwrap();
+        assert!(is_installed_exe(&expected, &dir));
+        assert!(
+            is_installed_exe(Path::new(&expected.to_string_lossy().to_uppercase()), &dir),
+            "maiúsculas não importam no Windows"
+        );
+    }
+
+    #[cfg(target_os = "windows")]
+    #[test]
+    fn staged_installer_lives_under_the_update_dir() {
+        let update = Path::new(r"C:\Users\x\AppData\Local\TsuroPDF\update");
+        assert_eq!(
+            staged_installer(update, "TsuroPDF-9.9.9-x86_64-pc-windows-msvc-setup.exe"),
+            update.join("TsuroPDF-9.9.9-x86_64-pc-windows-msvc-setup.exe")
+        );
+    }
+
+    #[cfg(target_os = "windows")]
+    #[test]
+    fn is_safe_asset_name_refuses_anything_else() {
+        assert!(is_safe_asset_name(
+            "TsuroPDF-9.9.9-x86_64-pc-windows-msvc-setup.exe"
+        ));
+        assert!(
+            !is_safe_asset_name("malware.exe"),
+            "o helper não roda .exe plantado"
+        );
+        assert!(
+            !is_safe_asset_name("TsuroPDF-x86_64-pc-windows-msvc-setup.exe"),
+            "sem versão, não"
+        );
+        assert!(
+            !is_safe_asset_name("TsuroPDF-9.9.9;calc-x86_64-pc-windows-msvc-setup.exe"),
+            "caractere estranho no nome"
+        );
+    }
+
+    #[cfg(target_os = "windows")]
+    #[test]
+    fn ps_quote_escapes_single_quotes_for_powershell_literals() {
+        assert_eq!(ps_quote(r"C:\update"), r"'C:\update'");
+        assert_eq!(ps_quote(r"C:\it's"), r"'C:\it''s'");
+    }
+
+    #[cfg(target_os = "windows")]
+    #[test]
+    fn powershell_script_waits_installs_and_reopens() {
+        let script = powershell_script(
+            4242,
+            Path::new(
+                r"C:\Users\x\AppData\Local\TsuroPDF\update\TsuroPDF-9.9.9-x86_64-pc-windows-msvc-setup.exe",
+            ),
+            Path::new(r"C:\Users\x\AppData\Local\Programs\TsuroPDF\TsuroPDF.exe"),
+        );
+        assert!(script.contains("Wait-Process -Id 4242"), "{script}");
+        assert!(script.contains("-ArgumentList '/S'"), "{script}");
+        assert!(
+            script.contains(
+                r"-FilePath 'C:\Users\x\AppData\Local\TsuroPDF\update\TsuroPDF-9.9.9-x86_64-pc-windows-msvc-setup.exe'"
+            ),
+            "instalador entre aspas simples"
+        );
+        assert!(
+            script.contains(r"-FilePath 'C:\Users\x\AppData\Local\Programs\TsuroPDF\TsuroPDF.exe'"),
+            "reabre o .exe instalado"
+        );
+    }
+
+    #[cfg(target_os = "windows")]
+    #[test]
+    fn powershell_args_hide_the_window() {
+        let args = powershell_args("script");
+        assert_eq!(
+            args,
+            vec!["-NoProfile", "-WindowStyle", "Hidden", "-Command", "script"]
+        );
     }
 
     /// Release falsa servida por `file://`: DMG real com um `.app` mínimo.
