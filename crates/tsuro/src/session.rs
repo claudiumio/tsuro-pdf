@@ -1364,6 +1364,9 @@ impl Tabs {
         for doc in &mut self.docs {
             doc.lang = lang;
         }
+        if let Some(home) = &mut self.home {
+            home.lang = lang;
+        }
     }
 
     fn set_render_scale(&mut self, scale: f32) {
@@ -3675,7 +3678,14 @@ impl Session {
                 self.set_lang(lang);
                 self.close_overflow();
                 let _ = save_lang(lang);
-                Task::none()
+                // Os nomes das pastas especiais vêm da listagem: relista no idioma novo.
+                match self.browser_mut() {
+                    Some(home) => {
+                        let cwd = home.cwd.clone();
+                        self.update(Message::BrowseTo(cwd))
+                    }
+                    None => Task::none(),
+                }
             }
             Message::PagesScrolled(y) => {
                 if let Session::Ready(ready) = self {
@@ -11548,6 +11558,41 @@ mod tests {
             assert_eq!(Session::empty().lang(), Lang::En);
             apply(&mut session, Message::SetLang(Lang::Pt));
             assert_eq!(crate::prefs::read_lang(), Lang::Pt);
+        });
+        let _ = std::fs::remove_file(&prefs);
+    }
+
+    #[test]
+    fn set_lang_reaches_home_over_tabs() {
+        let prefs =
+            std::env::temp_dir().join(format!("tsuro-prefs-unit-{}-home-lang", std::process::id()));
+        crate::prefs::with_prefs_path(prefs.clone(), || {
+            isolated(|| {
+                let Some(ready) = sample_ready() else {
+                    return;
+                };
+                let mut session = Session::Empty(EmptyState::default());
+                let _ = session.begin_open(ready.source.clone());
+                let gen = match &session {
+                    Session::Loading { gen, .. } => *gen,
+                    other => panic!("esperava Loading, veio {other:?}"),
+                };
+                apply(
+                    &mut session,
+                    Message::Opened {
+                        gen,
+                        result: Ok(ready),
+                    },
+                );
+                apply(&mut session, Message::GoHome);
+                apply(&mut session, Message::SetLang(Lang::En));
+                let Session::Ready(tabs) = &session else {
+                    panic!("esperava Ready, veio {session:?}");
+                };
+                let home = tabs.home().expect("Início por cima das abas");
+                assert_eq!(home.lang, Lang::En);
+                assert_eq!(home.path_label(), "Folders");
+            })
         });
         let _ = std::fs::remove_file(&prefs);
     }
