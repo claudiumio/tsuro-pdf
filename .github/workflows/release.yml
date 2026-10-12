@@ -119,18 +119,15 @@ jobs:
           sha256sum * | tee SHA256SUMS
           NOTES="$(mktemp)"
           cat >"$NOTES" <<EOF
-          TsuroPDF ${TAG} — Início em grade, Configurações e leitura mais leve
+          TsuroPDF ${TAG} — Interface em inglês, Início mais claro e destaque de marcador
 
-          Novidades desde a v0.4.0:
+          Novidades desde a v0.5.0:
 
-          - **Início em grade** (#113): pastas e PDFs em cartões, com prévia da primeira página; a casinha abre o Início por cima das abas, sem fechá-las (#108).
-          - **Configurações** (#105): tema, leitor padrão, acesso a pastas, idioma e checagem de versão num só diálogo.
-          - **Leitor de PDF do sistema** (#103): abre pelo Finder e pelo Explorer, e o menu Ajuda ganha Definir como leitor padrão.
-          - **Paleta Ctrl+K também no Início** (#115): abrir, recentes, PDFs da pasta e texto das abas abertas.
-          - **Abertura mais rápida e leve**: primeira página na tela antes do texto e do sumário (#110); tamanhos de página sem carregar páginas (#106); PDF grande abre na metade do tempo e da memória (#112); o texto de documentos densos ocupa 5× menos memória (#114).
-          - **Busca**: varre o documento inteiro, não só as páginas perto da leitura (#107).
-          - **Leitura**: HUD some com o mouse parado (#109); menus, diálogos e seleção não voltam a rolagem ao topo (#111); ícones da barra maiores e ↔ legível no tema claro (#116).
-          - **Pastas**: mensagem clara quando o sistema nega acesso, sem sondagem na abertura (#104).
+          - **Português e inglês** (#119): a interface inteira troca de idioma em Configurações → Idioma, na hora, e a escolha fica salva.
+          - **Configurações no Início** (#120): a engrenagem na barra do Início abre tema, idioma e Sobre sem precisar abrir um PDF.
+          - **Abas como pílulas** (#120): cada aba ganha fundo, borda e cantos arredondados; a ativa fica destacada.
+          - **Início mais legível** (#121): títulos de Recentes, Pastas e PDFs com ícone, contador e linha fina; a grade de cartões fica centralizada.
+          - **Destaque como marcador** (#122): faixa contínua por linha, cobrindo os espaços entre as palavras e parando na última letra marcada; a cópia salva com marcações mostra o destaque inteiro no Acrobat e no Pdfium, não mais lascas por letra.
           EOF
           # PRs mergeadas com @autores (visibilidade open-source; rodapé Full
           # Changelog próprio do template, então filtra o gerado). Falha aqui
@@ -146,7 +143,7 @@ jobs:
           } >>"$NOTES"
           cat >>"$NOTES" <<EOF
 
-          **Full Changelog**: https://github.com/claudioorjunior/tsuro-pdf/compare/v0.4.0...${TAG}
+          **Full Changelog**: https://github.com/claudioorjunior/tsuro-pdf/compare/v0.5.0...${TAG}
 
           Instalação:
 
