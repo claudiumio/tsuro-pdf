@@ -32,6 +32,7 @@ use crate::print::{
 };
 use crate::search::Search;
 use crate::spool::{list_printers, spool_pdf, PrinterInfo};
+use crate::update::{self, UpdateError};
 
 pub(crate) const THUMB_WIDTH: f32 = 120.0;
 pub(crate) const THUMB_ROW: f32 = 156.0;
@@ -1482,6 +1483,11 @@ pub enum UpdateState {
     Checking,
     Current,
     Available(String),
+    /// Baixando e trocando o `.app` (macOS).
+    Installing(String),
+    /// Já instalada no disco; vale ao reiniciar.
+    Installed(String),
+    InstallFailed(String, UpdateError),
     Failed,
 }
 
@@ -1507,6 +1513,16 @@ pub struct SettingsPanel {
 }
 
 impl SettingsPanel {
+    /// Checagem de atualização, uma por sessão (abertura do app ou do
+    /// diálogo, o que vier primeiro). Offline falha silencioso.
+    fn check_update(&mut self) -> Task<Message> {
+        if self.update != UpdateState::Idle {
+            return Task::none();
+        }
+        self.update = UpdateState::Checking;
+        Task::perform(fetch_latest_tag(), Message::UpdateChecked)
+    }
+
     /// Abre ou fecha; ao abrir devolve as checagens a disparar (uma de
     /// atualização por sessão; permissões a cada abertura no macOS).
     fn toggle(&mut self) -> Task<Message> {
@@ -1514,12 +1530,7 @@ impl SettingsPanel {
         if !self.open {
             return Task::none();
         }
-        let mut tasks = Vec::new();
-        // Offline falha silencioso.
-        if self.update == UpdateState::Idle {
-            self.update = UpdateState::Checking;
-            tasks.push(Task::perform(fetch_latest_tag(), Message::UpdateChecked));
-        }
+        let mut tasks = vec![self.check_update()];
         #[cfg(target_os = "macos")]
         if self.permissions != PermissionsState::Checking {
             self.permissions = PermissionsState::Checking;
@@ -2270,6 +2281,14 @@ pub enum Message {
     OpenPrivacySettings,
     /// Resposta da checagem de atualização (`Ok` = tag latest do GitHub).
     UpdateChecked(Result<String, String>),
+    /// Configurações → Atualizar agora: baixa e instala a tag.
+    InstallUpdate(String),
+    UpdateInstalled(String, Result<PathBuf, UpdateError>),
+    /// Fecha a janela (com a pergunta de marcações não salvas) e reabre o
+    /// app já atualizado.
+    RestartToUpdate,
+    /// Plataformas sem instalação pelo app: abre a página da release.
+    OpenReleasePage(String),
     #[cfg(target_os = "macos")]
     PermissionsChecked(Result<(), std::io::ErrorKind>),
     /// Ajuda → leitor padrão: no Windows abre o painel de apps padrão; nas
@@ -2418,25 +2437,21 @@ impl Session {
         }
     }
 
-    pub fn boot(self) -> (Self, Task<Message>) {
-        match &self {
+    pub fn boot(mut self) -> (Self, Task<Message>) {
+        let check = self.settings_mut().check_update();
+        let open = match &self {
             Session::Loading { source, gen, .. } => {
                 let source = source.clone();
                 let gen = *gen;
-                (
-                    self,
-                    Task::perform(open_ready(source), move |result| Message::Opened {
-                        gen,
-                        result,
-                    }),
-                )
+                Task::perform(open_ready(source), move |result| Message::Opened {
+                    gen,
+                    result,
+                })
             }
-            Session::Empty(_) => {
-                let tasks = empty_tasks(self.lang());
-                (self, tasks)
-            }
-            _ => (self, Task::none()),
-        }
+            Session::Empty(_) => empty_tasks(self.lang()),
+            _ => Task::none(),
+        };
+        (self, Task::batch([open, check]))
     }
 
     pub fn update(&mut self, message: Message) -> Task<Message> {
@@ -2686,6 +2701,7 @@ impl Session {
                 if let Session::Ready(tabs) = self {
                     tabs.close_ask = None;
                 }
+                update::disarm_relaunch();
                 Task::none()
             }
             Message::CloseSave => self.close_save(),
@@ -3187,6 +3203,29 @@ impl Session {
                     Ok(_) => UpdateState::Current,
                     Err(_) => UpdateState::Failed,
                 };
+                Task::none()
+            }
+            Message::InstallUpdate(tag) => {
+                self.settings_mut().update = UpdateState::Installing(tag.clone());
+                Task::perform(install_update(tag.clone()), move |result| {
+                    Message::UpdateInstalled(tag.clone(), result)
+                })
+            }
+            Message::UpdateInstalled(tag, result) => {
+                self.settings_mut().update = match result {
+                    Ok(bundle) => {
+                        update::arm_relaunch(bundle);
+                        UpdateState::Installed(tag)
+                    }
+                    Err(error) => UpdateState::InstallFailed(tag, error),
+                };
+                Task::none()
+            }
+            Message::RestartToUpdate => {
+                window::get_latest().and_then(|id| Task::done(Message::CloseWindow(id)))
+            }
+            Message::OpenReleasePage(tag) => {
+                open_url(&update::release_page(&tag));
                 Task::none()
             }
             Message::SetDefaultReader => {
@@ -4128,7 +4167,7 @@ impl Session {
         match target {
             CloseTarget::Document => self.finish_close_document(),
             CloseTarget::Tab(index) => self.finish_close_tab(index),
-            CloseTarget::Quit(id) => window::close(id),
+            CloseTarget::Quit(id) => close_window(id),
         }
     }
 
@@ -4202,7 +4241,7 @@ impl Session {
             }
             return Task::none();
         }
-        window::close(id)
+        close_window(id)
     }
 
     fn any_unsaved(&self) -> bool {
@@ -5022,6 +5061,31 @@ fn open_privacy_settings() {
     let _ = std::process::Command::new("open")
         .arg("x-apple.systempreferences:com.apple.preference.security?Privacy_FilesAndFolders")
         .spawn();
+}
+
+/// Fecha a janela; com uma atualização instalada e Reiniciar pedido, o app
+/// reabre já na versão nova.
+fn close_window(id: window::Id) -> Task<Message> {
+    update::relaunch_if_armed();
+    window::close(id)
+}
+
+async fn install_update(tag: String) -> Result<PathBuf, UpdateError> {
+    tokio::task::spawn_blocking(move || update::install_release(&tag))
+        .await
+        .unwrap_or(Err(UpdateError::Install))
+}
+
+/// Abre `url` no navegador padrão. Fire-and-forget, como os Ajustes do SO.
+fn open_url(url: &str) {
+    #[cfg(target_os = "windows")]
+    let _ = std::process::Command::new("cmd")
+        .args(["/C", "start", "", url])
+        .spawn();
+    #[cfg(target_os = "macos")]
+    let _ = std::process::Command::new("open").arg(url).spawn();
+    #[cfg(not(any(target_os = "windows", target_os = "macos")))]
+    let _ = std::process::Command::new("xdg-open").arg(url).spawn();
 }
 
 /// Tag da latest release no GitHub, via curl do sistema (sem dep nova).
@@ -8548,6 +8612,60 @@ mod tests {
             }
             _ => unreachable!(),
         }
+    }
+
+    #[test]
+    fn boot_checks_for_update_once_without_opening_settings() {
+        let (mut session, _) = Session::empty().boot();
+        assert_eq!(session.settings().update, UpdateState::Checking);
+        assert!(!session.settings().open);
+
+        // Abrir Configurações durante a checagem não dispara outra.
+        apply(&mut session, Message::ToggleSettings);
+        assert_eq!(session.settings().update, UpdateState::Checking);
+        apply(&mut session, Message::UpdateChecked(Ok("v99.0.0".into())));
+        apply(&mut session, Message::ToggleSettings);
+        apply(&mut session, Message::ToggleSettings);
+        assert_eq!(
+            session.settings().update,
+            UpdateState::Available("v99.0.0".into())
+        );
+
+        let (opening, _) = Session::open_path(PathBuf::from("/tmp/nao-existe.pdf")).boot();
+        assert_eq!(opening.settings().update, UpdateState::Checking);
+    }
+
+    #[test]
+    fn update_install_moves_through_installed_and_failed() {
+        let mut session = Session::empty();
+        apply(&mut session, Message::ToggleSettings);
+        apply(&mut session, Message::UpdateChecked(Ok("v99.0.0".into())));
+        assert_eq!(
+            session.settings().update,
+            UpdateState::Available("v99.0.0".into())
+        );
+
+        apply(
+            &mut session,
+            Message::UpdateInstalled("v99.0.0".into(), Err(UpdateError::Checksum)),
+        );
+        assert_eq!(
+            session.settings().update,
+            UpdateState::InstallFailed("v99.0.0".into(), UpdateError::Checksum)
+        );
+
+        apply(
+            &mut session,
+            Message::UpdateInstalled(
+                "v99.0.0".into(),
+                Ok(PathBuf::from("/nonexistent/TsuroPDF.app")),
+            ),
+        );
+        assert_eq!(
+            session.settings().update,
+            UpdateState::Installed("v99.0.0".into())
+        );
+        update::disarm_relaunch();
     }
 
     #[test]
