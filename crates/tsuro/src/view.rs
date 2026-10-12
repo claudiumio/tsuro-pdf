@@ -20,8 +20,8 @@ use crate::search::Search;
 use crate::session::PermissionsState;
 use crate::session::{
     display_pt, display_rect, marker_side, page_pt_at, AnnotKind, Message, NavCmd, NoteDraft,
-    OpenSource, PaletteItem, PaletteState, PrintDialog, RangeMode, Ready, Session, Tabs,
-    UpdateState, ViewMode, Zoom, ZoomFactor, DOC_GAP, DOC_PAD_BOTTOM, DOC_PAD_TOP, DOC_PAD_X,
+    OpenSource, PaletteItem, PaletteState, PrintDialog, RangeMode, Ready, Session, SettingsPanel,
+    Tabs, UpdateState, ViewMode, Zoom, ZoomFactor, DOC_GAP, DOC_PAD_BOTTOM, DOC_PAD_TOP, DOC_PAD_X,
     PAGES_PANEL_W, SIG_PANEL_W, THUMB_ROW,
 };
 
@@ -114,11 +114,13 @@ pub fn chrome(session: &Session, theme: Theme, lang: Lang) -> Element<'_, Messag
     })
     .into();
     let empty = || -> Element<'_, Message> { Space::new(Length::Shrink, Length::Shrink).into() };
-    // Tela vazia: `stack![janela, paleta]` sempre, pelo mesmo motivo abaixo
+    // Tela vazia: `stack![janela, camada]` sempre, pelo mesmo motivo abaixo
     // (abrir a paleta não pode zerar a rolagem da grade).
     if let Session::Empty(home) = session {
         let overlay = match home.palette.as_ref() {
             Some(palette) => palette_layer(palette, t),
+            None if home.about_open => about_layer(t),
+            None if session.settings().open => settings_layer(session.settings(), t),
             None => empty(),
         };
         return stack![main, overlay].into();
@@ -163,9 +165,9 @@ pub fn chrome(session: &Session, theme: Theme, lang: Lang) -> Element<'_, Messag
     } else if tabs.about_open {
         // Sobre (Ajuda): cartão de versão; fundo e Esc fecham.
         about_layer(t)
-    } else if tabs.settings_open {
+    } else if tabs.settings.open {
         // Configurações (Ajuda): abre por cima do Sobre; fundo e Esc fecham.
-        settings_layer(tabs, t)
+        settings_layer(&tabs.settings, t)
     } else if tabs.overflow_open {
         // Overlay visual: só os botões capturam clique, o resto atravessa.
         overflow_layer(tabs, t)
@@ -297,13 +299,6 @@ fn control_style(
     kiri::ibtn_style(t, active)
 }
 
-fn control(
-    t: Tokens,
-    btn: iced::widget::button::Button<'_, Message>,
-) -> iced::widget::button::Button<'_, Message> {
-    control_active(t, btn, false)
-}
-
 fn control_active(
     t: Tokens,
     btn: iced::widget::button::Button<'_, Message>,
@@ -375,6 +370,13 @@ fn home_button(t: Tokens, message: Message) -> Element<'static, Message> {
     tip(
         bar_button(t, "home", false).on_press(message),
         t.lang.pick("Início", "Home"),
+    )
+}
+
+fn settings_button(t: Tokens, open: bool) -> Element<'static, Message> {
+    tip(
+        bar_button(t, "settings", open).on_press(Message::ToggleSettings),
+        t.lang.pick("Configurações", "Settings"),
     )
 }
 
@@ -765,6 +767,10 @@ fn topbar(session: &Session, t: Tokens) -> Element<'_, Message> {
         items.push(home_button(t, Message::Close));
     }
     items.push(open_button(t));
+    if matches!(session, Session::Empty(_) | Session::Ready(_)) {
+        items.push(Space::with_width(Length::Fill).into());
+        items.push(settings_button(t, session.settings().open));
+    }
     toolbar_frame(t, row(items).spacing(4).align_y(Alignment::Center).into())
 }
 
@@ -1625,7 +1631,7 @@ fn about_card(t: Tokens) -> Element<'static, Message> {
 
 /// Configurações (Ajuda → Configurações): tema, leitor padrão, permissões,
 /// idioma e versão — mesmo padrão do Sobre (fundo fecha, cartão engole).
-fn settings_layer(ready: &Tabs, t: Tokens) -> Element<'static, Message> {
+fn settings_layer(settings: &SettingsPanel, t: Tokens) -> Element<'static, Message> {
     let dim = container(Space::with_width(Length::Fill))
         .width(Length::Fill)
         .height(Length::Fill)
@@ -1633,7 +1639,7 @@ fn settings_layer(ready: &Tabs, t: Tokens) -> Element<'static, Message> {
             background: Some(Background::Color(Color::from_rgba(0.0, 0.0, 0.0, 0.25))),
             ..container::Style::default()
         });
-    let card = container(mouse_area(settings_card(ready, t)).on_press(Message::PrintNop))
+    let card = container(mouse_area(settings_card(settings, t)).on_press(Message::PrintNop))
         .width(Length::Fill)
         .height(Length::Fill)
         .align_x(Alignment::Center)
@@ -1642,8 +1648,8 @@ fn settings_layer(ready: &Tabs, t: Tokens) -> Element<'static, Message> {
 }
 
 #[allow(clippy::too_many_lines)]
-fn settings_card(ready: &Tabs, t: Tokens) -> Element<'static, Message> {
-    let dark = ready.theme.is_dark();
+fn settings_card(settings: &SettingsPanel, t: Tokens) -> Element<'static, Message> {
+    let dark = t.is_dark;
     let mut body = column![
         text(t.lang.pick("Configurações", "Settings"))
             .size(16)
@@ -1669,7 +1675,7 @@ fn settings_card(ready: &Tabs, t: Tokens) -> Element<'static, Message> {
     .width(300);
     #[cfg(target_os = "macos")]
     {
-        let label = match ready.permissions {
+        let label = match settings.permissions {
             PermissionsState::Checking => t.lang.pick(
                 "Downloads: verificando acesso…",
                 "Downloads: checking access…",
@@ -1685,16 +1691,16 @@ fn settings_card(ready: &Tabs, t: Tokens) -> Element<'static, Message> {
                 "Downloads: access unavailable.",
             ),
         };
-        body =
-            body.push(section_title(t.lang.pick("Permissões", "Permissions"), t))
-                .push(text(label).size(13).color(
-                    if ready.permissions == PermissionsState::Denied {
-                        t.danger
-                    } else {
-                        t.muted
-                    },
-                ));
-        if ready.permissions == PermissionsState::Denied {
+        body = body
+            .push(section_title(t.lang.pick("Permissões", "Permissions"), t))
+            .push(text(label).size(13).color(
+                if settings.permissions == PermissionsState::Denied {
+                    t.danger
+                } else {
+                    t.muted
+                },
+            ));
+        if settings.permissions == PermissionsState::Denied {
             body = body.push(menu_item(
                 t,
                 "shield",
@@ -1708,8 +1714,8 @@ fn settings_card(ready: &Tabs, t: Tokens) -> Element<'static, Message> {
         .push(section_title(t.lang.pick("Idioma", "Language"), t))
         .push(
             row![
-                menu_lang_button(t, "Português", Lang::Pt, ready.lang == Lang::Pt),
-                menu_lang_button(t, "English", Lang::En, ready.lang == Lang::En),
+                menu_lang_button(t, "Português", Lang::Pt, t.lang == Lang::Pt),
+                menu_lang_button(t, "English", Lang::En, t.lang == Lang::En),
             ]
             .spacing(4),
         )
@@ -1723,7 +1729,7 @@ fn settings_card(ready: &Tabs, t: Tokens) -> Element<'static, Message> {
             .size(13)
             .color(t.muted),
         );
-    body = match &ready.update {
+    body = match &settings.update {
         UpdateState::Checking => body.push(
             text(
                 t.lang
@@ -2390,45 +2396,39 @@ fn disk_stale_row(ready: &Ready, t: Tokens) -> Element<'static, Message> {
     .into()
 }
 
-/// Faixa de abas sob a toolbar (issue #40): um botão por documento — o ativo
-/// destacado — e o × que fecha a aba. Só existe com 2+ abas ou com o Início
-/// por cima delas (aí nenhuma fica destacada: clicar volta para ela).
+/// Faixa de abas sob a toolbar (issue #40): uma pílula por documento, com o
+/// nome e o × dentro. A ativa tem fundo `accent_bg`. Só existe com 2+ abas ou
+/// com o Início por cima delas (aí nenhuma fica destacada: clicar volta para ela).
 fn tab_strip(tabs: &Tabs, t: Tokens) -> Element<'_, Message> {
-    // Padding dos botões-ícone (9px) somava ~35px numa faixa de 30px: o
-    // texto não cabia, o iced não desenhava a linha e a aba virava um
-    // quadradinho vazio. 4px cabe com folga.
-    let tab_pad = Padding::from([4, 10]);
+    // Padding vertical de 4px: os 9px dos botões-ícone somavam ~35px numa faixa
+    // de 30px e o texto sumia.
     let mut strip = row![].spacing(4).align_y(Alignment::Center);
     for (index, doc) in tabs.docs().iter().enumerate() {
         let label = short_name(doc.source.path());
         let active = tabs.home().is_none() && index == tabs.active_index();
+        let name = tip_owned(
+            button(text(label).size(13))
+                .padding(Padding::from([4, 10]))
+                .style(kiri::ibtn_style(t, false))
+                .on_press(Message::SelectTab(index)),
+            identity_tip(doc.source.path()),
+        );
+        let close = tip(
+            button(text("×").size(14).color(t.muted))
+                .padding(Padding::from([4, 8]))
+                .style(kiri::ibtn_style(t, false))
+                .on_press(Message::CloseTab(index)),
+            if cfg!(target_os = "macos") {
+                t.lang.pick("Fechar aba (Cmd+W)", "Close tab (Cmd+W)")
+            } else {
+                t.lang.pick("Fechar aba (Ctrl+W)", "Close tab (Ctrl+W)")
+            },
+        );
+        // Padding de 1px: o hover dos botões não cobre a moldura.
         strip = strip.push(
-            row![
-                tip_owned(
-                    control_active(
-                        t,
-                        button(text(label).size(13)).on_press(Message::SelectTab(index)),
-                        active,
-                    )
-                    .padding(tab_pad),
-                    identity_tip(doc.source.path()),
-                ),
-                tip(
-                    control(
-                        t,
-                        button(text("×").size(14).color(t.muted))
-                            .on_press(Message::CloseTab(index)),
-                    )
-                    .padding(tab_pad),
-                    if cfg!(target_os = "macos") {
-                        t.lang.pick("Fechar aba (Cmd+W)", "Close tab (Cmd+W)")
-                    } else {
-                        t.lang.pick("Fechar aba (Ctrl+W)", "Close tab (Ctrl+W)")
-                    },
-                ),
-            ]
-            .spacing(0)
-            .align_y(Alignment::Center),
+            container(row![name, close].align_y(Alignment::Center))
+                .padding(1)
+                .style(kiri::tab_pill_style(t, active)),
         );
     }
     container(strip)
