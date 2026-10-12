@@ -374,6 +374,34 @@ fn home_button(t: Tokens, message: Message) -> Element<'static, Message> {
     )
 }
 
+/// Aviso de versão nova na barra, fora do menu: abre Configurações (onde
+/// está Atualizar agora) e, com a versão já instalada, reinicia.
+fn update_badge(t: Tokens, update: &UpdateState) -> Option<Element<'static, Message>> {
+    let (label, message) = match update {
+        UpdateState::Available(tag) => (
+            format!("{} {tag}", t.lang.pick("Nova versão", "New version")),
+            Message::ToggleSettings,
+        ),
+        UpdateState::Installed(_) => (
+            t.lang
+                .pick("Reiniciar para atualizar", "Restart to update")
+                .to_string(),
+            Message::RestartToUpdate,
+        ),
+        _ => return None,
+    };
+    Some(
+        container(
+            button(text(label).size(12).color(t.accent))
+                .padding(Padding::from([2, 10]))
+                .style(kiri::menu_item_style(t))
+                .on_press(message),
+        )
+        .style(kiri::bar_mark_style(t))
+        .into(),
+    )
+}
+
 fn settings_button(t: Tokens, open: bool) -> Element<'static, Message> {
     tip(
         bar_button(t, "settings", open).on_press(Message::ToggleSettings),
@@ -667,6 +695,9 @@ fn topbar(session: &Session, t: Tokens) -> Element<'_, Message> {
         ]
         .spacing(4)
         .align_y(Alignment::Center);
+        if let Some(badge) = update_badge(t, &session.settings().update) {
+            right = right.push(badge);
+        }
         right = right.push(tip(
             bar_button(t, "more", ready.overflow_open).on_press(Message::ToggleOverflow),
             t.lang.pick("Mais opções", "More options"),
@@ -770,6 +801,9 @@ fn topbar(session: &Session, t: Tokens) -> Element<'_, Message> {
     items.push(open_button(t));
     if matches!(session, Session::Empty(_) | Session::Ready(_)) {
         items.push(Space::with_width(Length::Fill).into());
+        if let Some(badge) = update_badge(t, &session.settings().update) {
+            items.push(badge);
+        }
         items.push(settings_button(t, session.settings().open));
     }
     toolbar_frame(t, row(items).spacing(4).align_y(Alignment::Center).into())

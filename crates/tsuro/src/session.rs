@@ -1513,6 +1513,16 @@ pub struct SettingsPanel {
 }
 
 impl SettingsPanel {
+    /// Checagem de atualização, uma por sessão (abertura do app ou do
+    /// diálogo, o que vier primeiro). Offline falha silencioso.
+    fn check_update(&mut self) -> Task<Message> {
+        if self.update != UpdateState::Idle {
+            return Task::none();
+        }
+        self.update = UpdateState::Checking;
+        Task::perform(fetch_latest_tag(), Message::UpdateChecked)
+    }
+
     /// Abre ou fecha; ao abrir devolve as checagens a disparar (uma de
     /// atualização por sessão; permissões a cada abertura no macOS).
     fn toggle(&mut self) -> Task<Message> {
@@ -1520,12 +1530,7 @@ impl SettingsPanel {
         if !self.open {
             return Task::none();
         }
-        let mut tasks = Vec::new();
-        // Offline falha silencioso.
-        if self.update == UpdateState::Idle {
-            self.update = UpdateState::Checking;
-            tasks.push(Task::perform(fetch_latest_tag(), Message::UpdateChecked));
-        }
+        let mut tasks = vec![self.check_update()];
         #[cfg(target_os = "macos")]
         if self.permissions != PermissionsState::Checking {
             self.permissions = PermissionsState::Checking;
@@ -2432,25 +2437,21 @@ impl Session {
         }
     }
 
-    pub fn boot(self) -> (Self, Task<Message>) {
-        match &self {
+    pub fn boot(mut self) -> (Self, Task<Message>) {
+        let check = self.settings_mut().check_update();
+        let open = match &self {
             Session::Loading { source, gen, .. } => {
                 let source = source.clone();
                 let gen = *gen;
-                (
-                    self,
-                    Task::perform(open_ready(source), move |result| Message::Opened {
-                        gen,
-                        result,
-                    }),
-                )
+                Task::perform(open_ready(source), move |result| Message::Opened {
+                    gen,
+                    result,
+                })
             }
-            Session::Empty(_) => {
-                let tasks = empty_tasks(self.lang());
-                (self, tasks)
-            }
-            _ => (self, Task::none()),
-        }
+            Session::Empty(_) => empty_tasks(self.lang()),
+            _ => Task::none(),
+        };
+        (self, Task::batch([open, check]))
     }
 
     pub fn update(&mut self, message: Message) -> Task<Message> {
@@ -8611,6 +8612,27 @@ mod tests {
             }
             _ => unreachable!(),
         }
+    }
+
+    #[test]
+    fn boot_checks_for_update_once_without_opening_settings() {
+        let (mut session, _) = Session::empty().boot();
+        assert_eq!(session.settings().update, UpdateState::Checking);
+        assert!(!session.settings().open);
+
+        // Abrir Configurações durante a checagem não dispara outra.
+        apply(&mut session, Message::ToggleSettings);
+        assert_eq!(session.settings().update, UpdateState::Checking);
+        apply(&mut session, Message::UpdateChecked(Ok("v99.0.0".into())));
+        apply(&mut session, Message::ToggleSettings);
+        apply(&mut session, Message::ToggleSettings);
+        assert_eq!(
+            session.settings().update,
+            UpdateState::Available("v99.0.0".into())
+        );
+
+        let (opening, _) = Session::open_path(PathBuf::from("/tmp/nao-existe.pdf")).boot();
+        assert_eq!(opening.settings().update, UpdateState::Checking);
     }
 
     #[test]
