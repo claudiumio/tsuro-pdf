@@ -7,6 +7,8 @@
 use iced::widget::{button, container, svg, text_input, Space};
 use iced::{Background, Border, Color, Length, Shadow, Vector};
 
+use crate::i18n::Lang;
+
 /// Tema do chrome. Vive no estado da app, não no `Theme` global do iced.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub enum Theme {
@@ -45,13 +47,16 @@ pub struct Tokens {
     pub mark: Color,
     /// Hit atual da busca (Enter/F3) — âmbar cheio sobre o amarelo claro.
     pub mark_current: Color,
+    /// Idioma da interface: textos do chrome saem de `lang.pick(pt, en)`.
+    pub lang: Lang,
 }
 
 impl Tokens {
-    pub fn for_theme(theme: Theme) -> Self {
+    pub fn for_theme(theme: Theme, lang: Lang) -> Self {
         match theme {
             Theme::Dark => Self {
                 is_dark: true,
+                lang,
                 bg: hex(0x18, 0x18, 0x18),
                 surface: hex(0x22, 0x22, 0x22),
                 chrome: hex(0x1a, 0x1a, 0x1a),
@@ -71,6 +76,7 @@ impl Tokens {
             },
             Theme::Light => Self {
                 is_dark: false,
+                lang,
                 bg: hex(0xef, 0xef, 0xed),
                 surface: Color::WHITE,
                 chrome: hex(0xf7, 0xf7, 0xf6),
@@ -729,28 +735,28 @@ mod tests {
 
     #[test]
     fn dark_is_default_and_page_is_white() {
-        let t = Tokens::for_theme(Theme::default());
+        let t = Tokens::for_theme(Theme::default(), Lang::Pt);
         assert!(t.is_dark);
         assert_eq!(t.page, Color::WHITE);
-        assert_eq!(Tokens::for_theme(Theme::Light).page, Color::WHITE);
+        assert_eq!(Tokens::for_theme(Theme::Light, Lang::Pt).page, Color::WHITE);
     }
 
     #[test]
     fn chrome_tokens_match_issue_12() {
-        let t = Tokens::for_theme(Theme::Dark);
+        let t = Tokens::for_theme(Theme::Dark, Lang::Pt);
         assert_eq!(t.bg, hex(0x18, 0x18, 0x18));
         assert_eq!(t.accent, hex(0x4d, 0xb8, 0xb0));
-        let l = Tokens::for_theme(Theme::Light);
+        let l = Tokens::for_theme(Theme::Light, Lang::Pt);
         assert_eq!(l.bg, hex(0xef, 0xef, 0xed));
         assert_eq!(l.elevated, Color::WHITE);
     }
 
     #[test]
     fn seg_uses_elevated_dark_and_surface_light() {
-        let dark = Tokens::for_theme(Theme::Dark);
+        let dark = Tokens::for_theme(Theme::Dark, Lang::Pt);
         let style = seg_style(dark)(&iced::Theme::Dark);
         assert!(matches!(style.background, Some(Background::Color(c)) if c == dark.elevated));
-        let light = Tokens::for_theme(Theme::Light);
+        let light = Tokens::for_theme(Theme::Light, Lang::Pt);
         let style = seg_style(light)(&iced::Theme::Light);
         assert!(matches!(style.background, Some(Background::Color(c)) if c == light.surface));
     }
@@ -758,7 +764,7 @@ mod tests {
     #[test]
     fn dot_worst_status_wins_and_empty_has_no_dot() {
         use tsuro_sign::SignatureStatus as S;
-        let t = Tokens::for_theme(Theme::Dark);
+        let t = Tokens::for_theme(Theme::Dark, Lang::Pt);
         assert_eq!(status_dot_color(t, []), None);
         assert_eq!(status_dot_color(t, [S::Valid]), Some(t.ok));
         assert_eq!(status_dot_color(t, [S::IntactButUntrusted]), Some(t.warn));
@@ -776,7 +782,7 @@ mod tests {
     #[test]
     fn search_current_differs_from_mark_in_both_themes() {
         for theme in [Theme::Dark, Theme::Light] {
-            let t = Tokens::for_theme(theme);
+            let t = Tokens::for_theme(theme, Lang::Pt);
             assert_ne!(t.mark_current, t.mark);
             assert_ne!(t.mark_current, t.page);
         }

@@ -11,6 +11,7 @@ use iced::{Rectangle, Size};
 use tsuro_sign::SignatureStatus;
 
 use crate::browse::{EmptyState, FsEntry, Thumb};
+use crate::i18n::Lang;
 use crate::kiri::{self, Theme, Tokens};
 use crate::page::{MediaBox, PageNo};
 use crate::print::{PrintOrientation, MAX_COPIES};
@@ -72,8 +73,8 @@ pub fn palette_scroll_id() -> scrollable::Id {
 /// Altura máxima da lista da paleta (~10 linhas); além disso, scroll.
 const PALETTE_LIST_MAX_H: f32 = 420.0;
 
-pub fn chrome(session: &Session, theme: Theme) -> Element<'_, Message> {
-    let t = Tokens::for_theme(theme);
+pub fn chrome(session: &Session, theme: Theme, lang: Lang) -> Element<'_, Message> {
+    let t = Tokens::for_theme(theme, lang);
     let body: Element<'_, Message> = match session {
         Session::Empty(empty) => empty_browser(empty, false, t),
         Session::Loading { source, phase, .. } => opening(source, *phase, t),
@@ -205,7 +206,7 @@ fn hud(ready: &Ready, t: Tokens) -> Element<'_, Message> {
     let mut pill = row![
         hud_icon(
             "chevron-left",
-            "Página anterior",
+            t.lang.pick("Página anterior", "Previous page"),
             t,
             Message::Nav(NavCmd::Previous)
         ),
@@ -214,20 +215,30 @@ fn hud(ready: &Ready, t: Tokens) -> Element<'_, Message> {
         mono(n.to_string(), t.muted),
         hud_icon(
             "chevron-right",
-            "Próxima página",
+            t.lang.pick("Próxima página", "Next page"),
             t,
             Message::Nav(NavCmd::Next)
         ),
         kiri::vsep(t),
         hud_icon(
             "fit-width",
-            "Ajustar à largura",
+            t.lang.pick("Ajustar à largura", "Fit width"),
             t,
             Message::SetZoom(Zoom::Width)
         ),
-        hud_icon("minus", "Diminuir zoom (-)", t, Message::SetZoom(out)),
+        hud_icon(
+            "minus",
+            t.lang.pick("Diminuir zoom (-)", "Zoom out (-)"),
+            t,
+            Message::SetZoom(out)
+        ),
         mono(format!("{}%", (current * 100.0).round() as i32), t.ink),
-        hud_icon("plus", "Aumentar zoom (+)", t, Message::SetZoom(into)),
+        hud_icon(
+            "plus",
+            t.lang.pick("Aumentar zoom (+)", "Zoom in (+)"),
+            t,
+            Message::SetZoom(into)
+        ),
     ]
     .spacing(2)
     .align_y(Alignment::Center);
@@ -246,7 +257,9 @@ fn hud(ready: &Ready, t: Tokens) -> Element<'_, Message> {
                         },
                         ..container::Style::default()
                     }),
-                text("Modo Anotação").size(11).color(t.accent),
+                text(t.lang.pick("Modo Anotação", "Annotation mode"))
+                    .size(11)
+                    .color(t.accent),
             ]
             .spacing(6)
             .align_y(Alignment::Center),
@@ -352,14 +365,17 @@ fn identity_tip(path: &std::path::Path) -> String {
 fn open_button(t: Tokens) -> Element<'static, Message> {
     tip(
         bar_button(t, "folder", false).on_press(Message::PickFile),
-        "Abrir PDF",
+        t.lang.pick("Abrir PDF", "Open PDF"),
     )
 }
 
 /// Casinha: com abas abertas mostra o Início por cima delas (`GoHome`);
 /// carregando/erro não têm aba a preservar e fecham (`Close`).
 fn home_button(t: Tokens, message: Message) -> Element<'static, Message> {
-    tip(bar_button(t, "home", false).on_press(message), "Início")
+    tip(
+        bar_button(t, "home", false).on_press(message),
+        t.lang.pick("Início", "Home"),
+    )
 }
 
 /// Moldura da toolbar Kiri: 36px, fundo `chrome`, respiro horizontal 8px.
@@ -396,13 +412,13 @@ fn middle_truncate(name: &str, max: usize) -> String {
 /// digitando (`"12"`) e `"3 de 12"` navegando.
 /// `scanning`: ainda há páginas sem texto na fila da busca — o "…" avisa
 /// que o total pode crescer.
-fn search_count_text(search: &Search, scanning: bool) -> Option<String> {
+fn search_count_text(search: &Search, scanning: bool, lang: Lang) -> Option<String> {
     if search.query().is_empty() {
         return None;
     }
     let total = search.hits().len();
     let count = match search.current() {
-        Some(i) if total > 0 => format!("{} de {}", i + 1, total),
+        Some(i) if total > 0 => format!("{} {} {}", i + 1, lang.pick("de", "of"), total),
         _ => total.to_string(),
     };
     Some(if scanning {
@@ -419,7 +435,7 @@ fn search_nav<'a>(ready: &'a Ready, t: Tokens) -> Element<'a, Message> {
         return Space::with_width(Length::Shrink).into();
     }
     let mut nav = row![].spacing(2).align_y(Alignment::Center);
-    if let Some(count) = search_count_text(&ready.search, ready.search_scanning()) {
+    if let Some(count) = search_count_text(&ready.search, ready.search_scanning(), t.lang) {
         nav = nav.push(text(count).size(11).color(t.muted));
     }
     if !ready.search.hits().is_empty() {
@@ -428,14 +444,15 @@ fn search_nav<'a>(ready: &'a Ready, t: Tokens) -> Element<'a, Message> {
                 t,
                 button(seg_icon("chevron-left")).on_press(Message::SearchPrev),
             ),
-            "Anterior (Shift+Enter)",
+            t.lang
+                .pick("Anterior (Shift+Enter)", "Previous (Shift+Enter)"),
         ));
         nav = nav.push(tip(
             control_seg(
                 t,
                 button(seg_icon("chevron-right")).on_press(Message::SearchNext),
             ),
-            "Próximo (Enter)",
+            t.lang.pick("Próximo (Enter)", "Next (Enter)"),
         ));
     }
     nav.into()
@@ -484,24 +501,29 @@ fn topbar(session: &Session, t: Tokens) -> Element<'_, Message> {
                 tip(
                     kiri::ori_small!("search"),
                     if cfg!(target_os = "macos") {
-                        "Buscar no documento (Cmd+F)"
+                        t.lang
+                            .pick("Buscar no documento (Cmd+F)", "Find in document (Cmd+F)")
                     } else {
-                        "Buscar no documento (Ctrl+F)"
+                        t.lang
+                            .pick("Buscar no documento (Ctrl+F)", "Find in document (Ctrl+F)")
                     },
                 ),
-                text_input("Buscar no documento...", ready.search.query())
-                    .id(search_input_id())
-                    .on_input(Message::SearchChanged)
-                    .on_submit(Message::SearchSubmit)
-                    .style(kiri::bar_input_style(t))
-                    .padding([2, 4])
-                    .size(12)
-                    .width(Length::Fixed(120.0)),
+                text_input(
+                    t.lang.pick("Buscar no documento...", "Find in document..."),
+                    ready.search.query()
+                )
+                .id(search_input_id())
+                .on_input(Message::SearchChanged)
+                .on_submit(Message::SearchSubmit)
+                .style(kiri::bar_input_style(t))
+                .padding([2, 4])
+                .size(12)
+                .width(Length::Fixed(120.0)),
                 search_nav(ready, t),
                 kiri::vsep(t),
                 row![
                     tip(
-                        text_input("Página", ready.page_input())
+                        text_input(t.lang.pick("Página", "Page"), ready.page_input())
                             .id(page_input_id())
                             .on_input(Message::PageInput)
                             .on_submit(Message::PageSubmit)
@@ -510,7 +532,10 @@ fn topbar(session: &Session, t: Tokens) -> Element<'_, Message> {
                             .size(12)
                             .padding([2, 4])
                             .width(Length::Fixed(30.0)),
-                        "Ir para página (Enter confirma)",
+                        t.lang.pick(
+                            "Ir para página (Enter confirma)",
+                            "Go to page (Enter confirms)"
+                        ),
                     ),
                     text(format!("/{n}"))
                         .size(12)
@@ -527,7 +552,7 @@ fn topbar(session: &Session, t: Tokens) -> Element<'_, Message> {
                                 button(seg_icon("chevron-left"))
                                     .on_press(Message::Nav(NavCmd::Previous))
                             ),
-                            "Página anterior"
+                            t.lang.pick("Página anterior", "Previous page")
                         ),
                         tip(
                             control_seg(
@@ -535,7 +560,7 @@ fn topbar(session: &Session, t: Tokens) -> Element<'_, Message> {
                                 button(seg_icon("chevron-right"))
                                     .on_press(Message::Nav(NavCmd::Next))
                             ),
-                            "Próxima página"
+                            t.lang.pick("Próxima página", "Next page")
                         ),
                     ]
                     .spacing(0)
@@ -563,7 +588,7 @@ fn topbar(session: &Session, t: Tokens) -> Element<'_, Message> {
             row![
                 tip(
                     control_seg(t, button(seg_icon("minus")).on_press(Message::SetZoom(out))),
-                    "Diminuir zoom (-)"
+                    t.lang.pick("Diminuir zoom (-)", "Zoom out (-)")
                 ),
                 tip(
                     container(
@@ -573,18 +598,18 @@ fn topbar(session: &Session, t: Tokens) -> Element<'_, Message> {
                             .color(t.muted),
                     )
                     .padding(Padding::from([0, 4])),
-                    "Zoom atual",
+                    t.lang.pick("Zoom atual", "Current zoom"),
                 ),
                 tip(
                     control_seg(t, button(seg_icon("plus")).on_press(Message::SetZoom(into))),
-                    "Aumentar zoom (+)"
+                    t.lang.pick("Aumentar zoom (+)", "Zoom in (+)")
                 ),
                 tip(
                     control_seg(
                         t,
                         button(seg_icon("fit-width")).on_press(Message::SetZoom(Zoom::Width))
                     ),
-                    "Ajustar à largura"
+                    t.lang.pick("Ajustar à largura", "Fit width")
                 ),
             ]
             .spacing(0)
@@ -626,14 +651,14 @@ fn topbar(session: &Session, t: Tokens) -> Element<'_, Message> {
                         left: 0.0,
                     })
                 ],
-                "Assinaturas",
+                t.lang.pick("Assinaturas", "Signatures"),
             ),
-            None => tip(shield, "Assinaturas"),
+            None => tip(shield, t.lang.pick("Assinaturas", "Signatures")),
         };
         let mut right = row![
             tip(
                 bar_button(t, "pages", ready.pages_open).on_press(Message::TogglePages),
-                "Páginas"
+                t.lang.pick("Páginas", "Pages")
             ),
             shield_el,
         ]
@@ -641,7 +666,7 @@ fn topbar(session: &Session, t: Tokens) -> Element<'_, Message> {
         .align_y(Alignment::Center);
         right = right.push(tip(
             bar_button(t, "more", ready.overflow_open).on_press(Message::ToggleOverflow),
-            "Mais opções",
+            t.lang.pick("Mais opções", "More options"),
         ));
 
         // Barra de anotar na cara (seleção viva): ⋯ é fuga, não casa. Os atalhos
@@ -679,34 +704,46 @@ fn topbar(session: &Session, t: Tokens) -> Element<'_, Message> {
                     tip(
                         control_seg(
                             t,
-                            button(tool(seg_icon("highlighter"), "Destacar", "H"))
-                                .on_press(Message::Annotate(AnnotKind::Highlight))
+                            button(tool(
+                                seg_icon("highlighter"),
+                                t.lang.pick("Destacar", "Highlight"),
+                                "H"
+                            ))
+                            .on_press(Message::Annotate(AnnotKind::Highlight))
                         ),
-                        "Destacar (H)"
+                        t.lang.pick("Destacar (H)", "Highlight (H)")
                     ),
                     tip(
                         control_seg(
                             t,
-                            button(tool(seg_icon("underline"), "Sublinhar", "U"))
-                                .on_press(Message::Annotate(AnnotKind::Underline))
+                            button(tool(
+                                seg_icon("underline"),
+                                t.lang.pick("Sublinhar", "Underline"),
+                                "U"
+                            ))
+                            .on_press(Message::Annotate(AnnotKind::Underline))
                         ),
-                        "Sublinhar (U)"
+                        t.lang.pick("Sublinhar (U)", "Underline (U)")
                     ),
                     tip(
                         control_seg(
                             t,
-                            button(tool(seg_icon("strike"), "Riscar", "S"))
-                                .on_press(Message::Annotate(AnnotKind::Strikeout))
+                            button(tool(
+                                seg_icon("strike"),
+                                t.lang.pick("Riscar", "Strikeout"),
+                                "S"
+                            ))
+                            .on_press(Message::Annotate(AnnotKind::Strikeout))
                         ),
-                        "Riscar (S)"
+                        t.lang.pick("Riscar (S)", "Strikeout (S)")
                     ),
                     tip(
                         control_seg(
                             t,
-                            button(tool(seg_icon("note"), "Nota", "N"))
+                            button(tool(seg_icon("note"), t.lang.pick("Nota", "Note"), "N"))
                                 .on_press(Message::Annotate(AnnotKind::Note))
                         ),
-                        "Nota (N)"
+                        t.lang.pick("Nota (N)", "Note (N)")
                     ),
                 ]
                 .spacing(0)
@@ -764,11 +801,11 @@ fn overflow_layer(tabs: &Tabs, t: Tokens) -> Element<'_, Message> {
 /// Recentes na mesma lista da tela vazia; Sobre abre o cartão de versão.
 fn overflow_menu(ready: &Ready, t: Tokens) -> Element<'_, Message> {
     let mut items = column![].spacing(2).width(Length::Fill);
-    items = items.push(section_title("Arquivo", t));
+    items = items.push(section_title(t.lang.pick("Arquivo", "File"), t));
     items = items.push(menu_item(
         t,
         "folder-open",
-        "Abrir…",
+        t.lang.pick("Abrir…", "Open…"),
         Message::PickFile,
         false,
     ));
@@ -776,9 +813,9 @@ fn overflow_menu(ready: &Ready, t: Tokens) -> Element<'_, Message> {
         t,
         "folder",
         if ready.recents_expanded {
-            "Recentes ▾"
+            t.lang.pick("Recentes ▾", "Recent ▾")
         } else {
-            "Recentes ▸"
+            t.lang.pick("Recentes ▸", "Recent ▸")
         },
         Message::ToggleRecents,
         false,
@@ -786,7 +823,10 @@ fn overflow_menu(ready: &Ready, t: Tokens) -> Element<'_, Message> {
     if ready.recents_expanded {
         let recents: Vec<_> = ready.recents().iter().take(5).collect();
         if recents.is_empty() {
-            items = items.push(menu_disabled(t, "Nenhum arquivo recente"));
+            items = items.push(menu_disabled(
+                t,
+                t.lang.pick("Nenhum arquivo recente", "No recent files"),
+            ));
         } else {
             for path in recents {
                 items = items.push(menu_recent(
@@ -800,7 +840,7 @@ fn overflow_menu(ready: &Ready, t: Tokens) -> Element<'_, Message> {
     items = items.push(menu_item(
         t,
         "print",
-        "Imprimir",
+        t.lang.pick("Imprimir", "Print"),
         Message::OpenPrintDialog,
         false,
     ));
@@ -808,7 +848,8 @@ fn overflow_menu(ready: &Ready, t: Tokens) -> Element<'_, Message> {
         items = items.push(menu_item(
             t,
             "save",
-            "Salvar cópia com marcações…",
+            t.lang
+                .pick("Salvar cópia com marcações…", "Save copy with marks…"),
             Message::SaveCopyRequested,
             false,
         ));
@@ -816,7 +857,7 @@ fn overflow_menu(ready: &Ready, t: Tokens) -> Element<'_, Message> {
     items = items.push(menu_item(
         t,
         "x",
-        "Fechar documento",
+        t.lang.pick("Fechar documento", "Close document"),
         Message::CloseTabActive,
         false,
     ));
@@ -826,12 +867,12 @@ fn overflow_menu(ready: &Ready, t: Tokens) -> Element<'_, Message> {
         || ready.can_annot_redo()
         || ready.selected_annot().is_some();
     if can_edit {
-        items = items.push(section_title("Editar", t));
+        items = items.push(section_title(t.lang.pick("Editar", "Edit"), t));
         if ready.selection_plain_text().is_some() {
             items = items.push(menu_item(
                 t,
                 "copy",
-                "Copiar seleção",
+                t.lang.pick("Copiar seleção", "Copy selection"),
                 Message::CopySelection,
                 false,
             ));
@@ -840,7 +881,10 @@ fn overflow_menu(ready: &Ready, t: Tokens) -> Element<'_, Message> {
             items = items.push(menu_item(
                 t,
                 "copy",
-                "Copiar destaques como Markdown",
+                t.lang.pick(
+                    "Copiar destaques como Markdown",
+                    "Copy highlights as Markdown",
+                ),
                 Message::CopyAnnotations,
                 false,
             ));
@@ -849,7 +893,7 @@ fn overflow_menu(ready: &Ready, t: Tokens) -> Element<'_, Message> {
             items = items.push(menu_item(
                 t,
                 "x",
-                "Apagar marcação",
+                t.lang.pick("Apagar marcação", "Delete mark"),
                 Message::DeleteSelectedAnnot,
                 false,
             ));
@@ -858,7 +902,7 @@ fn overflow_menu(ready: &Ready, t: Tokens) -> Element<'_, Message> {
             items = items.push(menu_item(
                 t,
                 "undo",
-                "Desfazer marcação",
+                t.lang.pick("Desfazer marcação", "Undo mark"),
                 Message::AnnotUndo,
                 false,
             ));
@@ -867,24 +911,24 @@ fn overflow_menu(ready: &Ready, t: Tokens) -> Element<'_, Message> {
             items = items.push(menu_item(
                 t,
                 "redo",
-                "Refazer marcação",
+                t.lang.pick("Refazer marcação", "Redo mark"),
                 Message::AnnotRedo,
                 false,
             ));
         }
     }
-    items = items.push(section_title("Ver", t));
+    items = items.push(section_title(t.lang.pick("Ver", "View"), t));
     items = items.push(menu_item(
         t,
         "fit-page",
-        "Ajustar página inteira",
+        t.lang.pick("Ajustar página inteira", "Fit page"),
         Message::SetZoom(Zoom::Page),
         false,
     ));
     items = items.push(menu_item(
         t,
         "rotate",
-        "Girar vista (90°)",
+        t.lang.pick("Girar vista (90°)", "Rotate view (90°)"),
         Message::RotateView,
         false,
     ));
@@ -892,32 +936,32 @@ fn overflow_menu(ready: &Ready, t: Tokens) -> Element<'_, Message> {
     items = items.push(menu_item(
         t,
         "page-single",
-        "Página única",
+        t.lang.pick("Página única", "Single page"),
         Message::SetViewMode(ViewMode::Single),
         single,
     ));
     items = items.push(menu_item(
         t,
         "continuous",
-        "Rolagem contínua",
+        t.lang.pick("Rolagem contínua", "Continuous scroll"),
         Message::SetViewMode(ViewMode::Continuous),
         !single,
     ));
     let dark = ready.theme.is_dark();
     items = items.push(
         row![
-            menu_theme_button(t, "Escuro", Theme::Dark, dark),
-            menu_theme_button(t, "Claro", Theme::Light, !dark),
+            menu_theme_button(t, t.lang.pick("Escuro", "Dark"), Theme::Dark, dark),
+            menu_theme_button(t, t.lang.pick("Claro", "Light"), Theme::Light, !dark),
         ]
         .spacing(4),
     );
     if ready.can_history_back() || ready.can_history_forward() {
-        items = items.push(section_title("Ir", t));
+        items = items.push(section_title(t.lang.pick("Ir", "Go"), t));
         if ready.can_history_back() {
             items = items.push(menu_item(
                 t,
                 "chevron-left",
-                "Voltar",
+                t.lang.pick("Voltar", "Back"),
                 Message::HistoryBack,
                 false,
             ));
@@ -926,31 +970,32 @@ fn overflow_menu(ready: &Ready, t: Tokens) -> Element<'_, Message> {
             items = items.push(menu_item(
                 t,
                 "chevron-right",
-                "Avançar",
+                t.lang.pick("Avançar", "Forward"),
                 Message::HistoryForward,
                 false,
             ));
         }
     }
-    items = items.push(section_title("Ajuda", t));
+    items = items.push(section_title(t.lang.pick("Ajuda", "Help"), t));
     items = items.push(menu_item(
         t,
         "more",
-        "Configurações",
+        t.lang.pick("Configurações", "Settings"),
         Message::ToggleSettings,
         false,
     ));
     items = items.push(menu_item(
         t,
         "home",
-        "Definir como leitor padrão…",
+        t.lang
+            .pick("Definir como leitor padrão…", "Set as default reader…"),
         Message::SetDefaultReader,
         false,
     ));
     items = items.push(menu_item(
         t,
         "file-text",
-        "Sobre o Tsuro PDF",
+        t.lang.pick("Sobre o Tsuro PDF", "About Tsuro PDF"),
         Message::ToggleAbout,
         false,
     ));
@@ -1055,9 +1100,9 @@ fn print_card<'a>(ready: &'a Ready, dialog: &'a PrintDialog, t: Tokens) -> Eleme
     let at = dialog.preview.min(pages.len().saturating_sub(1));
     let mut col = column![
         row![
-            text("Imprimir").size(16),
+            text(t.lang.pick("Imprimir", "Print")).size(16),
             Space::with_width(Length::Fill),
-            button(text("Fechar").size(13))
+            button(text(t.lang.pick("Fechar", "Close")).size(13))
                 .style(kiri::menu_item_style(t))
                 .on_press_maybe((!dialog.busy).then_some(Message::ClosePrintDialog)),
         ]
@@ -1071,9 +1116,12 @@ fn print_card<'a>(ready: &'a Ready, dialog: &'a PrintDialog, t: Tokens) -> Eleme
     .spacing(12);
     if let Some(err) = &dialog.error {
         col = col.push(
-            text(format!("Não foi possível imprimir: {err}"))
-                .size(13)
-                .color(t.danger),
+            text(format!(
+                "{}: {err}",
+                t.lang.pick("Não foi possível imprimir", "Could not print")
+            ))
+            .size(13)
+            .color(t.danger),
         );
     }
     col = col.push(print_footer(dialog, t));
@@ -1097,18 +1145,28 @@ fn print_preview<'a>(
             Some(surface) => image(surface.image.clone())
                 .width(Length::Fixed(220.0))
                 .into(),
-            None => container(text("carregando…").size(13).color(t.muted))
-                .width(Length::Fixed(220.0))
-                .height(Length::Fixed(280.0))
-                .align_x(Alignment::Center)
-                .align_y(Alignment::Center)
-                .into(),
+            None => container(
+                text(t.lang.pick("carregando…", "loading…"))
+                    .size(13)
+                    .color(t.muted),
+            )
+            .width(Length::Fixed(220.0))
+            .height(Length::Fixed(280.0))
+            .align_x(Alignment::Center)
+            .align_y(Alignment::Center)
+            .into(),
         };
     let pager = row![
         button(kiri::ori!("chevron-left"))
             .style(kiri::ibtn_style(t, false))
             .on_press_maybe((!dialog.busy && at > 0).then_some(Message::PrintPreviewPrev)),
-        text(format!("{} de {}", at + 1, pages.len().max(1))).size(13),
+        text(format!(
+            "{} {} {}",
+            at + 1,
+            t.lang.pick("de", "of"),
+            pages.len().max(1)
+        ))
+        .size(13),
         button(kiri::ori!("chevron-right"))
             .style(kiri::ibtn_style(t, false))
             .on_press_maybe(
@@ -1126,33 +1184,48 @@ fn print_preview<'a>(
 fn print_controls(dialog: &PrintDialog, t: Tokens) -> Element<'_, Message> {
     let busy = dialog.busy;
     let printer: Element<'_, Message> = if dialog.printers_loading {
-        text("Carregando impressoras…")
+        text(t.lang.pick("Carregando impressoras…", "Loading printers…"))
             .size(13)
             .color(t.muted)
             .into()
     } else if dialog.printers.is_empty() {
-        text("Nenhuma impressora encontrada")
-            .size(13)
-            .color(t.warn)
-            .into()
+        text(
+            t.lang
+                .pick("Nenhuma impressora encontrada", "No printer found"),
+        )
+        .size(13)
+        .color(t.warn)
+        .into()
     } else {
         let names: Vec<String> = dialog.printers.iter().map(|p| p.name.clone()).collect();
         let selected = dialog.selected_printer().map(|p| p.name.clone());
         pick_list(names.clone(), selected, move |name: String| {
             Message::PrintSelectPrinter(names.iter().position(|n| *n == name).unwrap_or(0))
         })
-        .placeholder("Impressora")
+        .placeholder(t.lang.pick("Impressora", "Printer"))
         .width(Length::Fill)
         .into()
     };
     let mut col = column![
-        section_title("Impressora", t),
+        section_title(t.lang.pick("Impressora", "Printer"), t),
         printer,
-        section_title("Páginas", t),
+        section_title(t.lang.pick("Páginas", "Pages"), t),
         row![
-            seg_button(t, "Todas", RangeMode::All, dialog, busy),
-            seg_button(t, "Atual", RangeMode::Current, dialog, busy),
-            seg_button(t, "De–Até", RangeMode::Custom, dialog, busy),
+            seg_button(t, t.lang.pick("Todas", "All"), RangeMode::All, dialog, busy),
+            seg_button(
+                t,
+                t.lang.pick("Atual", "Current"),
+                RangeMode::Current,
+                dialog,
+                busy
+            ),
+            seg_button(
+                t,
+                t.lang.pick("De–Até", "From–To"),
+                RangeMode::Custom,
+                dialog,
+                busy
+            ),
         ]
         .spacing(4),
     ]
@@ -1160,11 +1233,11 @@ fn print_controls(dialog: &PrintDialog, t: Tokens) -> Element<'_, Message> {
     if dialog.range_mode == RangeMode::Custom {
         col = col.push(
             row![
-                text_input("De", &dialog.from_input)
+                text_input(t.lang.pick("De", "From"), &dialog.from_input)
                     .on_input(Message::PrintSetFromInput)
                     .width(Length::Fixed(64.0)),
-                text("até").size(13).color(t.muted),
-                text_input("Até", &dialog.to_input)
+                text(t.lang.pick("até", "to")).size(13).color(t.muted),
+                text_input(t.lang.pick("Até", "To"), &dialog.to_input)
                     .on_input(Message::PrintSetToInput)
                     .width(Length::Fixed(64.0)),
             ]
@@ -1172,7 +1245,7 @@ fn print_controls(dialog: &PrintDialog, t: Tokens) -> Element<'_, Message> {
             .align_y(Alignment::Center),
         );
     }
-    col = col.push(section_title("Cópias", t));
+    col = col.push(section_title(t.lang.pick("Cópias", "Copies"), t));
     col = col.push(
         row![
             button(kiri::ori!("minus"))
@@ -1190,12 +1263,30 @@ fn print_controls(dialog: &PrintDialog, t: Tokens) -> Element<'_, Message> {
         .spacing(4)
         .align_y(Alignment::Center),
     );
-    col = col.push(section_title("Orientação", t));
+    col = col.push(section_title(t.lang.pick("Orientação", "Orientation"), t));
     col = col.push(
         row![
-            ori_button(t, "Automática", PrintOrientation::Auto, dialog, busy),
-            ori_button(t, "Retrato", PrintOrientation::Portrait, dialog, busy),
-            ori_button(t, "Paisagem", PrintOrientation::Landscape, dialog, busy),
+            ori_button(
+                t,
+                t.lang.pick("Automática", "Automatic"),
+                PrintOrientation::Auto,
+                dialog,
+                busy
+            ),
+            ori_button(
+                t,
+                t.lang.pick("Retrato", "Portrait"),
+                PrintOrientation::Portrait,
+                dialog,
+                busy
+            ),
+            ori_button(
+                t,
+                t.lang.pick("Paisagem", "Landscape"),
+                PrintOrientation::Landscape,
+                dialog,
+                busy
+            ),
         ]
         .spacing(4),
     );
@@ -1230,7 +1321,11 @@ fn ori_button(
 
 fn print_footer(dialog: &PrintDialog, t: Tokens) -> Element<'static, Message> {
     let busy = dialog.busy;
-    let label = if busy { "Enviando…" } else { "Imprimir" };
+    let label = if busy {
+        t.lang.pick("Enviando…", "Sending…")
+    } else {
+        t.lang.pick("Imprimir", "Print")
+    };
     let secondary = |label: &'static str, message: Message| {
         button(text(label).size(13))
             .padding(Padding::from([8, 12]))
@@ -1239,8 +1334,8 @@ fn print_footer(dialog: &PrintDialog, t: Tokens) -> Element<'static, Message> {
     };
     row![
         Space::with_width(Length::Fill),
-        secondary("Abrir PDF", Message::PrintOpenPdf),
-        secondary("Cancelar", Message::ClosePrintDialog),
+        secondary(t.lang.pick("Abrir PDF", "Open PDF"), Message::PrintOpenPdf),
+        secondary(t.lang.pick("Cancelar", "Cancel"), Message::ClosePrintDialog),
         button(text(label).size(13))
             .padding(Padding::from([8, 12]))
             .style(kiri::hud_primary_style(t))
@@ -1299,12 +1394,24 @@ fn selection_bar_layer(ready: &Ready, t: Tokens) -> Element<'_, Message> {
         row![
             seg(
                 seg_icon("highlighter"),
-                "Destacar (H)",
+                t.lang.pick("Destacar (H)", "Highlight (H)"),
                 AnnotKind::Highlight
             ),
-            seg(seg_icon("underline"), "Sublinhar (U)", AnnotKind::Underline),
-            seg(seg_icon("strike"), "Riscar (S)", AnnotKind::Strikeout),
-            seg(seg_icon("note"), "Nota (N)", AnnotKind::Note),
+            seg(
+                seg_icon("underline"),
+                t.lang.pick("Sublinhar (U)", "Underline (U)"),
+                AnnotKind::Underline
+            ),
+            seg(
+                seg_icon("strike"),
+                t.lang.pick("Riscar (S)", "Strikeout (S)"),
+                AnnotKind::Strikeout
+            ),
+            seg(
+                seg_icon("note"),
+                t.lang.pick("Nota (N)", "Note (N)"),
+                AnnotKind::Note
+            ),
         ]
         .spacing(0)
         .align_y(Alignment::Center),
@@ -1334,7 +1441,7 @@ fn note_card(draft: &NoteDraft, t: Tokens) -> Element<'_, Message> {
     let mut footer = row![].spacing(8).align_y(Alignment::Center);
     if editing {
         footer = footer.push(
-            button(text("remover nota").size(13))
+            button(text(t.lang.pick("remover nota", "delete note")).size(13))
                 .padding(Padding::from([8, 12]))
                 .style(sticky_button_style(t.danger))
                 .on_press(Message::NoteDelete),
@@ -1342,9 +1449,13 @@ fn note_card(draft: &NoteDraft, t: Tokens) -> Element<'_, Message> {
     }
     container(
         column![
-            text(if editing { "EDITAR NOTA" } else { "NOVA NOTA" })
-                .size(10)
-                .color(STICKY_INK),
+            text(if editing {
+                t.lang.pick("EDITAR NOTA", "EDIT NOTE")
+            } else {
+                t.lang.pick("NOVA NOTA", "NEW NOTE")
+            })
+            .size(10)
+            .color(STICKY_INK),
             container(Space::with_height(Length::Fixed(1.0)))
                 .width(Length::Fill)
                 .style(|_| container::Style {
@@ -1352,7 +1463,7 @@ fn note_card(draft: &NoteDraft, t: Tokens) -> Element<'_, Message> {
                     ..container::Style::default()
                 }),
             text_editor(&draft.content)
-                .placeholder("Escreva a nota…")
+                .placeholder(t.lang.pick("Escreva a nota…", "Write the note…"))
                 .on_action(Message::NoteEdit)
                 .padding(6)
                 .size(13)
@@ -1361,13 +1472,13 @@ fn note_card(draft: &NoteDraft, t: Tokens) -> Element<'_, Message> {
             footer
                 .push(Space::with_width(Length::Fill))
                 .push(
-                    button(text("Cancelar").size(13))
+                    button(text(t.lang.pick("Cancelar", "Cancel")).size(13))
                         .padding(Padding::from([8, 12]))
                         .style(sticky_button_style(STICKY_INK))
                         .on_press(Message::NoteCancel),
                 )
                 .push(
-                    button(text("Salvar").size(13))
+                    button(text(t.lang.pick("Salvar", "Save")).size(13))
                         .padding(Padding::from([8, 12]))
                         .style(kiri::hud_primary_style(t))
                         .on_press_maybe(can_save.then_some(Message::NoteSave)),
@@ -1475,13 +1586,20 @@ fn about_layer(t: Tokens) -> Element<'static, Message> {
 fn about_card(t: Tokens) -> Element<'static, Message> {
     let mut body = column![
         text("Tsuro PDF").size(16).color(t.ink),
-        text(format!("Versão {}", env!("CARGO_PKG_VERSION")))
-            .size(13)
-            .color(t.muted),
-        text("Ler, anotar, marcar, imprimir. Nada além disso.")
-            .size(13)
-            .color(t.ink),
-        button(text("Fechar").size(13))
+        text(format!(
+            "{} {}",
+            t.lang.pick("Versão", "Version"),
+            env!("CARGO_PKG_VERSION")
+        ))
+        .size(13)
+        .color(t.muted),
+        text(t.lang.pick(
+            "Ler, anotar, marcar, imprimir. Nada além disso.",
+            "Read, annotate, mark, print. Nothing more."
+        ))
+        .size(13)
+        .color(t.ink),
+        button(text(t.lang.pick("Fechar", "Close")).size(13))
             .padding(Padding::from([8, 12]))
             .style(kiri::menu_item_style(t))
             .on_press(Message::ToggleAbout),
@@ -1489,9 +1607,10 @@ fn about_card(t: Tokens) -> Element<'static, Message> {
     // macOS: trocar o leitor padrão é escolha do usuário no Finder.
     if cfg!(target_os = "macos") {
         body = body.push(
-            text(
+            text(t.lang.pick(
                 "Leitor padrão: Finder › Obter Informações › Abrir com › TsuroPDF › Alterar tudo.",
-            )
+                "Default reader: Finder › Get Info › Open With › TsuroPDF › Change All.",
+            ))
             .size(12)
             .color(t.muted),
         );
@@ -1526,18 +1645,21 @@ fn settings_layer(ready: &Tabs, t: Tokens) -> Element<'static, Message> {
 fn settings_card(ready: &Tabs, t: Tokens) -> Element<'static, Message> {
     let dark = ready.theme.is_dark();
     let mut body = column![
-        text("Configurações").size(16).color(t.ink),
-        section_title("Tema", t),
+        text(t.lang.pick("Configurações", "Settings"))
+            .size(16)
+            .color(t.ink),
+        section_title(t.lang.pick("Tema", "Theme"), t),
         row![
-            menu_theme_button(t, "Escuro", Theme::Dark, dark),
-            menu_theme_button(t, "Claro", Theme::Light, !dark),
+            menu_theme_button(t, t.lang.pick("Escuro", "Dark"), Theme::Dark, dark),
+            menu_theme_button(t, t.lang.pick("Claro", "Light"), Theme::Light, !dark),
         ]
         .spacing(4),
-        section_title("Leitor padrão", t),
+        section_title(t.lang.pick("Leitor padrão", "Default reader"), t),
         menu_item(
             t,
             "home",
-            "Definir como leitor padrão…",
+            t.lang
+                .pick("Definir como leitor padrão…", "Set as default reader…"),
             Message::SetDefaultReader,
             false,
         ),
@@ -1548,13 +1670,23 @@ fn settings_card(ready: &Tabs, t: Tokens) -> Element<'static, Message> {
     #[cfg(target_os = "macos")]
     {
         let label = match ready.permissions {
-            PermissionsState::Checking => "Downloads: verificando acesso…",
-            PermissionsState::Accessible => "Downloads: acesso liberado.",
-            PermissionsState::Denied => "Downloads: acesso negado.",
-            PermissionsState::Unavailable => "Downloads: acesso não disponível.",
+            PermissionsState::Checking => t.lang.pick(
+                "Downloads: verificando acesso…",
+                "Downloads: checking access…",
+            ),
+            PermissionsState::Accessible => t
+                .lang
+                .pick("Downloads: acesso liberado.", "Downloads: access granted."),
+            PermissionsState::Denied => t
+                .lang
+                .pick("Downloads: acesso negado.", "Downloads: access denied."),
+            PermissionsState::Unavailable => t.lang.pick(
+                "Downloads: acesso não disponível.",
+                "Downloads: access unavailable.",
+            ),
         };
         body =
-            body.push(section_title("Permissões", t))
+            body.push(section_title(t.lang.pick("Permissões", "Permissions"), t))
                 .push(text(label).size(13).color(
                     if ready.permissions == PermissionsState::Denied {
                         t.danger
@@ -1566,35 +1698,58 @@ fn settings_card(ready: &Tabs, t: Tokens) -> Element<'static, Message> {
             body = body.push(menu_item(
                 t,
                 "shield",
-                "Abrir Ajustes…",
+                t.lang.pick("Abrir Ajustes…", "Open Settings…"),
                 Message::OpenPrivacySettings,
                 false,
             ));
         }
     }
     body = body
-        .push(section_title("Idioma", t))
-        .push(menu_disabled(t, "Português (English em breve)"))
-        .push(section_title("Sobre", t))
+        .push(section_title(t.lang.pick("Idioma", "Language"), t))
         .push(
-            text(format!("Versão {}", env!("CARGO_PKG_VERSION")))
-                .size(13)
-                .color(t.muted),
+            row![
+                menu_lang_button(t, "Português", Lang::Pt, ready.lang == Lang::Pt),
+                menu_lang_button(t, "English", Lang::En, ready.lang == Lang::En),
+            ]
+            .spacing(4),
+        )
+        .push(section_title(t.lang.pick("Sobre", "About"), t))
+        .push(
+            text(format!(
+                "{} {}",
+                t.lang.pick("Versão", "Version"),
+                env!("CARGO_PKG_VERSION")
+            ))
+            .size(13)
+            .color(t.muted),
         );
     body = match &ready.update {
-        UpdateState::Checking => {
-            body.push(text("Verificando atualização…").size(12).color(t.muted))
-        }
-        UpdateState::Current => body.push(text("Você está atualizado.").size(12).color(t.muted)),
-        UpdateState::Available(tag) => body.push(
-            text(format!("Nova versão disponível: {tag}"))
+        UpdateState::Checking => body.push(
+            text(
+                t.lang
+                    .pick("Verificando atualização…", "Checking for updates…"),
+            )
+            .size(12)
+            .color(t.muted),
+        ),
+        UpdateState::Current => body.push(
+            text(t.lang.pick("Você está atualizado.", "You're up to date."))
                 .size(12)
-                .color(t.accent),
+                .color(t.muted),
+        ),
+        UpdateState::Available(tag) => body.push(
+            text(format!(
+                "{}: {tag}",
+                t.lang
+                    .pick("Nova versão disponível", "New version available")
+            ))
+            .size(12)
+            .color(t.accent),
         ),
         UpdateState::Idle | UpdateState::Failed => body,
     };
     body = body.push(
-        button(text("Fechar").size(13))
+        button(text(t.lang.pick("Fechar", "Close")).size(13))
             .padding(Padding::from([8, 12]))
             .style(kiri::menu_item_style(t))
             .on_press(Message::ToggleSettings),
@@ -1626,19 +1781,23 @@ fn close_prompt_layer(t: Tokens) -> Element<'static, Message> {
 fn close_prompt_card(t: Tokens) -> Element<'static, Message> {
     container(
         column![
-            text("Marcações não salvas").size(16),
-            text("Fechar descarta as marcações desta sessão.").size(13),
+            text(t.lang.pick("Marcações não salvas", "Unsaved marks")).size(16),
+            text(t.lang.pick(
+                "Fechar descarta as marcações desta sessão.",
+                "Closing discards this session's marks."
+            ))
+            .size(13),
             row![
                 Space::with_width(Length::Fill),
-                button(text("Cancelar").size(13))
+                button(text(t.lang.pick("Cancelar", "Cancel")).size(13))
                     .padding(Padding::from([8, 12]))
                     .style(kiri::hud_ghost_style(t))
                     .on_press(Message::CloseCancel),
-                button(text("Descartar").size(13))
+                button(text(t.lang.pick("Descartar", "Discard")).size(13))
                     .padding(Padding::from([8, 12]))
                     .style(kiri::hud_ghost_style(t))
                     .on_press(Message::CloseDiscard),
-                button(text("Salvar cópia").size(13))
+                button(text(t.lang.pick("Salvar cópia", "Save copy")).size(13))
                     .padding(Padding::from([8, 12]))
                     .style(kiri::hud_primary_style(t))
                     .on_press(Message::CloseSave),
@@ -1692,17 +1851,24 @@ fn palette_title(item: &PaletteItem) -> String {
 }
 
 fn palette_card(palette: &PaletteState, t: Tokens) -> Element<'_, Message> {
-    let query = text_input("Digite um comando…", palette.query())
-        .id(palette_input_id())
-        .on_input(Message::PaletteQuery)
-        .on_submit(Message::PaletteConfirm)
-        .style(kiri::bar_input_style(t))
-        .padding([8, 10])
-        .size(14)
-        .width(Length::Fill);
+    let query = text_input(
+        t.lang.pick("Digite um comando…", "Type a command…"),
+        palette.query(),
+    )
+    .id(palette_input_id())
+    .on_input(Message::PaletteQuery)
+    .on_submit(Message::PaletteConfirm)
+    .style(kiri::bar_input_style(t))
+    .padding([8, 10])
+    .size(14)
+    .width(Length::Fill);
     let mut rows = column![].spacing(2);
     if palette.items().is_empty() {
-        rows = rows.push(text("Nenhum resultado").size(13).color(t.muted));
+        rows = rows.push(
+            text(t.lang.pick("Nenhum resultado", "No results"))
+                .size(13)
+                .color(t.muted),
+        );
     } else {
         for (i, item) in palette.items().iter().enumerate() {
             let selected = Some(i) == palette.selected();
@@ -1753,15 +1919,19 @@ fn palette_card(palette: &PaletteState, t: Tokens) -> Element<'_, Message> {
 fn save_warning_card(t: Tokens) -> Element<'static, Message> {
     container(
         column![
-            text("Documento assinado").size(16),
-            text("Salvar marcações invalida a assinatura digital. Continuar?").size(13),
+            text(t.lang.pick("Documento assinado", "Signed document")).size(16),
+            text(t.lang.pick(
+                "Salvar marcações invalida a assinatura digital. Continuar?",
+                "Saving marks invalidates the digital signature. Continue?"
+            ))
+            .size(13),
             row![
                 Space::with_width(Length::Fill),
-                button(text("Voltar").size(13))
+                button(text(t.lang.pick("Voltar", "Back")).size(13))
                     .padding(Padding::from([8, 12]))
                     .style(kiri::hud_ghost_style(t))
                     .on_press(Message::SaveCopyCancelled),
-                button(text("Salvar mesmo assim").size(13))
+                button(text(t.lang.pick("Salvar mesmo assim", "Save anyway")).size(13))
                     .padding(Padding::from([8, 12]))
                     .style(kiri::hud_primary_style(t))
                     .on_press(Message::SaveCopyConfirmed),
@@ -1786,6 +1956,21 @@ fn menu_theme_button(
     control_active(
         t,
         button(text(label).size(13)).on_press(Message::SetTheme(theme)),
+        active,
+    )
+    .width(Length::Fill)
+    .into()
+}
+
+fn menu_lang_button(
+    t: Tokens,
+    label: &'static str,
+    lang: Lang,
+    active: bool,
+) -> Element<'static, Message> {
+    control_active(
+        t,
+        button(text(label).size(13)).on_press(Message::SetLang(lang)),
         active,
     )
     .width(Length::Fill)
@@ -1870,9 +2055,17 @@ impl Program<Message> for EmptyDash {
 fn empty_browser(empty: &EmptyState, tabs_open: bool, t: Tokens) -> Element<'_, Message> {
     let mut content = column![open_bar(tabs_open, t)].spacing(14);
 
-    content = content.push(home_section(t, "Recentes", Some(empty.recents.len())));
+    content = content.push(home_section(
+        t,
+        t.lang.pick("Recentes", "Recent"),
+        Some(empty.recents.len()),
+    ));
     if empty.recents.is_empty() {
-        content = content.push(text("Nenhum arquivo recente.").size(13).color(t.muted));
+        content = content.push(
+            text(t.lang.pick("Nenhum arquivo recente.", "No recent files."))
+                .size(13)
+                .color(t.muted),
+        );
     } else {
         content = content.push(home_grid(
             empty
@@ -1883,7 +2076,7 @@ fn empty_browser(empty: &EmptyState, tabs_open: bool, t: Tokens) -> Element<'_, 
     }
 
     // Pastas: título, caminho atual e voltar na mesma linha.
-    let mut folders_head = row![home_section(t, "Pastas", None)]
+    let mut folders_head = row![home_section(t, t.lang.pick("Pastas", "Folders"), None)]
         .spacing(10)
         .align_y(Alignment::Center);
     if let Some(parent) = empty.parent() {
@@ -1892,7 +2085,7 @@ fn empty_browser(empty: &EmptyState, tabs_open: bool, t: Tokens) -> Element<'_, 
                 t,
                 button(seg_icon("chevron-left")).on_press(Message::BrowseTo(parent)),
             ),
-            "Voltar",
+            t.lang.pick("Voltar", "Back"),
         ));
     }
     // Na raiz o título já diz tudo; dentro de uma pasta, o caminho (longo
@@ -1911,12 +2104,23 @@ fn empty_browser(empty: &EmptyState, tabs_open: bool, t: Tokens) -> Element<'_, 
     if let Some(err) = &empty.listing_error {
         content = content.push(text(err).size(13).color(t.muted));
     } else if empty.listing.is_empty() {
-        content = content.push(text("Nenhuma pasta ou PDF aqui.").size(13).color(t.muted));
+        content = content.push(
+            text(
+                t.lang
+                    .pick("Nenhuma pasta ou PDF aqui.", "No folders or PDFs here."),
+            )
+            .size(13)
+            .color(t.muted),
+        );
     } else if !folders.is_empty() {
         content = content.push(home_grid(folders.iter().map(|entry| folder_card(entry, t))));
     }
     if !pdfs.is_empty() {
-        content = content.push(home_section(t, "PDFs nesta pasta", Some(pdfs.len())));
+        content = content.push(home_section(
+            t,
+            t.lang.pick("PDFs nesta pasta", "PDFs in this folder"),
+            Some(pdfs.len()),
+        ));
         content = content
             .push(home_grid(pdfs.iter().map(|entry| {
                 file_card(&entry.path, empty.thumbs.get(&entry.path), t)
@@ -1968,18 +2172,22 @@ fn open_bar(tabs_open: bool, t: Tokens) -> Element<'static, Message> {
                 .style(kiri::logo_stage_style()),
                 column![
                     text(if tabs_open {
-                        "Abrir outro documento"
+                        t.lang
+                            .pick("Abrir outro documento", "Open another document")
                     } else {
-                        "Nenhum documento aberto"
+                        t.lang.pick("Nenhum documento aberto", "No document open")
                     })
                     .size(16),
-                    text("Arraste e solte um arquivo PDF aqui")
-                        .size(12)
-                        .color(t.muted),
+                    text(t.lang.pick(
+                        "Arraste e solte um arquivo PDF aqui",
+                        "Drag and drop a PDF file here"
+                    ))
+                    .size(12)
+                    .color(t.muted),
                 ]
                 .spacing(4),
                 Space::with_width(Length::Fill),
-                button(text("Abrir PDF").size(13))
+                button(text(t.lang.pick("Abrir PDF", "Open PDF")).size(13))
                     .padding(Padding::from([6, 14]))
                     .style(kiri::hud_primary_style(t))
                     .on_press(Message::PickFile),
@@ -2068,7 +2276,7 @@ fn folder_card<'a>(entry: &FsEntry, t: Tokens) -> Element<'a, Message> {
         preview.into(),
         kiri::ori!("folder"),
         entry.name.clone(),
-        "Pasta".into(),
+        t.lang.pick("Pasta", "Folder").into(),
         Message::BrowseTo(Some(entry.path.clone())),
     )
 }
@@ -2157,19 +2365,24 @@ fn ready_body(tabs: &Tabs, t: Tokens) -> Element<'_, Message> {
 }
 
 fn disk_stale_row(ready: &Ready, t: Tokens) -> Element<'static, Message> {
-    let mut row = row![text("O arquivo mudou no disco.").size(13).color(t.muted)]
-        .spacing(8)
-        .align_y(Alignment::Center);
+    let mut row = row![text(
+        t.lang
+            .pick("O arquivo mudou no disco.", "The file changed on disk.")
+    )
+    .size(13)
+    .color(t.muted)]
+    .spacing(8)
+    .align_y(Alignment::Center);
     if ready.marks_dirty() || ready.note_draft.is_some() {
         row = row.push(
-            button(text("Salvar cópia").size(13))
+            button(text(t.lang.pick("Salvar cópia", "Save copy")).size(13))
                 .padding(Padding::from([4, 10]))
                 .style(kiri::hud_ghost_style(t))
                 .on_press(Message::SaveCopyRequested),
         );
     }
     row.push(
-        button(text("Recarregar").size(13))
+        button(text(t.lang.pick("Recarregar", "Reload")).size(13))
             .padding(Padding::from([4, 10]))
             .style(kiri::hud_primary_style(t))
             .on_press(Message::ReloadDisk),
@@ -2208,9 +2421,9 @@ fn tab_strip(tabs: &Tabs, t: Tokens) -> Element<'_, Message> {
                     )
                     .padding(tab_pad),
                     if cfg!(target_os = "macos") {
-                        "Fechar aba (Cmd+W)"
+                        t.lang.pick("Fechar aba (Cmd+W)", "Close tab (Cmd+W)")
                     } else {
-                        "Fechar aba (Ctrl+W)"
+                        t.lang.pick("Fechar aba (Ctrl+W)", "Close tab (Ctrl+W)")
                     },
                 ),
             ]
@@ -2242,7 +2455,10 @@ fn short_name(path: &std::path::Path) -> String {
 /// Painel de navegação (Stitch sidebar): cabeçalho `Navegação`, abas segmentadas
 /// Miniaturas | Sumário e lista virtualizada (miniaturas ou sumário).
 fn pages_panel(ready: &Ready, t: Tokens) -> Element<'_, Message> {
-    let mut col = column![text("Navegação").size(13).color(t.ink)].spacing(8);
+    let mut col = column![text(t.lang.pick("Navegação", "Navigation"))
+        .size(13)
+        .color(t.ink)]
+    .spacing(8);
     if ready.outline.is_some() {
         col = col.push(panel_tabs(ready, t));
     }
@@ -2277,8 +2493,16 @@ fn panel_tabs(ready: &Ready, t: Tokens) -> Element<'_, Message> {
         .on_press(msg)
     };
     container(row![
-        seg("Páginas", !ready.outline_open, Message::OutlineTab(false)),
-        seg("Sumário", ready.outline_open, Message::OutlineTab(true)),
+        seg(
+            t.lang.pick("Páginas", "Pages"),
+            !ready.outline_open,
+            Message::OutlineTab(false)
+        ),
+        seg(
+            t.lang.pick("Sumário", "Outline"),
+            ready.outline_open,
+            Message::OutlineTab(true)
+        ),
     ])
     .padding(Padding::from(2))
     .style(kiri::panel_seg_track_style(t))
@@ -2382,7 +2606,7 @@ fn thumbs_tab(ready: &Ready, t: Tokens) -> Element<'_, Message> {
                         container(container(preview).style(kiri::panel_thumb_frame_style(t)),)
                             .padding(2)
                             .style(kiri::panel_thumb_style(t, active)),
-                        text(format!("Pág. {}", i + 1))
+                        text(format!("{} {}", t.lang.pick("Pág.", "Page"), i + 1))
                             .size(11)
                             .font(iced::Font::MONOSPACE)
                             .color(if active { t.accent } else { t.muted }),
@@ -2437,9 +2661,12 @@ fn single_pane(ready: &Ready, t: Tokens) -> Element<'_, Message> {
         // placeholder do contínuo) — sem salto de layout quando chega.
         None => {
             let msg = if ready.visible_render_failed() {
-                "Não foi possível renderizar esta página."
+                t.lang.pick(
+                    "Não foi possível renderizar esta página.",
+                    "Could not render this page.",
+                )
             } else {
-                "Renderizando página…"
+                t.lang.pick("Renderizando página…", "Rendering page…")
             };
             container(text(msg).size(13).color(t.muted))
                 .width(Length::Fixed(sw))
@@ -2535,12 +2762,16 @@ fn doc_cell(ready: &Ready, page: PageNo, t: Tokens) -> Element<'_, Message> {
         ),
         None => {
             let h = (ready.doc_cell_height(page, sw) - DOC_PAD_TOP - DOC_PAD_BOTTOM).max(1.0);
-            container(text("Renderizando página…").size(13).color(t.muted))
-                .width(Length::Fixed(sw))
-                .height(Length::Fixed(h))
-                .center_x(Length::Fixed(sw))
-                .align_y(Alignment::Center)
-                .into()
+            container(
+                text(t.lang.pick("Renderizando página…", "Rendering page…"))
+                    .size(13)
+                    .color(t.muted),
+            )
+            .width(Length::Fixed(sw))
+            .height(Length::Fixed(h))
+            .center_x(Length::Fixed(sw))
+            .align_y(Alignment::Center)
+            .into()
         }
     };
     container(
@@ -2966,12 +3197,15 @@ fn stroke_selected(frame: &mut Frame, rect: &Path) {
 }
 
 fn signatures_panel(ready: &Ready, t: Tokens) -> Element<'_, Message> {
-    let mut col = column![section_title("Assinaturas", t)].spacing(8);
+    let mut col = column![section_title(t.lang.pick("Assinaturas", "Signatures"), t)].spacing(8);
     if ready.signatures.signatures.is_empty() {
         col = col.push(
-            text("Nenhuma assinatura neste arquivo.")
-                .size(12)
-                .color(t.muted),
+            text(t.lang.pick(
+                "Nenhuma assinatura neste arquivo.",
+                "No signatures in this file.",
+            ))
+            .size(12)
+            .color(t.muted),
         );
     } else {
         for sig in &ready.signatures.signatures {
@@ -2982,7 +3216,7 @@ fn signatures_panel(ready: &Ready, t: Tokens) -> Element<'_, Message> {
                     .certificate
                     .as_ref()
                     .and_then(|c| c.common_name.as_deref()))
-                .unwrap_or("Assinante");
+                .unwrap_or(t.lang.pick("Assinante", "Signer"));
             // Mesmo veredito do escudo da toolbar (status_dot_color).
             let dot = kiri::status_dot_color(t, std::iter::once(sig.status)).unwrap_or(t.muted);
             col = col.push(
@@ -2991,7 +3225,7 @@ fn signatures_panel(ready: &Ready, t: Tokens) -> Element<'_, Message> {
                         row![status_dot(dot), text(name).size(13).color(t.ink),]
                             .spacing(8)
                             .align_y(Alignment::Center),
-                        text(status_label(sig.status)).size(12).color(t.ink),
+                        text(status_label(sig.status, t.lang)).size(12).color(t.ink),
                         text(&sig.status_detail).size(11).color(t.muted),
                     ]
                     .spacing(4),
@@ -3031,15 +3265,22 @@ fn status_dot(color: Color) -> Element<'static, Message> {
         .into()
 }
 
-fn status_label(status: SignatureStatus) -> &'static str {
+fn status_label(status: SignatureStatus, lang: Lang) -> &'static str {
     match status {
-        SignatureStatus::Valid => "Válida",
-        SignatureStatus::IntactButUntrusted => "Íntegra (sem confiança pública)",
-        SignatureStatus::DocumentModified => "Documento alterado",
-        SignatureStatus::Invalid => "Inválida",
-        SignatureStatus::Unsupported => "Não suportada",
-        SignatureStatus::CertificateExpired => "Certificado expirado",
-        SignatureStatus::CertificateNotYetValid => "Certificado ainda não válido",
+        SignatureStatus::Valid => lang.pick("Válida", "Valid"),
+        SignatureStatus::IntactButUntrusted => lang.pick(
+            "Íntegra (sem confiança pública)",
+            "Intact, not publicly trusted",
+        ),
+        SignatureStatus::DocumentModified => lang.pick("Documento alterado", "Document modified"),
+        SignatureStatus::Invalid => lang.pick("Inválida", "Invalid"),
+        SignatureStatus::Unsupported => lang.pick("Não suportada", "Unsupported"),
+        SignatureStatus::CertificateExpired => {
+            lang.pick("Certificado expirado", "Certificate expired")
+        }
+        SignatureStatus::CertificateNotYetValid => {
+            lang.pick("Certificado ainda não válido", "Certificate not yet valid")
+        }
     }
 }
 
@@ -3092,7 +3333,9 @@ fn opening(source: &OpenSource, phase: u16, t: Tokens) -> Element<'_, Message> {
     container(
         column![
             text(source_name(source)).size(16),
-            text("Abrindo…").size(13).color(t.muted),
+            text(t.lang.pick("Abrindo…", "Opening…"))
+                .size(13)
+                .color(t.muted),
             loading_bar(phase, t),
         ]
         .spacing(12)
@@ -3110,7 +3353,11 @@ fn opening(source: &OpenSource, phase: u16, t: Tokens) -> Element<'_, Message> {
 fn failed<'a>(source: &'a OpenSource, message: &'a str, t: Tokens) -> Element<'a, Message> {
     container(
         column![
-            text("Não foi possível abrir o documento").size(16),
+            text(t.lang.pick(
+                "Não foi possível abrir o documento",
+                "Could not open the document"
+            ))
+            .size(16),
             text(source_name(source)).size(13).color(t.muted),
             text(message).size(13).color(t.danger),
         ]
@@ -3127,6 +3374,7 @@ fn failed<'a>(source: &'a OpenSource, message: &'a str, t: Tokens) -> Element<'a
 #[cfg(test)]
 mod tests {
     use super::{outline_title, sweep_x, LOADING_BAR_W, LOADING_SEG_W, LOADING_STEPS};
+    use crate::i18n::Lang;
 
     #[test]
     fn opening_sweep_stays_inside_the_track() {
@@ -3231,17 +3479,35 @@ mod tests {
             glyphs: vec![Glyph::new("a a", Quad::from_rect(0.0, 0.0, 10.0, 10.0))],
         };
         let empty = Search::derive("", &[]);
-        assert_eq!(search_count_text(&empty, false), None);
-        assert_eq!(search_count_text(&empty, true), None);
+        assert_eq!(search_count_text(&empty, false, Lang::Pt), None);
+        assert_eq!(search_count_text(&empty, true, Lang::Pt), None);
         let none = Search::derive("zzz", &[Some(layer())]);
-        assert_eq!(search_count_text(&none, false).as_deref(), Some("0"));
-        assert_eq!(search_count_text(&none, true).as_deref(), Some("0…"));
+        assert_eq!(
+            search_count_text(&none, false, Lang::Pt).as_deref(),
+            Some("0")
+        );
+        assert_eq!(
+            search_count_text(&none, true, Lang::Pt).as_deref(),
+            Some("0…")
+        );
         let mut two = Search::derive("a", &[Some(layer())]);
-        assert_eq!(search_count_text(&two, false).as_deref(), Some("2"));
+        assert_eq!(
+            search_count_text(&two, false, Lang::Pt).as_deref(),
+            Some("2")
+        );
         two.step(1);
-        assert_eq!(search_count_text(&two, false).as_deref(), Some("1 de 2"));
-        assert_eq!(search_count_text(&two, true).as_deref(), Some("1 de 2…"));
+        assert_eq!(
+            search_count_text(&two, false, Lang::Pt).as_deref(),
+            Some("1 de 2")
+        );
+        assert_eq!(
+            search_count_text(&two, true, Lang::Pt).as_deref(),
+            Some("1 de 2…")
+        );
         two.step(1);
-        assert_eq!(search_count_text(&two, false).as_deref(), Some("2 de 2"));
+        assert_eq!(
+            search_count_text(&two, false, Lang::Pt).as_deref(),
+            Some("2 de 2")
+        );
     }
 }

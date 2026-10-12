@@ -9,6 +9,7 @@
 use std::cell::RefCell;
 use std::path::PathBuf;
 
+use crate::i18n::Lang;
 use crate::kiri::Theme;
 
 #[cfg(test)]
@@ -65,15 +66,6 @@ pub fn read_theme() -> Theme {
 
 pub fn save_theme(theme: Theme) -> std::io::Result<()> {
     write_prefs(theme, read_lang())
-}
-
-/// Idioma da interface (infra da #settings: persistido, sem troca de strings
-/// ainda — a migração dos textos é fase própria).
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
-pub enum Lang {
-    #[default]
-    Pt,
-    En,
 }
 
 pub fn read_lang() -> Lang {

@@ -15,10 +15,10 @@ fn denied_directory_has_actionable_error_and_recovers() {
     let original = std::fs::metadata(&path).unwrap().permissions();
     std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o000)).unwrap();
     let raw = std::fs::read_dir(&path).unwrap_err();
-    let result = tsuro::browse::list_dir(&path);
+    let result = tsuro::browse::list_dir(&path, tsuro::i18n::Lang::Pt);
     let accessible = tsuro::browse::dir_accessible(&path);
     std::fs::set_permissions(&path, original).unwrap();
-    let recovered = tsuro::browse::list_dir(&path);
+    let recovered = tsuro::browse::list_dir(&path, tsuro::i18n::Lang::Pt);
     std::fs::remove_dir(&path).unwrap();
     assert_eq!(raw.kind(), std::io::ErrorKind::PermissionDenied);
     let message = result.unwrap_err();
@@ -44,5 +44,8 @@ fn missing_directory_preserves_os_error() {
         .join("missing");
     let raw = std::fs::read_dir(&path).unwrap_err();
     assert_eq!(raw.kind(), std::io::ErrorKind::NotFound);
-    assert_eq!(tsuro::browse::list_dir(&path).unwrap_err(), raw.to_string());
+    assert_eq!(
+        tsuro::browse::list_dir(&path, tsuro::i18n::Lang::Pt).unwrap_err(),
+        raw.to_string()
+    );
 }
