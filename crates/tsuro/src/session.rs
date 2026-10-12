@@ -3213,8 +3213,8 @@ impl Session {
             }
             Message::UpdateInstalled(tag, result) => {
                 self.settings_mut().update = match result {
-                    Ok(bundle) => {
-                        update::arm_relaunch(bundle);
+                    Ok(ready) => {
+                        update::arm_relaunch(pending_update(ready));
                         UpdateState::Installed(tag)
                     }
                     Err(error) => UpdateState::InstallFailed(tag, error),
@@ -5074,6 +5074,22 @@ async fn install_update(tag: String) -> Result<PathBuf, UpdateError> {
     tokio::task::spawn_blocking(move || update::install_release(&tag))
         .await
         .unwrap_or(Err(UpdateError::Install))
+}
+
+/// O que fazer ao fechar a janela: no macOS abrir o `.app` novo; no Windows
+/// rodar o instalador validado e reabrir o `.exe` instalado depois.
+fn pending_update(ready: PathBuf) -> update::Pending {
+    #[cfg(target_os = "windows")]
+    {
+        update::Pending::Installer {
+            installer: ready,
+            exe: update::installed_exe_path().unwrap_or(ready),
+        }
+    }
+    #[cfg(not(target_os = "windows"))]
+    {
+        update::Pending::Bundle(ready)
+    }
 }
 
 /// Abre `url` no navegador padrão. Fire-and-forget, como os Ajustes do SO.

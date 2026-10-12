@@ -3411,10 +3411,10 @@ fn signatures_panel(ready: &Ready, t: Tokens) -> Element<'_, Message> {
         .into()
 }
 
-/// Ação da versão nova: instalar pelo app no macOS; nos demais, a página da
-/// release (o instalador do Windows ainda é manual).
+/// Ação da versão nova: instalar pelo app no macOS e no Windows; nos demais,
+/// a página da release.
 fn update_action(t: Tokens, tag: &str) -> Element<'static, Message> {
-    if cfg!(target_os = "macos") {
+    if cfg!(any(target_os = "macos", target_os = "windows")) {
         menu_item(
             t,
             "save",
