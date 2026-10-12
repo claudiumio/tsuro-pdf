@@ -217,13 +217,21 @@ pub(crate) fn quad_for_range(glyphs: &[Glyph], start: usize, end: usize) -> Quad
 /// entre linhas). Agrupa glifos vizinhos com sobreposição vertical; x que
 /// volta para trás abre nova linha (colunas). Texto não-horizontal degrada
 /// para um grupo só (equivale ao union antigo).
+/// Glifo em branco (espaço, quebra de linha) fica fora do agrupamento: o
+/// Pdfium o põe na baseline, abaixo do pé das letras, o que partiria a linha.
+/// A faixa cobre os espaços do meio e para na última letra marcada, como um
+/// marcador de verdade.
 /// ponytail: heurística LTR por bbox; segmentação por baseline se precisar.
-pub(crate) fn quads_for_range_by_line(glyphs: &[Glyph], start: usize, end: usize) -> Vec<Quad> {
+pub(crate) fn quads_for_range_by_line(layer: &TextLayer, range: TextRange) -> Vec<Quad> {
     let mut cursor = 0usize;
     let mut lines: Vec<(f32, f32, f32, f32)> = Vec::new();
-    for glyph in glyphs {
+    for glyph in &layer.glyphs {
         let next = cursor + glyph.byte_len();
-        if cursor < end && next > start {
+        let blank = layer
+            .plain
+            .get(cursor..next)
+            .is_some_and(|s| s.trim().is_empty());
+        if cursor < range.end && next > range.start && !blank {
             let (x0, y0, x1, y1) = quad_bbox(glyph.quad());
             let merge = match lines.last() {
                 Some(last) => y0 <= last.3 && y1 >= last.1 && x0 >= last.0,
@@ -240,7 +248,7 @@ pub(crate) fn quads_for_range_by_line(glyphs: &[Glyph], start: usize, end: usize
             }
         }
         cursor = next;
-        if cursor >= end {
+        if cursor >= range.end {
             break;
         }
     }
@@ -5443,7 +5451,7 @@ impl Ready {
             .and_then(|l| l.as_ref())
         {
             Some(layer) if !layer.slice(sel.range).trim().is_empty() => {
-                quads_for_range_by_line(&layer.glyphs, sel.range.start, sel.range.end)
+                quads_for_range_by_line(layer, sel.range)
             }
             _ => return false,
         };
@@ -5486,7 +5494,7 @@ impl Ready {
             .and_then(|l| l.as_ref())
         {
             Some(layer) if !layer.slice(sel.range).trim().is_empty() => {
-                quads_for_range_by_line(&layer.glyphs, sel.range.start, sel.range.end)
+                quads_for_range_by_line(layer, sel.range)
             }
             _ => return false,
         };
@@ -5875,7 +5883,7 @@ impl Ready {
         if layer.slice(sel.range).trim().is_empty() {
             return None;
         }
-        let quads = quads_for_range_by_line(&layer.glyphs, sel.range.start, sel.range.end);
+        let quads = quads_for_range_by_line(layer, sel.range);
         if quads.is_empty() {
             return None;
         }
@@ -10384,22 +10392,56 @@ mod tests {
         Glyph::new(cluster, Quad::from_rect(x0, y0, x1, y1))
     }
 
+    /// Camada de texto de uma página a partir de `(cluster, [l, b, r, t])`.
+    fn layer_of(glyphs: &[(&str, [f32; 4])]) -> TextLayer {
+        TextLayer {
+            page: PageNo::first(),
+            plain: glyphs.iter().map(|(c, _)| *c).collect(),
+            glyphs: glyphs
+                .iter()
+                .map(|(c, [l, b, r, t])| glyph_at(c, *l, *b, *r, *t))
+                .collect(),
+        }
+    }
+
+    fn range(start: usize, end: usize) -> TextRange {
+        TextRange { start, end }
+    }
+
     #[test]
     fn quads_by_line_split_lines_and_columns() {
         // Duas linhas + segunda coluna na mesma faixa: 3 retângulos, sem vão.
-        let glyphs = vec![
-            glyph_at("a", 0.0, 0.0, 10.0, 10.0),
-            glyph_at("b", 10.0, 0.0, 20.0, 10.0),
-            glyph_at("c", 0.0, 20.0, 10.0, 30.0),
-            glyph_at("d", -20.0, 20.0, -10.0, 30.0),
-        ];
-        let quads = quads_for_range_by_line(&glyphs, 0, 4);
+        let layer = layer_of(&[
+            ("a", [0.0, 0.0, 10.0, 10.0]),
+            ("b", [10.0, 0.0, 20.0, 10.0]),
+            ("c", [0.0, 20.0, 10.0, 30.0]),
+            ("d", [-20.0, 20.0, -10.0, 30.0]),
+        ]);
+        let quads = quads_for_range_by_line(&layer, range(0, 4));
         assert_eq!(quads.len(), 3);
         // Linha 1 cobre só a primeira faixa (sem vazar para a de baixo).
         let top = quad_bbox(quads[0]);
         assert_eq!((top.0, top.1, top.2, top.3), (0.0, 0.0, 20.0, 10.0));
         // Range vazio: nada.
-        assert!(quads_for_range_by_line(&glyphs, 4, 4).is_empty());
+        assert!(quads_for_range_by_line(&layer, range(4, 4)).is_empty());
+    }
+
+    #[test]
+    fn quads_by_line_cover_inner_spaces_and_stop_at_last_letter() {
+        // Como no Pdfium: espaço quase sem altura (ruído de 0,02pt) na
+        // baseline, abaixo do pé das letras.
+        let layer = layer_of(&[
+            (" ", [-4.0, 0.0, 0.0, 0.02]),
+            ("a", [0.0, 0.2, 10.0, 10.0]),
+            (" ", [10.0, 0.0, 14.0, 0.02]),
+            ("b", [14.0, 0.2, 24.0, 10.0]),
+            (" ", [24.0, 0.0, 28.0, 0.02]),
+        ]);
+        let quads = quads_for_range_by_line(&layer, range(0, 5));
+        assert_eq!(quads.len(), 1, "uma faixa contínua por linha: {quads:?}");
+        assert_eq!(quad_bbox(quads[0]), (0.0, 0.2, 24.0, 10.0));
+        // Só espaços selecionados: nada a pintar.
+        assert!(quads_for_range_by_line(&layer, range(2, 3)).is_empty());
     }
 
     #[test]

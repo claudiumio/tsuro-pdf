@@ -882,6 +882,10 @@ fn mark_error(e: PdfiumError) -> EngineError {
 
 /// Um ponto de anexo por `Quad` da sessão, na ordem — um retângulo por linha
 /// marcada, como na tela.
+///
+/// O `Quad` é anti-horário a partir do canto inferior esquerdo, mas Pdfium e
+/// Acrobat leem `/QuadPoints` em "Z" (sup-esq, sup-dir, inf-esq, inf-dir);
+/// gravado na ordem do `Quad`, o destaque colapsa numa lasca sem área.
 fn append_attachment_points(
     points: &mut PdfPageAnnotationAttachmentPoints<'_>,
     quads: &[Quad],
@@ -889,7 +893,7 @@ fn append_attachment_points(
     for quad in quads {
         points
             .create_attachment_point_at_end(PdfQuadPoints::new_from_values(
-                quad.x0, quad.y0, quad.x1, quad.y1, quad.x2, quad.y2, quad.x3, quad.y3,
+                quad.x3, quad.y3, quad.x2, quad.y2, quad.x0, quad.y0, quad.x1, quad.y1,
             ))
             .map_err(mark_error)?;
     }
@@ -1381,6 +1385,97 @@ mod tests {
         let (left, _, _, top) = quad_bounds(&first);
         assert!((note.bounds.0 - left).abs() < 0.05);
         assert!((note.bounds.3 - top).abs() < 0.05);
+    }
+
+    /// O `/Highlight` salvo pinta a linha marcada como um marcador: faixa
+    /// contínua, espaços entre as palavras inclusive, que para na última letra
+    /// (não no espaço selecionado depois dela), com a tinta escura por baixo.
+    #[test]
+    fn save_copy_highlight_paints_line_band_under_ink() {
+        let Some(bytes) = sample_pdf_bytes() else {
+            return;
+        };
+        let Ok(engine) = PdfiumEngine::open(bytes) else {
+            return;
+        };
+        let page = PageNo::first();
+        let (_, text) = engine.page_data(page).expect("page data");
+        let phrase = "leitor de PDF ";
+        let Some(start) = text.plain.find(phrase) else {
+            return;
+        };
+        let range = TextRange {
+            start,
+            end: start + phrase.len(),
+        };
+        let quads = crate::session::quads_for_range_by_line(&text, range);
+        assert_eq!(quads.len(), 1, "uma faixa por linha: {quads:?}");
+        let quad = quads[0];
+        let last_letter_end = start + phrase.trim_end().len();
+        let mut cursor = 0;
+        let last_letter = text
+            .glyphs
+            .iter()
+            .find(|g| {
+                cursor += g.byte_len();
+                cursor == last_letter_end
+            })
+            .expect("glifo da última letra");
+        assert!(
+            (quad_bounds(&quad).2 - quad_bounds(&last_letter.quad()).2).abs() < 0.01,
+            "faixa passa da última letra: {quad:?}"
+        );
+        let annotations = vec![Annotation {
+            id: 1,
+            page,
+            range,
+            quads,
+            kind: AnnotKind::Highlight,
+            text: String::new(),
+            marker: None,
+        }];
+        let factor = 3.0;
+        let scale = Scale::from_factor(factor);
+        let before = engine.render(page, scale, 0).expect("render original");
+        let saved = engine.save_copy(&annotations).expect("cópia marcada");
+        engine.close();
+        drop(engine);
+        let reopened = PdfiumEngine::open(Arc::from(saved)).expect("reabrir a cópia");
+        let after = reopened.render(page, scale, 0).expect("render da cópia");
+
+        let (left, bottom, right, top) = quad_bounds(&quad);
+        let page_h = before.bitmap.height as f32 / factor;
+        let xs = (left * factor).ceil() as u32 + 1..(right * factor).floor() as u32 - 1;
+        let ys = ((page_h - top) * factor).ceil() as u32 + 1
+            ..((page_h - bottom) * factor).floor() as u32 - 1;
+        let width = before.bitmap.width;
+        let at = |rgba: &[u8], x: u32, y: u32| {
+            let i = ((y * width + x) * 4) as usize;
+            [rgba[i], rgba[i + 1], rgba[i + 2]]
+        };
+        let (mut total, mut painted) = (0u32, 0u32);
+        let (mut ink_before, mut ink_after) = (u8::MAX, u8::MAX);
+        for y in ys {
+            for x in xs.clone() {
+                let b = at(&before.bitmap.rgba, x, y);
+                let a = at(&after.bitmap.rgba, x, y);
+                total += 1;
+                if (a[2] as i16) < b[2] as i16 - 40 {
+                    painted += 1;
+                }
+                ink_before = ink_before.min(b[0]);
+                ink_after = ink_after.min(a[0]);
+            }
+        }
+        assert!(total > 0, "faixa marcada vazia");
+        assert!(
+            painted * 10 >= total * 9,
+            "amarelo cobre só {painted}/{total} px da faixa marcada"
+        );
+        assert!(
+            ink_after <= ink_before.saturating_add(30),
+            "tinta coberta: vermelho mínimo {ink_before} → {ink_after}"
+        );
     }
 
     #[test]
