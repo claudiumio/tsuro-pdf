@@ -315,6 +315,27 @@ pub fn menu_style(tokens: Tokens) -> impl Fn(&iced::Theme) -> container::Style {
     }
 }
 
+/// Dica (tooltip) de ícone/botão: fundo `elevated`, borda `line`, raio 6,
+/// sombra leve — mesmo vocabulário do `menu_style`, para o rótulo não boiar
+/// solto sobre o conteúdo em nenhum tema. `text_color` sempre `ink` (não o
+/// padrão do iced), senão o contraste falha no tema claro.
+pub fn tooltip_style(tokens: Tokens) -> impl Fn(&iced::Theme) -> container::Style {
+    move |_| container::Style {
+        background: Some(Background::Color(tokens.elevated)),
+        border: Border {
+            color: tokens.line,
+            width: 1.0,
+            radius: 6.0.into(),
+        },
+        shadow: Shadow {
+            color: Color::from_rgba(0.0, 0.0, 0.0, if tokens.is_dark { 0.35 } else { 0.12 }),
+            offset: Vector::new(0.0, 4.0),
+            blur_radius: 12.0,
+        },
+        text_color: Some(tokens.ink),
+    }
+}
+
 /// Item do menu ⋯: texto à esquerda, fundo só no hover.
 pub fn menu_item_style(tokens: Tokens) -> impl Fn(&iced::Theme, button::Status) -> button::Style {
     move |_theme, status| {

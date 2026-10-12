@@ -192,6 +192,7 @@ fn hud_icon(
     message: Message,
 ) -> Element<'static, Message> {
     tip(
+        t,
         control_seg(t, button(seg_icon(file))).on_press(message),
         label,
     )
@@ -340,13 +341,41 @@ fn control_seg(
         .style(control_style(t, false))
 }
 
-fn tip<'a>(content: impl Into<Element<'a, Message>>, label: &'static str) -> Element<'a, Message> {
-    tooltip::Tooltip::new(content, text(label).size(13), tooltip::Position::Bottom).into()
+/// Dica (tooltip) de ícone/botão: fundo `kiri::tooltip_style`, para o rótulo
+/// não boiar solto sobre o conteúdo (issue reportada nos dois temas).
+/// `snap_within_viewport` já é `true` por padrão no `Tooltip` do iced 0.13 —
+/// a pílula do HUD, perto do rodapé, não é cortada pela borda da janela.
+fn tip<'a>(
+    t: Tokens,
+    content: impl Into<Element<'a, Message>>,
+    label: &'static str,
+) -> Element<'a, Message> {
+    tooltip::Tooltip::new(
+        content,
+        container(text(label).size(13))
+            .padding(Padding::from([4, 8]))
+            .style(kiri::tooltip_style(t)),
+        tooltip::Position::Bottom,
+    )
+    .gap(6)
+    .into()
 }
 
-/// Dica com texto dinâmico (nome/caminho do documento): mesma posição da `tip`.
-fn tip_owned<'a>(content: impl Into<Element<'a, Message>>, label: String) -> Element<'a, Message> {
-    tooltip::Tooltip::new(content, text(label).size(13), tooltip::Position::Bottom).into()
+/// Dica com texto dinâmico (nome/caminho do documento): mesmo estilo da `tip`.
+fn tip_owned<'a>(
+    t: Tokens,
+    content: impl Into<Element<'a, Message>>,
+    label: String,
+) -> Element<'a, Message> {
+    tooltip::Tooltip::new(
+        content,
+        container(text(label).size(13))
+            .padding(Padding::from([4, 8]))
+            .style(kiri::tooltip_style(t)),
+        tooltip::Position::Bottom,
+    )
+    .gap(6)
+    .into()
 }
 
 /// Texto da dica de identidade: nome inteiro + caminho (abas e pílula).
@@ -360,6 +389,7 @@ fn identity_tip(path: &std::path::Path) -> String {
 
 fn open_button(t: Tokens) -> Element<'static, Message> {
     tip(
+        t,
         bar_button(t, "folder", false).on_press(Message::PickFile),
         t.lang.pick("Abrir PDF", "Open PDF"),
     )
@@ -369,6 +399,7 @@ fn open_button(t: Tokens) -> Element<'static, Message> {
 /// carregando/erro não têm aba a preservar e fecham (`Close`).
 fn home_button(t: Tokens, message: Message) -> Element<'static, Message> {
     tip(
+        t,
         bar_button(t, "home", false).on_press(message),
         t.lang.pick("Início", "Home"),
     )
@@ -404,6 +435,7 @@ fn update_badge(t: Tokens, update: &UpdateState) -> Option<Element<'static, Mess
 
 fn settings_button(t: Tokens, open: bool) -> Element<'static, Message> {
     tip(
+        t,
         bar_button(t, "settings", open).on_press(Message::ToggleSettings),
         t.lang.pick("Configurações", "Settings"),
     )
@@ -471,6 +503,7 @@ fn search_nav<'a>(ready: &'a Ready, t: Tokens) -> Element<'a, Message> {
     }
     if !ready.search.hits().is_empty() {
         nav = nav.push(tip(
+            t,
             control_seg(
                 t,
                 button(seg_icon("chevron-left")).on_press(Message::SearchPrev),
@@ -479,6 +512,7 @@ fn search_nav<'a>(ready: &'a Ready, t: Tokens) -> Element<'a, Message> {
                 .pick("Anterior (Shift+Enter)", "Previous (Shift+Enter)"),
         ));
         nav = nav.push(tip(
+            t,
             control_seg(
                 t,
                 button(seg_icon("chevron-right")).on_press(Message::SearchNext),
@@ -517,6 +551,7 @@ fn topbar(session: &Session, t: Tokens) -> Element<'_, Message> {
             );
         }
         let doc_pill = tip_owned(
+            t,
             container(doc_row.push(text(middle_truncate(&name, 24)).size(13).color(t.ink)))
                 .padding(Padding {
                     top: 4.0,
@@ -530,6 +565,7 @@ fn topbar(session: &Session, t: Tokens) -> Element<'_, Message> {
         let pill = container(
             row![
                 tip(
+                    t,
                     kiri::ori_small!("search"),
                     if cfg!(target_os = "macos") {
                         t.lang
@@ -554,6 +590,7 @@ fn topbar(session: &Session, t: Tokens) -> Element<'_, Message> {
                 kiri::vsep(t),
                 row![
                     tip(
+                        t,
                         text_input(t.lang.pick("Página", "Page"), ready.page_input())
                             .id(page_input_id())
                             .on_input(Message::PageInput)
@@ -578,6 +615,7 @@ fn topbar(session: &Session, t: Tokens) -> Element<'_, Message> {
                 container(
                     row![
                         tip(
+                            t,
                             control_seg(
                                 t,
                                 button(seg_icon("chevron-left"))
@@ -586,6 +624,7 @@ fn topbar(session: &Session, t: Tokens) -> Element<'_, Message> {
                             t.lang.pick("Página anterior", "Previous page")
                         ),
                         tip(
+                            t,
                             control_seg(
                                 t,
                                 button(seg_icon("chevron-right"))
@@ -618,10 +657,12 @@ fn topbar(session: &Session, t: Tokens) -> Element<'_, Message> {
         let zoom_seg = container(
             row![
                 tip(
+                    t,
                     control_seg(t, button(seg_icon("minus")).on_press(Message::SetZoom(out))),
                     t.lang.pick("Diminuir zoom (-)", "Zoom out (-)")
                 ),
                 tip(
+                    t,
                     container(
                         text(format!("{}%", (current * 100.0).round() as i32))
                             .size(12)
@@ -632,10 +673,12 @@ fn topbar(session: &Session, t: Tokens) -> Element<'_, Message> {
                     t.lang.pick("Zoom atual", "Current zoom"),
                 ),
                 tip(
+                    t,
                     control_seg(t, button(seg_icon("plus")).on_press(Message::SetZoom(into))),
                     t.lang.pick("Aumentar zoom (+)", "Zoom in (+)")
                 ),
                 tip(
+                    t,
                     control_seg(
                         t,
                         button(seg_icon("fit-width")).on_press(Message::SetZoom(Zoom::Width))
@@ -655,6 +698,7 @@ fn topbar(session: &Session, t: Tokens) -> Element<'_, Message> {
         let dot = kiri::status_dot_color(t, ready.signatures.signatures.iter().map(|s| s.status));
         let shield_el: Element<'_, Message> = match dot {
             Some(dot) => tip(
+                t,
                 stack![
                     shield,
                     container(
@@ -684,10 +728,11 @@ fn topbar(session: &Session, t: Tokens) -> Element<'_, Message> {
                 ],
                 t.lang.pick("Assinaturas", "Signatures"),
             ),
-            None => tip(shield, t.lang.pick("Assinaturas", "Signatures")),
+            None => tip(t, shield, t.lang.pick("Assinaturas", "Signatures")),
         };
         let mut right = row![
             tip(
+                t,
                 bar_button(t, "pages", ready.pages_open).on_press(Message::TogglePages),
                 t.lang.pick("Páginas", "Pages")
             ),
@@ -699,6 +744,7 @@ fn topbar(session: &Session, t: Tokens) -> Element<'_, Message> {
             right = right.push(badge);
         }
         right = right.push(tip(
+            t,
             bar_button(t, "more", ready.overflow_open).on_press(Message::ToggleOverflow),
             t.lang.pick("Mais opções", "More options"),
         ));
@@ -736,6 +782,7 @@ fn topbar(session: &Session, t: Tokens) -> Element<'_, Message> {
             let mark_seg = container(
                 row![
                     tip(
+                        t,
                         control_seg(
                             t,
                             button(tool(
@@ -748,6 +795,7 @@ fn topbar(session: &Session, t: Tokens) -> Element<'_, Message> {
                         t.lang.pick("Destacar (H)", "Highlight (H)")
                     ),
                     tip(
+                        t,
                         control_seg(
                             t,
                             button(tool(
@@ -760,6 +808,7 @@ fn topbar(session: &Session, t: Tokens) -> Element<'_, Message> {
                         t.lang.pick("Sublinhar (U)", "Underline (U)")
                     ),
                     tip(
+                        t,
                         control_seg(
                             t,
                             button(tool(
@@ -772,6 +821,7 @@ fn topbar(session: &Session, t: Tokens) -> Element<'_, Message> {
                         t.lang.pick("Riscar (S)", "Strikeout (S)")
                     ),
                     tip(
+                        t,
                         control_seg(
                             t,
                             button(tool(seg_icon("note"), t.lang.pick("Nota", "Note"), "N"))
@@ -1427,6 +1477,7 @@ fn selection_bar_layer(ready: &Ready, t: Tokens) -> Element<'_, Message> {
     };
     let seg = |icon: Element<'static, Message>, label: &'static str, kind| {
         tip(
+            t,
             control_seg(t, button(icon).on_press(Message::Annotate(kind))),
             label,
         )
@@ -2174,6 +2225,7 @@ fn empty_browser(empty: &EmptyState, tabs_open: bool, t: Tokens) -> Element<'_, 
     .align_y(Alignment::Center);
     if let Some(parent) = empty.parent() {
         folders_head = folders_head.push(tip(
+            t,
             control_seg(
                 t,
                 button(seg_icon("chevron-left")).on_press(Message::BrowseTo(parent)),
@@ -2431,6 +2483,7 @@ fn home_card<'a>(
     .align_y(Alignment::Center)
     .padding(Padding::from([8, 4]));
     tip_owned(
+        t,
         button(column![preview, footer])
             .width(Length::Fixed(HOME_CARD_W))
             .padding(6)
@@ -2519,6 +2572,7 @@ fn tab_strip(tabs: &Tabs, t: Tokens) -> Element<'_, Message> {
         let label = short_name(doc.source.path());
         let active = tabs.home().is_none() && index == tabs.active_index();
         let name = tip_owned(
+            t,
             button(text(label).size(13))
                 .padding(Padding::from([4, 10]))
                 .style(kiri::ibtn_style(t, false))
@@ -2526,6 +2580,7 @@ fn tab_strip(tabs: &Tabs, t: Tokens) -> Element<'_, Message> {
             identity_tip(doc.source.path()),
         );
         let close = tip(
+            t,
             button(text("×").size(14).color(t.muted))
                 .padding(Padding::from([4, 8]))
                 .style(kiri::ibtn_style(t, false))
