@@ -3130,18 +3130,16 @@ impl Session {
                 Task::none()
             }
             Message::ToggleAbout => {
-                let opened = match self {
-                    Session::Ready(ready) => {
-                        ready.about_open = !ready.about_open;
-                        if ready.about_open {
-                            ready.overflow_open = false;
-                        }
-                        ready.about_open
+                let opened = match self.about_open_mut() {
+                    Some(about) => {
+                        *about = !*about;
+                        *about
                     }
-                    _ => false,
+                    None => false,
                 };
                 // Sobre abre por cima: o ⋯ e o Configurações fecham junto.
                 if opened {
+                    self.close_overflow();
                     self.settings_mut().open = false;
                 }
                 Task::none()
@@ -3149,10 +3147,10 @@ impl Session {
             Message::ToggleSettings => {
                 let tasks = self.settings_mut().toggle();
                 if self.settings().open {
-                    if let Session::Ready(ready) = self {
-                        ready.about_open = false;
-                        ready.overflow_open = false;
+                    if let Some(about) = self.about_open_mut() {
+                        *about = false;
                     }
+                    self.close_overflow();
                 }
                 tasks
             }
@@ -3192,10 +3190,10 @@ impl Session {
                 // caminho honesto é a tela do SO — no macOS via o Sobre.
                 #[cfg(not(target_os = "windows"))]
                 {
-                    if let Session::Ready(ready) = self {
-                        ready.about_open = true;
-                        ready.overflow_open = false;
+                    if let Some(about) = self.about_open_mut() {
+                        *about = true;
                     }
+                    self.close_overflow();
                     self.settings_mut().open = false;
                 }
                 Task::none()
@@ -3316,6 +3314,9 @@ impl Session {
                 // Esc segue o cascade.
                 if self.shown_palette().is_some() {
                     return self.palette_close();
+                }
+                if let Session::Empty(home) = self {
+                    home.about_open = false;
                 }
                 if let Session::Ready(ready) = self {
                     if ready.close_ask.is_some() {
@@ -4331,6 +4332,15 @@ impl Session {
             Session::Empty(empty) => &mut empty.settings,
             Session::Loading { settings, .. } | Session::Failed { settings, .. } => settings,
             Session::Ready(tabs) => &mut tabs.settings,
+        }
+    }
+
+    /// Cartão Sobre da tela: o do Início vazio ou o da aba ativa.
+    fn about_open_mut(&mut self) -> Option<&mut bool> {
+        match self {
+            Session::Empty(empty) => Some(&mut empty.about_open),
+            Session::Ready(tabs) => Some(&mut tabs.about_open),
+            Session::Loading { .. } | Session::Failed { .. } => None,
         }
     }
 
@@ -8520,6 +8530,78 @@ mod tests {
             }
             _ => unreachable!(),
         }
+    }
+
+    #[test]
+    fn toggle_settings_on_home_opens_checks_and_esc_closes() {
+        let mut session = Session::empty();
+        apply(&mut session, Message::ToggleSettings);
+        assert!(session.settings().open);
+        assert_eq!(session.settings().update, UpdateState::Checking);
+        apply(&mut session, Message::ClosePrintDialog);
+        assert!(!session.settings().open);
+    }
+
+    #[test]
+    fn toggle_settings_on_home_over_tabs_uses_tabs_settings() {
+        let ready = sample_ready().expect("settings regression requires fixture and Pdfium");
+        let mut session = Session::Ready(Tabs::single(ready));
+        apply(&mut session, Message::GoHome);
+        apply(&mut session, Message::ToggleSettings);
+        let Session::Ready(tabs) = &session else {
+            panic!("home over tabs keeps the tabs");
+        };
+        assert!(tabs.settings.open);
+        assert_eq!(tabs.settings.update, UpdateState::Checking);
+        assert!(
+            !tabs.home().expect("home stays open").settings.open,
+            "a cópia do Início não é tocada"
+        );
+        apply(&mut session, Message::ClosePrintDialog);
+        let Session::Ready(tabs) = &session else {
+            panic!("escape keeps the tabs");
+        };
+        assert!(!tabs.settings.open);
+        assert!(
+            tabs.home().is_some(),
+            "Esc fecha Configurações, não o Início"
+        );
+    }
+
+    #[cfg(not(target_os = "windows"))]
+    #[test]
+    fn set_default_reader_on_home_opens_about_and_closes_settings() {
+        let mut session = Session::empty();
+        apply(&mut session, Message::ToggleSettings);
+        apply(&mut session, Message::SetDefaultReader);
+        assert!(!session.settings().open);
+        assert!(matches!(&session, Session::Empty(home) if home.about_open));
+        apply(&mut session, Message::ClosePrintDialog);
+        assert!(matches!(&session, Session::Empty(home) if !home.about_open));
+    }
+
+    #[test]
+    fn settings_check_carries_from_home_into_opened_document() {
+        isolated(|| {
+            let mut session = Session::empty();
+            apply(&mut session, Message::ToggleSettings);
+            apply(&mut session, Message::UpdateChecked(Ok("v0.4.0".into())));
+            apply(&mut session, Message::ClosePrintDialog);
+            let _ = session.begin_open(OpenSource::Path(sample_pdf()));
+            assert!(matches!(&session, Session::Loading { .. }));
+            assert_eq!(
+                session.settings().update,
+                UpdateState::Current,
+                "abrir um PDF não refaz a checagem"
+            );
+            let ready = sample_ready().expect("settings regression requires fixture and Pdfium");
+            session.finish_open(Ok(ready));
+            let Session::Ready(tabs) = &session else {
+                panic!("opened document must become the tab");
+            };
+            assert_eq!(tabs.settings.update, UpdateState::Current);
+            assert!(!tabs.settings.open);
+        });
     }
 
     #[cfg(target_os = "macos")]

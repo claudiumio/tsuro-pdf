@@ -114,11 +114,13 @@ pub fn chrome(session: &Session, theme: Theme, lang: Lang) -> Element<'_, Messag
     })
     .into();
     let empty = || -> Element<'_, Message> { Space::new(Length::Shrink, Length::Shrink).into() };
-    // Tela vazia: `stack![janela, paleta]` sempre, pelo mesmo motivo abaixo
+    // Tela vazia: `stack![janela, camada]` sempre, pelo mesmo motivo abaixo
     // (abrir a paleta não pode zerar a rolagem da grade).
     if let Session::Empty(home) = session {
         let overlay = match home.palette.as_ref() {
             Some(palette) => palette_layer(palette, t),
+            None if home.about_open => about_layer(t),
+            None if session.settings().open => settings_layer(session.settings(), t),
             None => empty(),
         };
         return stack![main, overlay].into();
@@ -375,6 +377,13 @@ fn home_button(t: Tokens, message: Message) -> Element<'static, Message> {
     tip(
         bar_button(t, "home", false).on_press(message),
         t.lang.pick("Início", "Home"),
+    )
+}
+
+fn settings_button(t: Tokens, open: bool) -> Element<'static, Message> {
+    tip(
+        bar_button(t, "settings", open).on_press(Message::ToggleSettings),
+        t.lang.pick("Configurações", "Settings"),
     )
 }
 
@@ -765,6 +774,10 @@ fn topbar(session: &Session, t: Tokens) -> Element<'_, Message> {
         items.push(home_button(t, Message::Close));
     }
     items.push(open_button(t));
+    if matches!(session, Session::Empty(_) | Session::Ready(_)) {
+        items.push(Space::with_width(Length::Fill).into());
+        items.push(settings_button(t, session.settings().open));
+    }
     toolbar_frame(t, row(items).spacing(4).align_y(Alignment::Center).into())
 }
 

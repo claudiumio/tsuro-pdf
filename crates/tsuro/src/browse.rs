@@ -50,6 +50,9 @@ pub struct EmptyState {
     /// Configurações da janela sem documento. No Início por cima das abas
     /// vale o `Tabs::settings`; esta cópia fica no padrão e não é lida.
     pub settings: SettingsPanel,
+    /// Sobre do Início vazio (leitor padrão). Por cima das abas vale o
+    /// `Ready::about_open` da aba ativa.
+    pub about_open: bool,
 }
 
 /// Prévia do topo da 1ª página de um cartão do Início.
