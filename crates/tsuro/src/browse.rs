@@ -7,7 +7,7 @@ use iced::widget::image;
 
 use crate::i18n::Lang;
 use crate::kiri::Theme;
-use crate::session::PaletteState;
+use crate::session::{PaletteState, SettingsPanel};
 
 pub const RECENTS_CAP: usize = 12;
 
@@ -47,6 +47,9 @@ pub struct EmptyState {
     /// Paleta (Ctrl+K) do Início: abrir, recentes, PDFs da pasta e texto das
     /// abas abertas — sem as ações do documento, que está escondido.
     pub(crate) palette: Option<PaletteState>,
+    /// Configurações da janela sem documento. No Início por cima das abas
+    /// vale o `Tabs::settings`; esta cópia fica no padrão e não é lida.
+    pub settings: SettingsPanel,
 }
 
 /// Prévia do topo da 1ª página de um cartão do Início.

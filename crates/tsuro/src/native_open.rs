@@ -342,6 +342,7 @@ mod tests {
             theme: tsuro::kiri::Theme::Dark,
             lang: tsuro::i18n::Lang::Pt,
             render_scale: 1.0,
+            settings: Default::default(),
         };
         assert!(!desktop.session.is_opening());
         let _ = desktop.update(Message::Session(SessionMessage::LoadingTick));

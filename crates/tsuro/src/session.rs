@@ -1131,6 +1131,8 @@ pub enum Session {
         /// Tique da barra indeterminada de abertura (issue #41): só conta,
         /// não mede — o ciclo é fechado na view (`view::LOADING_STEPS`).
         phase: u16,
+        /// Fechado aqui; guardado até a aba abrir.
+        settings: SettingsPanel,
     },
     Ready(Tabs),
     Failed {
@@ -1142,6 +1144,8 @@ pub enum Session {
         lang: Lang,
         /// DPR da janela (1.0 = sem Retina). Via `WindowScale`, como o tema.
         render_scale: f32,
+        /// Fechado aqui; guardado até a aba abrir.
+        settings: SettingsPanel,
     },
 }
 
@@ -1158,9 +1162,7 @@ pub enum Session {
 pub struct Tabs {
     docs: Vec<Ready>,
     active: usize,
-    pub update: UpdateState,
-    #[cfg(target_os = "macos")]
-    pub(crate) permissions: PermissionsState,
+    pub settings: SettingsPanel,
     /// Geração + origem do documento carregando para uma aba nova (⌘T ou
     /// abrir com uma aba já aberta). `None` = nada pendente.
     pending: Option<(u64, OpenSource)>,
@@ -1209,9 +1211,7 @@ impl Tabs {
         Self {
             docs: vec![ready],
             active: 0,
-            update: UpdateState::Idle,
-            #[cfg(target_os = "macos")]
-            permissions: PermissionsState::Unavailable,
+            settings: SettingsPanel::default(),
             pending: None,
             open_error: None,
             close_ask: None,
@@ -1475,12 +1475,66 @@ pub enum UpdateState {
 }
 
 #[cfg(target_os = "macos")]
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
 pub(crate) enum PermissionsState {
     Checking,
     Accessible,
     Denied,
+    #[default]
     Unavailable,
+}
+
+/// Diálogo Configurações: estado da janela, não da aba. Viaja entre
+/// `Empty`, `Loading`, `Failed` e `Ready` para a checagem de atualização
+/// já feita não se repetir.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct SettingsPanel {
+    pub open: bool,
+    pub update: UpdateState,
+    #[cfg(target_os = "macos")]
+    pub(crate) permissions: PermissionsState,
+}
+
+impl SettingsPanel {
+    /// Abre ou fecha; ao abrir devolve as checagens a disparar (uma de
+    /// atualização por sessão; permissões a cada abertura no macOS).
+    fn toggle(&mut self) -> Task<Message> {
+        self.open = !self.open;
+        if !self.open {
+            return Task::none();
+        }
+        let mut tasks = Vec::new();
+        // Offline falha silencioso.
+        if self.update == UpdateState::Idle {
+            self.update = UpdateState::Checking;
+            tasks.push(Task::perform(fetch_latest_tag(), Message::UpdateChecked));
+        }
+        #[cfg(target_os = "macos")]
+        if self.permissions != PermissionsState::Checking {
+            self.permissions = PermissionsState::Checking;
+            tasks.push(Task::perform(
+                async {
+                    tokio::task::spawn_blocking(|| {
+                        crate::browse::downloads_dir()
+                            .ok_or(std::io::ErrorKind::NotFound)
+                            .and_then(|path| crate::browse::dir_access(&path))
+                    })
+                    .await
+                    .unwrap_or(Err(std::io::ErrorKind::Other))
+                },
+                Message::PermissionsChecked,
+            ));
+        }
+        Task::batch(tasks)
+    }
+
+    /// Cópia fechada para a próxima variante da sessão.
+    fn carried(&self) -> Self {
+        Self {
+            open: false,
+            ..self.clone()
+        }
+    }
 }
 
 #[derive(Clone)]
@@ -1547,9 +1601,6 @@ pub struct Ready {
     pub recents_expanded: bool,
     /// Cartão Sobre aberto (Ajuda). Fecha no fundo, no botão e no Esc.
     pub about_open: bool,
-    /// Diálogo Configurações aberto (⋯ → Ajuda). Fecha no fundo, no botão e
-    /// no Esc; abre por cima do Sobre.
-    pub settings_open: bool,
     /// Diálogo de impressão aberto (`None` = fechado). Só existe em `Ready`.
     pub print_dialog: Option<PrintDialog>,
     /// Linha de status pós-envio ("Enviado para …"); limpa ao reabrir o diálogo.
@@ -2352,6 +2403,7 @@ impl Session {
             lang: read_lang(),
             render_scale: 1.0,
             phase: 0,
+            settings: SettingsPanel::default(),
         }
     }
 
@@ -2377,7 +2429,7 @@ impl Session {
     }
 
     pub fn update(&mut self, message: Message) -> Task<Message> {
-        if matches!(self, Session::Ready(tabs) if tabs.settings_open)
+        if self.settings().open
             && (acts_on_active_document(&message)
                 || matches!(
                     &message,
@@ -2422,9 +2474,7 @@ impl Session {
                 if !is_pdf(&path) {
                     Task::none()
                 } else {
-                    if let Session::Ready(tabs) = self {
-                        tabs.settings_open = false;
-                    }
+                    // `begin_open` leva o painel fechado: entrega externa fecha Configurações.
                     self.begin_open(OpenSource::Dropped(path))
                 }
             }
@@ -3080,57 +3130,39 @@ impl Session {
                 Task::none()
             }
             Message::ToggleAbout => {
-                if let Session::Ready(ready) = self {
-                    ready.about_open = !ready.about_open;
-                    // Sobre abre por cima: o ⋯ e o Configurações fecham junto.
-                    if ready.about_open {
-                        ready.overflow_open = false;
-                        ready.settings_open = false;
+                let opened = match self {
+                    Session::Ready(ready) => {
+                        ready.about_open = !ready.about_open;
+                        if ready.about_open {
+                            ready.overflow_open = false;
+                        }
+                        ready.about_open
                     }
+                    _ => false,
+                };
+                // Sobre abre por cima: o ⋯ e o Configurações fecham junto.
+                if opened {
+                    self.settings_mut().open = false;
                 }
                 Task::none()
             }
             Message::ToggleSettings => {
-                let mut tasks = Vec::new();
-                if let Session::Ready(ready) = self {
-                    ready.settings_open = !ready.settings_open;
-                    if ready.settings_open {
+                let tasks = self.settings_mut().toggle();
+                if self.settings().open {
+                    if let Session::Ready(ready) = self {
                         ready.about_open = false;
                         ready.overflow_open = false;
-                        // Uma checagem por sessão; offline falha silencioso.
-                        if ready.update == UpdateState::Idle {
-                            ready.update = UpdateState::Checking;
-                            tasks.push(Task::perform(fetch_latest_tag(), Message::UpdateChecked));
-                        }
-                        #[cfg(target_os = "macos")]
-                        if ready.permissions != PermissionsState::Checking {
-                            ready.permissions = PermissionsState::Checking;
-                            tasks.push(Task::perform(
-                                async {
-                                    tokio::task::spawn_blocking(|| {
-                                        crate::browse::downloads_dir()
-                                            .ok_or(std::io::ErrorKind::NotFound)
-                                            .and_then(|path| crate::browse::dir_access(&path))
-                                    })
-                                    .await
-                                    .unwrap_or(Err(std::io::ErrorKind::Other))
-                                },
-                                Message::PermissionsChecked,
-                            ));
-                        }
                     }
                 }
-                Task::batch(tasks)
+                tasks
             }
             #[cfg(target_os = "macos")]
             Message::PermissionsChecked(result) => {
-                if let Session::Ready(tabs) = self {
-                    tabs.permissions = match result {
-                        Ok(()) => PermissionsState::Accessible,
-                        Err(std::io::ErrorKind::PermissionDenied) => PermissionsState::Denied,
-                        Err(_) => PermissionsState::Unavailable,
-                    };
-                }
+                self.settings_mut().permissions = match result {
+                    Ok(()) => PermissionsState::Accessible,
+                    Err(std::io::ErrorKind::PermissionDenied) => PermissionsState::Denied,
+                    Err(_) => PermissionsState::Unavailable,
+                };
                 Task::none()
             }
             Message::OpenPrivacySettings => {
@@ -3139,15 +3171,13 @@ impl Session {
                 Task::none()
             }
             Message::UpdateChecked(result) => {
-                if let Session::Ready(ready) = self {
-                    let current = env!("CARGO_PKG_VERSION");
-                    ready.update = match result {
-                        Ok(tag) if release_version(&tag).is_none() => UpdateState::Failed,
-                        Ok(tag) if update_available(current, &tag) => UpdateState::Available(tag),
-                        Ok(_) => UpdateState::Current,
-                        Err(_) => UpdateState::Failed,
-                    };
-                }
+                let current = env!("CARGO_PKG_VERSION");
+                self.settings_mut().update = match result {
+                    Ok(tag) if release_version(&tag).is_none() => UpdateState::Failed,
+                    Ok(tag) if update_available(current, &tag) => UpdateState::Available(tag),
+                    Ok(_) => UpdateState::Current,
+                    Err(_) => UpdateState::Failed,
+                };
                 Task::none()
             }
             Message::SetDefaultReader => {
@@ -3165,8 +3195,8 @@ impl Session {
                     if let Session::Ready(ready) = self {
                         ready.about_open = true;
                         ready.overflow_open = false;
-                        ready.settings_open = false;
                     }
+                    self.settings_mut().open = false;
                 }
                 Task::none()
             }
@@ -3277,11 +3307,10 @@ impl Session {
                 Task::none()
             }
             Message::ClosePrintDialog => {
-                if let Session::Ready(tabs) = self {
-                    if tabs.settings_open && !tabs.close_prompt() {
-                        tabs.settings_open = false;
-                        return Task::none();
-                    }
+                let close_asked = matches!(self, Session::Ready(tabs) if tabs.close_prompt());
+                if self.settings().open && !close_asked {
+                    self.settings_mut().open = false;
+                    return Task::none();
                 }
                 // Paleta (do documento ou do Início) desfaz sozinha; o segundo
                 // Esc segue o cascade.
@@ -3309,7 +3338,6 @@ impl Session {
                     ready.save_warning = false;
                     ready.overflow_open = false;
                     ready.about_open = false;
-                    ready.settings_open = false;
                     // Enviando: ignora (Esc) para não perder o resultado na volta.
                     if ready
                         .print_dialog
@@ -3792,6 +3820,7 @@ impl Session {
         let theme = self.theme();
         let lang = self.lang();
         let render_scale = self.render_scale();
+        let settings = self.settings().carried();
         let mut gen = self.open_gen().wrapping_add(1);
         if gen == 0 {
             gen = 1;
@@ -3801,6 +3830,7 @@ impl Session {
             // a janela segue na aba atual, com página e zoom, até o arquivo
             // chegar. A `Loading` fica só para a primeira aba (vinda do `Empty`).
             Session::Ready(tabs) => {
+                tabs.settings = settings;
                 tabs.pending = Some((gen, source.clone()));
                 tabs.open_error = None;
             }
@@ -3813,6 +3843,7 @@ impl Session {
                     lang,
                     render_scale,
                     phase: 0,
+                    settings,
                 };
             }
         }
@@ -3877,7 +3908,10 @@ impl Session {
                     };
                     tabs.push(ready);
                 } else {
-                    *self = Session::Ready(Tabs::single(ready));
+                    let settings = self.settings().carried();
+                    let mut tabs = Tabs::single(ready);
+                    tabs.settings = settings;
+                    *self = Session::Ready(tabs);
                 }
             }
             Err(err) => {
@@ -3909,6 +3943,7 @@ impl Session {
                     _ => recents,
                 };
                 let _ = save_recents(&recents);
+                let settings = self.settings().carried();
                 *self = Session::Failed {
                     source,
                     message: err.message(lang),
@@ -3917,6 +3952,7 @@ impl Session {
                     theme,
                     lang,
                     render_scale,
+                    settings,
                 };
             }
         }
@@ -4020,6 +4056,7 @@ impl Session {
         let lang = self.lang();
         let open_gen = self.open_gen();
         let render_scale = self.render_scale();
+        let settings = self.settings().carried();
         // Toda aba solta o seu documento na worker (issue #40): sem isto o
         // parse de cada uma ficaria vivo até o processo acabar.
         if let Session::Ready(tabs) = self {
@@ -4033,6 +4070,7 @@ impl Session {
             lang,
             open_gen,
             render_scale,
+            settings,
             ..EmptyState::default()
         });
         empty_tasks(lang)
@@ -4212,7 +4250,8 @@ impl Session {
     /// origem — a resposta assíncrona voltaria para uma aba que saiu da tela.
     fn modal_open(&self) -> bool {
         self.blocks_close()
-            || matches!(self, Session::Ready(tabs) if tabs.settings_open || tabs.note_draft.is_some() || tabs.close_prompt())
+            || self.settings().open
+            || matches!(self, Session::Ready(tabs) if tabs.note_draft.is_some() || tabs.close_prompt())
     }
 
     /// `nav_follow` do documento ativo (sem aba aberta é `Task::none`).
@@ -4275,6 +4314,23 @@ impl Session {
     fn close_overflow(&mut self) {
         if let Session::Ready(ready) = self {
             ready.overflow_open = false;
+        }
+    }
+
+    /// Configurações da janela — no Início por cima das abas, as das abas.
+    pub fn settings(&self) -> &SettingsPanel {
+        match self {
+            Session::Empty(empty) => &empty.settings,
+            Session::Loading { settings, .. } | Session::Failed { settings, .. } => settings,
+            Session::Ready(tabs) => &tabs.settings,
+        }
+    }
+
+    fn settings_mut(&mut self) -> &mut SettingsPanel {
+        match self {
+            Session::Empty(empty) => &mut empty.settings,
+            Session::Loading { settings, .. } | Session::Failed { settings, .. } => settings,
+            Session::Ready(tabs) => &mut tabs.settings,
         }
     }
 
@@ -6383,7 +6439,6 @@ impl Document {
             overflow_open: false,
             recents_expanded: false,
             about_open: false,
-            settings_open: false,
             print_dialog: None,
             print_status: None,
             save_status: None,
@@ -8446,10 +8501,10 @@ mod tests {
         apply(&mut session, Message::ToggleSettings);
         match &session {
             Session::Ready(r) => {
-                assert!(r.settings_open);
+                assert!(r.settings.open);
                 assert!(!r.overflow_open, "Configurações fecha o ⋯");
                 assert!(!r.about_open);
-                assert_eq!(r.update, UpdateState::Checking);
+                assert_eq!(r.settings.update, UpdateState::Checking);
             }
             _ => unreachable!(),
         }
@@ -8460,8 +8515,8 @@ mod tests {
         apply(&mut session, Message::ToggleSettings);
         match &session {
             Session::Ready(r) => {
-                assert!(r.settings_open);
-                assert_eq!(r.update, UpdateState::Current);
+                assert!(r.settings.open);
+                assert_eq!(r.settings.update, UpdateState::Current);
             }
             _ => unreachable!(),
         }
@@ -8476,28 +8531,28 @@ mod tests {
         let Session::Ready(tabs) = &session else {
             panic!("expected ready tabs");
         };
-        assert_eq!(tabs.permissions, PermissionsState::Checking);
-        assert_eq!(tabs.update, UpdateState::Checking);
+        assert_eq!(tabs.settings.permissions, PermissionsState::Checking);
+        assert_eq!(tabs.settings.update, UpdateState::Checking);
         apply(&mut session, Message::PermissionsChecked(Ok(())));
         apply(&mut session, Message::UpdateChecked(Ok("v0.4.0".into())));
         apply(&mut session, Message::ClosePrintDialog);
         let Session::Ready(tabs) = &session else {
             panic!("expected ready tabs");
         };
-        assert_eq!(tabs.permissions, PermissionsState::Accessible);
+        assert_eq!(tabs.settings.permissions, PermissionsState::Accessible);
         apply(&mut session, Message::ToggleSettings);
         let Session::Ready(tabs) = &session else {
             panic!("expected ready tabs");
         };
-        assert_eq!(tabs.permissions, PermissionsState::Checking);
-        assert_eq!(tabs.update, UpdateState::Current);
+        assert_eq!(tabs.settings.permissions, PermissionsState::Checking);
+        assert_eq!(tabs.settings.update, UpdateState::Current);
         apply(&mut session, Message::ClosePrintDialog);
         apply(&mut session, Message::ToggleSettings);
         let Session::Ready(tabs) = &session else {
             panic!("expected ready tabs");
         };
-        assert_eq!(tabs.permissions, PermissionsState::Checking);
-        assert_eq!(tabs.update, UpdateState::Current);
+        assert_eq!(tabs.settings.permissions, PermissionsState::Checking);
+        assert_eq!(tabs.settings.update, UpdateState::Current);
     }
 
     #[cfg(target_os = "macos")]
@@ -8530,7 +8585,7 @@ mod tests {
             let Session::Ready(tabs) = &session else {
                 panic!("expected ready tabs");
             };
-            assert_eq!(tabs.permissions, expected);
+            assert_eq!(tabs.settings.permissions, expected);
         }
         apply(&mut session, Message::ClosePrintDialog);
         apply(&mut session, Message::SelectTab(0));
@@ -8538,10 +8593,10 @@ mod tests {
             panic!("expected ready tabs");
         };
         assert_eq!(tabs.active_index(), 0);
-        assert_eq!(tabs.permissions, PermissionsState::Unavailable);
+        assert_eq!(tabs.settings.permissions, PermissionsState::Unavailable);
         session = Session::empty();
         apply(&mut session, Message::PermissionsChecked(Ok(())));
-        assert!(matches!(session, Session::Empty(_)));
+        assert_eq!(session.settings().permissions, PermissionsState::Accessible);
     }
 
     #[test]
@@ -8551,14 +8606,14 @@ mod tests {
         apply(&mut session, Message::UpdateChecked(Ok("v99.99.99".into())));
         assert_eq!(
             match &session {
-                Session::Ready(tabs) => &tabs.update,
+                Session::Ready(tabs) => &tabs.settings.update,
                 _ => unreachable!(),
             },
             &UpdateState::Available("v99.99.99".into())
         );
         apply(&mut session, Message::UpdateChecked(Err("offline".into())));
         if let Session::Ready(tabs) = &session {
-            assert_eq!(tabs.update, UpdateState::Failed);
+            assert_eq!(tabs.settings.update, UpdateState::Failed);
         } else {
             panic!("expected ready tabs");
         }
@@ -8589,7 +8644,7 @@ mod tests {
             panic!("expected ready tabs");
         };
         assert_eq!(tabs.active_index(), 1);
-        assert_eq!(tabs.update, UpdateState::Checking);
+        assert_eq!(tabs.settings.update, UpdateState::Checking);
         apply(&mut session, Message::ToggleSettings);
         apply(&mut session, Message::UpdateChecked(Ok("v99.99.99".into())));
         apply(&mut session, Message::ClosePrintDialog);
@@ -8599,20 +8654,26 @@ mod tests {
             panic!("expected ready tabs");
         };
         assert_eq!(tabs.active_index(), 0);
-        assert!(tabs.settings_open);
-        assert_eq!(tabs.update, UpdateState::Available("v99.99.99".into()));
-        tabs.settings_open = false;
+        assert!(tabs.settings.open);
+        assert_eq!(
+            tabs.settings.update,
+            UpdateState::Available("v99.99.99".into())
+        );
+        tabs.settings.open = false;
         tabs.push(third);
         apply(&mut session, Message::ToggleSettings);
         let Session::Ready(tabs) = &session else {
             panic!("expected ready tabs");
         };
         assert_eq!(tabs.active_index(), 2);
-        assert_eq!(tabs.update, UpdateState::Available("v99.99.99".into()));
+        assert_eq!(
+            tabs.settings.update,
+            UpdateState::Available("v99.99.99".into())
+        );
     }
 
     #[test]
-    fn settings_update_survives_requester_close_and_ignores_no_tabs() {
+    fn settings_update_survives_closing_last_tab() {
         isolated(|| {
             let first = sample_ready().expect("update regression requires fixture and Pdfium");
             let second = sample_ready().expect("second fixture must load");
@@ -8626,23 +8687,22 @@ mod tests {
             let Session::Ready(tabs) = &session else {
                 panic!("expected remaining tab");
             };
-            assert_eq!(tabs.update, UpdateState::Checking);
+            assert_eq!(tabs.settings.update, UpdateState::Checking);
             apply(&mut session, Message::UpdateChecked(Ok("v0.4.0".into())));
             let Session::Ready(tabs) = &session else {
                 panic!("expected remaining tab");
             };
             assert_eq!(tabs.len(), 1);
-            assert_eq!(tabs.update, UpdateState::Current);
+            assert_eq!(tabs.settings.update, UpdateState::Current);
             apply(&mut session, Message::Close);
             assert!(matches!(session, Session::Empty(_)));
+            // A checagem feita na aba segue para o Início: não se repete.
+            assert_eq!(session.settings().update, UpdateState::Current);
             apply(&mut session, Message::UpdateChecked(Ok("v99.99.99".into())));
-            assert!(matches!(session, Session::Empty(_)));
-            let ready = sample_ready().expect("reopened fixture must load");
-            session = Session::Ready(Tabs::single(ready));
-            let Session::Ready(tabs) = &session else {
-                panic!("expected reopened tab");
-            };
-            assert_eq!(tabs.update, UpdateState::Idle);
+            assert_eq!(
+                session.settings().update,
+                UpdateState::Available("v99.99.99".into())
+            );
         });
     }
 
@@ -8704,7 +8764,7 @@ mod tests {
             let Session::Ready(tabs) = &session else {
                 panic!("expected ready tabs");
             };
-            assert_eq!(tabs.update, expected, "release {tag}");
+            assert_eq!(tabs.settings.update, expected, "release {tag}");
         }
     }
 
@@ -8715,7 +8775,7 @@ mod tests {
         let mut tabs = Tabs::single(first);
         tabs.push(second);
         tabs.select(0);
-        tabs.settings_open = true;
+        tabs.settings.open = true;
         tabs.selection = Some(Selection {
             page: PageNo::first(),
             range: TextRange { start: 0, end: 1 },
@@ -8755,7 +8815,7 @@ mod tests {
         assert_eq!(tabs.annotations.len(), 0);
         assert!(tabs.print_dialog.is_none());
         assert!(!tabs.palette_open());
-        assert!(tabs.settings_open);
+        assert!(tabs.settings.open);
         let escape = keyboard_message(
             Key::Named(Named::Escape),
             keyboard::Modifiers::empty(),
@@ -8763,7 +8823,7 @@ mod tests {
         )
         .expect("escape must close settings");
         apply(&mut session, escape);
-        assert!(!active_ready(&session).settings_open);
+        assert!(!session.settings().open);
         assert_eq!(
             active_ready(&session).selection,
             Some(Selection {
@@ -8785,19 +8845,19 @@ mod tests {
             apply(&mut session, Message::ToggleSettings);
             apply(&mut session, Message::SetTheme(Theme::Light));
             assert_eq!(active_ready(&session).theme, Theme::Light);
-            assert!(active_ready(&session).settings_open);
+            assert!(session.settings().open);
             apply(&mut session, Message::RotateView);
             assert_eq!(active_ready(&session).view_rotation, 0);
             apply(&mut session, Message::UpdateChecked(Ok("v0.4.0".into())));
             let Session::Ready(tabs) = &session else {
                 panic!("expected ready tabs");
             };
-            assert_eq!(tabs.update, UpdateState::Current);
+            assert_eq!(tabs.settings.update, UpdateState::Current);
             #[cfg(not(target_os = "windows"))]
             {
                 apply(&mut session, Message::SetDefaultReader);
                 assert!(active_ready(&session).about_open);
-                assert!(!active_ready(&session).settings_open);
+                assert!(!session.settings().open);
             }
         });
         let _ = std::fs::remove_file(prefs);
@@ -8815,12 +8875,12 @@ mod tests {
             let Session::Ready(tabs) = &session else {
                 panic!("external delivery must retain existing tabs");
             };
-            assert!(!tabs.settings_open);
+            assert!(!tabs.settings.open);
             assert_eq!(
                 tabs.pending.as_ref().map(|(_, source)| source.path()),
                 Some(path.as_path())
             );
-            assert_eq!(tabs.update, UpdateState::Checking);
+            assert_eq!(tabs.settings.update, UpdateState::Checking);
             session.finish_open(Ok(second));
             apply(&mut session, Message::UpdateChecked(Ok("v0.4.0".into())));
             let Session::Ready(tabs) = &session else {
@@ -8828,8 +8888,7 @@ mod tests {
             };
             assert_eq!(tabs.len(), 2);
             assert_eq!(tabs.active_index(), 1);
-            assert_eq!(tabs.update, UpdateState::Current);
-            assert!(!tabs.docs()[0].settings_open);
+            assert_eq!(tabs.settings.update, UpdateState::Current);
         });
     }
 
@@ -10711,6 +10770,7 @@ mod tests {
             lang: Lang::Pt,
             render_scale: 1.0,
             phase: 0,
+            settings: SettingsPanel::default(),
         };
         apply(
             &mut session,

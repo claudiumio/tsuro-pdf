@@ -20,8 +20,8 @@ use crate::search::Search;
 use crate::session::PermissionsState;
 use crate::session::{
     display_pt, display_rect, marker_side, page_pt_at, AnnotKind, Message, NavCmd, NoteDraft,
-    OpenSource, PaletteItem, PaletteState, PrintDialog, RangeMode, Ready, Session, Tabs,
-    UpdateState, ViewMode, Zoom, ZoomFactor, DOC_GAP, DOC_PAD_BOTTOM, DOC_PAD_TOP, DOC_PAD_X,
+    OpenSource, PaletteItem, PaletteState, PrintDialog, RangeMode, Ready, Session, SettingsPanel,
+    Tabs, UpdateState, ViewMode, Zoom, ZoomFactor, DOC_GAP, DOC_PAD_BOTTOM, DOC_PAD_TOP, DOC_PAD_X,
     PAGES_PANEL_W, SIG_PANEL_W, THUMB_ROW,
 };
 
@@ -163,9 +163,9 @@ pub fn chrome(session: &Session, theme: Theme, lang: Lang) -> Element<'_, Messag
     } else if tabs.about_open {
         // Sobre (Ajuda): cartão de versão; fundo e Esc fecham.
         about_layer(t)
-    } else if tabs.settings_open {
+    } else if tabs.settings.open {
         // Configurações (Ajuda): abre por cima do Sobre; fundo e Esc fecham.
-        settings_layer(tabs, t)
+        settings_layer(&tabs.settings, t)
     } else if tabs.overflow_open {
         // Overlay visual: só os botões capturam clique, o resto atravessa.
         overflow_layer(tabs, t)
@@ -1625,7 +1625,7 @@ fn about_card(t: Tokens) -> Element<'static, Message> {
 
 /// Configurações (Ajuda → Configurações): tema, leitor padrão, permissões,
 /// idioma e versão — mesmo padrão do Sobre (fundo fecha, cartão engole).
-fn settings_layer(ready: &Tabs, t: Tokens) -> Element<'static, Message> {
+fn settings_layer(settings: &SettingsPanel, t: Tokens) -> Element<'static, Message> {
     let dim = container(Space::with_width(Length::Fill))
         .width(Length::Fill)
         .height(Length::Fill)
@@ -1633,7 +1633,7 @@ fn settings_layer(ready: &Tabs, t: Tokens) -> Element<'static, Message> {
             background: Some(Background::Color(Color::from_rgba(0.0, 0.0, 0.0, 0.25))),
             ..container::Style::default()
         });
-    let card = container(mouse_area(settings_card(ready, t)).on_press(Message::PrintNop))
+    let card = container(mouse_area(settings_card(settings, t)).on_press(Message::PrintNop))
         .width(Length::Fill)
         .height(Length::Fill)
         .align_x(Alignment::Center)
@@ -1642,8 +1642,8 @@ fn settings_layer(ready: &Tabs, t: Tokens) -> Element<'static, Message> {
 }
 
 #[allow(clippy::too_many_lines)]
-fn settings_card(ready: &Tabs, t: Tokens) -> Element<'static, Message> {
-    let dark = ready.theme.is_dark();
+fn settings_card(settings: &SettingsPanel, t: Tokens) -> Element<'static, Message> {
+    let dark = t.is_dark;
     let mut body = column![
         text(t.lang.pick("Configurações", "Settings"))
             .size(16)
@@ -1669,7 +1669,7 @@ fn settings_card(ready: &Tabs, t: Tokens) -> Element<'static, Message> {
     .width(300);
     #[cfg(target_os = "macos")]
     {
-        let label = match ready.permissions {
+        let label = match settings.permissions {
             PermissionsState::Checking => t.lang.pick(
                 "Downloads: verificando acesso…",
                 "Downloads: checking access…",
@@ -1685,16 +1685,16 @@ fn settings_card(ready: &Tabs, t: Tokens) -> Element<'static, Message> {
                 "Downloads: access unavailable.",
             ),
         };
-        body =
-            body.push(section_title(t.lang.pick("Permissões", "Permissions"), t))
-                .push(text(label).size(13).color(
-                    if ready.permissions == PermissionsState::Denied {
-                        t.danger
-                    } else {
-                        t.muted
-                    },
-                ));
-        if ready.permissions == PermissionsState::Denied {
+        body = body
+            .push(section_title(t.lang.pick("Permissões", "Permissions"), t))
+            .push(text(label).size(13).color(
+                if settings.permissions == PermissionsState::Denied {
+                    t.danger
+                } else {
+                    t.muted
+                },
+            ));
+        if settings.permissions == PermissionsState::Denied {
             body = body.push(menu_item(
                 t,
                 "shield",
@@ -1708,8 +1708,8 @@ fn settings_card(ready: &Tabs, t: Tokens) -> Element<'static, Message> {
         .push(section_title(t.lang.pick("Idioma", "Language"), t))
         .push(
             row![
-                menu_lang_button(t, "Português", Lang::Pt, ready.lang == Lang::Pt),
-                menu_lang_button(t, "English", Lang::En, ready.lang == Lang::En),
+                menu_lang_button(t, "Português", Lang::Pt, t.lang == Lang::Pt),
+                menu_lang_button(t, "English", Lang::En, t.lang == Lang::En),
             ]
             .spacing(4),
         )
@@ -1723,7 +1723,7 @@ fn settings_card(ready: &Tabs, t: Tokens) -> Element<'static, Message> {
             .size(13)
             .color(t.muted),
         );
-    body = match &ready.update {
+    body = match &settings.update {
         UpdateState::Checking => body.push(
             text(
                 t.lang
