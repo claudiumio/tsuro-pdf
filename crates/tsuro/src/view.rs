@@ -299,13 +299,6 @@ fn control_style(
     kiri::ibtn_style(t, active)
 }
 
-fn control(
-    t: Tokens,
-    btn: iced::widget::button::Button<'_, Message>,
-) -> iced::widget::button::Button<'_, Message> {
-    control_active(t, btn, false)
-}
-
 fn control_active(
     t: Tokens,
     btn: iced::widget::button::Button<'_, Message>,
@@ -2403,45 +2396,39 @@ fn disk_stale_row(ready: &Ready, t: Tokens) -> Element<'static, Message> {
     .into()
 }
 
-/// Faixa de abas sob a toolbar (issue #40): um botão por documento — o ativo
-/// destacado — e o × que fecha a aba. Só existe com 2+ abas ou com o Início
-/// por cima delas (aí nenhuma fica destacada: clicar volta para ela).
+/// Faixa de abas sob a toolbar (issue #40): uma pílula por documento, com o
+/// nome e o × dentro. A ativa tem fundo `accent_bg`. Só existe com 2+ abas ou
+/// com o Início por cima delas (aí nenhuma fica destacada: clicar volta para ela).
 fn tab_strip(tabs: &Tabs, t: Tokens) -> Element<'_, Message> {
-    // Padding dos botões-ícone (9px) somava ~35px numa faixa de 30px: o
-    // texto não cabia, o iced não desenhava a linha e a aba virava um
-    // quadradinho vazio. 4px cabe com folga.
-    let tab_pad = Padding::from([4, 10]);
+    // Padding vertical de 4px: os 9px dos botões-ícone somavam ~35px numa faixa
+    // de 30px e o texto sumia.
     let mut strip = row![].spacing(4).align_y(Alignment::Center);
     for (index, doc) in tabs.docs().iter().enumerate() {
         let label = short_name(doc.source.path());
         let active = tabs.home().is_none() && index == tabs.active_index();
+        let name = tip_owned(
+            button(text(label).size(13))
+                .padding(Padding::from([4, 10]))
+                .style(kiri::ibtn_style(t, false))
+                .on_press(Message::SelectTab(index)),
+            identity_tip(doc.source.path()),
+        );
+        let close = tip(
+            button(text("×").size(14).color(t.muted))
+                .padding(Padding::from([4, 8]))
+                .style(kiri::ibtn_style(t, false))
+                .on_press(Message::CloseTab(index)),
+            if cfg!(target_os = "macos") {
+                t.lang.pick("Fechar aba (Cmd+W)", "Close tab (Cmd+W)")
+            } else {
+                t.lang.pick("Fechar aba (Ctrl+W)", "Close tab (Ctrl+W)")
+            },
+        );
+        // Padding de 1px: o hover dos botões não cobre a moldura.
         strip = strip.push(
-            row![
-                tip_owned(
-                    control_active(
-                        t,
-                        button(text(label).size(13)).on_press(Message::SelectTab(index)),
-                        active,
-                    )
-                    .padding(tab_pad),
-                    identity_tip(doc.source.path()),
-                ),
-                tip(
-                    control(
-                        t,
-                        button(text("×").size(14).color(t.muted))
-                            .on_press(Message::CloseTab(index)),
-                    )
-                    .padding(tab_pad),
-                    if cfg!(target_os = "macos") {
-                        t.lang.pick("Fechar aba (Cmd+W)", "Close tab (Cmd+W)")
-                    } else {
-                        t.lang.pick("Fechar aba (Ctrl+W)", "Close tab (Ctrl+W)")
-                    },
-                ),
-            ]
-            .spacing(0)
-            .align_y(Alignment::Center),
+            container(row![name, close].align_y(Alignment::Center))
+                .padding(1)
+                .style(kiri::tab_pill_style(t, active)),
         );
     }
     container(strip)

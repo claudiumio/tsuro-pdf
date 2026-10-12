@@ -235,6 +235,28 @@ pub fn seg_style(tokens: Tokens) -> impl Fn(&iced::Theme) -> container::Style {
     }
 }
 
+/// Aba como pílula (nome e ×): hairline `line`, raio 8 igual ao do `ibtn` que
+/// fica dentro, para o hover não passar da borda. `accent_bg` na ativa;
+/// `elevated` (dark) ou `surface` (light) nas demais.
+pub fn tab_pill_style(tokens: Tokens, active: bool) -> impl Fn(&iced::Theme) -> container::Style {
+    move |_| container::Style {
+        background: Some(Background::Color(if active {
+            tokens.accent_bg
+        } else if tokens.is_dark {
+            tokens.elevated
+        } else {
+            tokens.surface
+        })),
+        border: Border {
+            color: tokens.line,
+            width: 1.0,
+            radius: 8.0.into(),
+        },
+        text_color: Some(tokens.ink),
+        ..container::Style::default()
+    }
+}
+
 /// Cor de um status de assinatura. O dot do escudo usa o pior (`status_dot_color`).
 pub fn status_color(tokens: Tokens, status: tsuro_sign::SignatureStatus) -> Color {
     use tsuro_sign::SignatureStatus as S;
@@ -759,6 +781,20 @@ mod tests {
         assert!(matches!(style.background, Some(Background::Color(c)) if c == dark.elevated));
         let light = Tokens::for_theme(Theme::Light, Lang::Pt);
         let style = seg_style(light)(&iced::Theme::Light);
+        assert!(matches!(style.background, Some(Background::Color(c)) if c == light.surface));
+    }
+
+    #[test]
+    fn tab_pill_fills_active_accent_and_inactive_per_theme() {
+        let dark = Tokens::for_theme(Theme::Dark, Lang::Pt);
+        let style = tab_pill_style(dark, false)(&iced::Theme::Dark);
+        assert!(matches!(style.background, Some(Background::Color(c)) if c == dark.elevated));
+        assert_eq!(style.border.width, 1.0);
+        assert_eq!(style.border.color, dark.line);
+        let style = tab_pill_style(dark, true)(&iced::Theme::Dark);
+        assert!(matches!(style.background, Some(Background::Color(c)) if c == dark.accent_bg));
+        let light = Tokens::for_theme(Theme::Light, Lang::Pt);
+        let style = tab_pill_style(light, false)(&iced::Theme::Light);
         assert!(matches!(style.background, Some(Background::Color(c)) if c == light.surface));
     }
 
