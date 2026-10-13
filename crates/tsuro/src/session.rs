@@ -32,7 +32,7 @@ use crate::print::{
 };
 use crate::search::Search;
 use crate::spool::{list_printers, spool_pdf, PrinterInfo};
-use crate::update::{self, UpdateError};
+use crate::update::{self, release_version, UpdateError};
 
 pub(crate) const THUMB_WIDTH: f32 = 120.0;
 pub(crate) const THUMB_ROW: f32 = 156.0;
@@ -2438,6 +2438,8 @@ impl Session {
     }
 
     pub fn boot(mut self) -> (Self, Task<Message>) {
+        #[cfg(target_os = "windows")]
+        update::prune_staged_installers();
         let check = self.settings_mut().check_update();
         let open = match &self {
             Session::Loading { source, gen, .. } => {
@@ -5140,22 +5142,6 @@ fn parse_latest_tag(body: &str) -> Option<String> {
     let rest = rest.split_once(':')?.1.trim_start();
     let rest = rest.strip_prefix('"')?;
     Some(rest.split_once('"')?.0.to_string())
-}
-
-fn release_version(version: &str) -> Option<[u64; 3]> {
-    let mut parts = version.strip_prefix('v').unwrap_or(version).split('.');
-    let mut numbers = [0; 3];
-    for number in &mut numbers {
-        let part = parts.next()?;
-        if part.is_empty()
-            || !part.bytes().all(|byte| byte.is_ascii_digit())
-            || (part.len() > 1 && part.starts_with('0'))
-        {
-            return None;
-        }
-        *number = part.parse().ok()?;
-    }
-    parts.next().is_none().then_some(numbers)
 }
 
 /// Unsupported versions never advertise an update.
