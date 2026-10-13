@@ -72,6 +72,7 @@ Rust edition 2021, stable toolchain (`rust-toolchain.toml`). Viewer: `iced 0.13`
 
 - ✅ Always: run `cargo test -p tsuro` before opening a PR; reproduce bugs with a fixture PDF first; release notes citam PRs mergeadas com @autores (automático via `generate-notes` no `release.yml`, highlights manuais por versão).
 - ✅ Commits: [Conventional Commits v1.0.0](https://www.conventionalcommits.org/en/v1.0.0/) — `type(scope): description (#issue) (#PR)`, EN or PT-BR; `!` + `BREAKING CHANGE:` footer for breaking changes.
+- ✅ PRs and issues: Conventional Commits title (`type(scope): description`) and a bilingual body, `## English` then `## Português`, same content in both.
 - ⚠️ Ask first: new dependencies, changes under `crates/tsuro-sign/`, touching the legacy tree.
 - 🚫 Never: commit secrets/keys, modify fixtures by hand, `git push --force`.
 
