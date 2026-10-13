@@ -979,6 +979,13 @@ fn overflow_menu(ready: &Ready, t: Tokens) -> Element<'_, Message> {
                 Message::CopyAnnotations,
                 false,
             ));
+            items = items.push(menu_item(
+                t,
+                "file-text",
+                t.lang.pick("Exportar marcações…", "Export annotations…"),
+                Message::ExportAnnotations,
+                false,
+            ));
         }
         if ready.selected_annot().is_some() {
             items = items.push(menu_item(
