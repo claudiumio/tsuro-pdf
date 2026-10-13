@@ -167,20 +167,74 @@ fn is_installed_exe(exe: &Path, install_dir: &Path) -> bool {
         .eq_ignore_ascii_case(&installed_exe(install_dir).to_string_lossy())
 }
 
-/// Aceita só o instalador do TsuroPDF com nome de asset exato.
-/// (Impede o helper rodar um `.exe` qualquer plantado na pasta de update.)
-#[cfg(target_os = "windows")]
-fn is_safe_asset_name(name: &str) -> bool {
-    let Some(rest) = name.strip_prefix("TsuroPDF-") else {
-        return false;
-    };
-    let Some(version) = rest.strip_suffix("-x86_64-pc-windows-msvc-setup.exe") else {
-        return false;
-    };
-    !version.is_empty()
+/// Versão de um nome de asset exato do instalador do TsuroPDF, ou `None`.
+/// (Impede o helper rodar, ou a limpeza apagar, um `.exe` qualquer plantado
+/// na pasta de update.)
+#[cfg(any(target_os = "windows", test))]
+fn installer_version(name: &str) -> Option<&str> {
+    let version = name
+        .strip_prefix("TsuroPDF-")?
+        .strip_suffix("-x86_64-pc-windows-msvc-setup.exe")?;
+    (!version.is_empty()
         && version
             .bytes()
-            .all(|b| b.is_ascii_alphanumeric() || matches!(b, b'.' | b'-' | b'+'))
+            .all(|b| b.is_ascii_alphanumeric() || matches!(b, b'.' | b'-' | b'+')))
+    .then_some(version)
+}
+
+#[cfg(target_os = "windows")]
+fn is_safe_asset_name(name: &str) -> bool {
+    installer_version(name).is_some()
+}
+
+/// `[maior, menor, patch]` de `v1.2.3`/`1.2.3`; `None` fora desse formato.
+pub(crate) fn release_version(version: &str) -> Option<[u64; 3]> {
+    let mut parts = version.strip_prefix('v').unwrap_or(version).split('.');
+    let mut numbers = [0; 3];
+    for number in &mut numbers {
+        let part = parts.next()?;
+        if part.is_empty()
+            || !part.bytes().all(|byte| byte.is_ascii_digit())
+            || (part.len() > 1 && part.starts_with('0'))
+        {
+            return None;
+        }
+        *number = part.parse().ok()?;
+    }
+    parts.next().is_none().then_some(numbers)
+}
+
+/// Apaga de `update_dir` os instaladores com versão ≤ `current`: já aplicados
+/// ou obsoletos. Mantém os mais novos (instalação que falhou) e qualquer
+/// arquivo cujo nome ou versão não seja reconhecido.
+#[cfg(any(target_os = "windows", test))]
+fn prune_installers(update_dir: &Path, current: &str) {
+    let Some(current) = release_version(current) else {
+        return;
+    };
+    let Ok(entries) = std::fs::read_dir(update_dir) else {
+        return;
+    };
+    for entry in entries.flatten() {
+        let stale = entry
+            .file_name()
+            .to_str()
+            .and_then(installer_version)
+            .and_then(release_version)
+            .is_some_and(|version| version <= current);
+        if stale && entry.file_type().is_ok_and(|t| t.is_file()) {
+            let _ = std::fs::remove_file(entry.path());
+        }
+    }
+}
+
+/// Ao abrir: limpa `%LOCALAPPDATA%\TsuroPDF\update\` dos instaladores que
+/// esta versão já tornou desnecessários (#127).
+#[cfg(target_os = "windows")]
+pub(crate) fn prune_staged_installers() {
+    if let Some(dir) = windows_path(&UPDATE_DIR) {
+        prune_installers(&dir, env!("CARGO_PKG_VERSION"));
+    }
 }
 
 /// Espera este processo sair, roda o instalador em silêncio e reabre o app.
@@ -716,6 +770,47 @@ mod tests {
         assert!(
             !is_safe_asset_name("TsuroPDF-9.9.9;calc-x86_64-pc-windows-msvc-setup.exe"),
             "caractere estranho no nome"
+        );
+    }
+
+    #[test]
+    fn prune_installers_drops_applied_and_older_keeps_newer_and_foreign() {
+        let dir = std::env::temp_dir().join(format!("tsuro-prune-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(dir.join("TsuroPDF-0.1.0-x86_64-pc-windows-msvc-setup.exe"))
+            .unwrap();
+        let installer = |v: &str| format!("TsuroPDF-{v}-x86_64-pc-windows-msvc-setup.exe");
+        let files = [
+            installer("0.5.5"),
+            installer("0.4.0"),
+            installer("0.10.0"),
+            installer("0.5.5-rc1"),
+            "malware.exe".to_string(),
+            "TsuroPDF-0.4.0-x86_64-pc-windows-msvc-setup.exe.part".to_string(),
+        ];
+        for name in &files {
+            std::fs::write(dir.join(name), b"x").unwrap();
+        }
+
+        prune_installers(&dir, "0.5.5");
+
+        let mut left: Vec<String> = std::fs::read_dir(&dir)
+            .unwrap()
+            .map(|e| e.unwrap().file_name().into_string().unwrap())
+            .collect();
+        left.sort();
+        let _ = std::fs::remove_dir_all(&dir);
+        assert_eq!(
+            left,
+            [
+                installer("0.1.0"),
+                installer("0.10.0"),
+                "TsuroPDF-0.4.0-x86_64-pc-windows-msvc-setup.exe.part".to_string(),
+                installer("0.5.5-rc1"),
+                "malware.exe".to_string(),
+            ],
+            "só 0.5.5 (aplicado) e 0.4.0 (antigo) somem; pasta, mais novo, versão \
+             irreconhecível e nomes estranhos ficam"
         );
     }
 
