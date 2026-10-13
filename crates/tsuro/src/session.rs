@@ -164,6 +164,60 @@ pub fn suggested_marked_name(source: &std::path::Path) -> String {
     format!("{stem} (marcado).pdf")
 }
 
+/// Nome sugerido da exportação: `contrato.pdf` → `contrato (marcações).md`.
+fn suggested_export_name(source: &std::path::Path) -> String {
+    let stem = source
+        .file_stem()
+        .map(|stem| stem.to_string_lossy().into_owned())
+        .unwrap_or_else(|| "documento".into());
+    format!("{stem} (marcações).md")
+}
+
+/// Nome do PDF para o cabeçalho do Markdown: só o arquivo, nunca a pasta.
+fn doc_file_name(source: &std::path::Path) -> String {
+    source
+        .file_name()
+        .map(|name| name.to_string_lossy().into_owned())
+        .unwrap_or_else(|| "documento".into())
+}
+
+/// Grava as marcações em Markdown em `dest` e devolve o aviso para a barra
+/// (`None` = diálogo cancelado: não escreve nem avisa). Nunca grava por cima
+/// do PDF aberto. Sem arquivo gravado, o aviso nunca diz "exportadas".
+fn export_annotations(
+    source: &std::path::Path,
+    annotations: &[Annotation],
+    text: &[Option<TextLayer>],
+    lang: Lang,
+    dest: Option<PathBuf>,
+) -> Option<String> {
+    let dest = dest?;
+    if is_same_file(&dest, source) {
+        return Some(
+            lang.pick(
+                "Escolha outro nome — o original nunca é sobrescrito.",
+                "Choose another name. The original is never overwritten.",
+            )
+            .into(),
+        );
+    }
+    let md = annotations_markdown(&doc_file_name(source), annotations, text)?;
+    Some(match std::fs::write(&dest, md + "\n") {
+        Ok(()) => format!(
+            "{} {}",
+            lang.pick("Marcações exportadas:", "Annotations exported:"),
+            doc_file_name(&dest)
+        ),
+        Err(err) => format!(
+            "{} {err}",
+            lang.pick(
+                "Não foi possível exportar as marcações:",
+                "Could not export the annotations:"
+            )
+        ),
+    })
+}
+
 #[derive(Debug, Clone, Copy)]
 pub struct ZoomFactor(f32);
 
@@ -405,50 +459,98 @@ pub(crate) fn clamped_marker_pt(pt: [f32; 2], media: MediaBox) -> [f32; 2] {
     ]
 }
 
-/// Destaques como Markdown para a área de transferência (issue #50): um item
-/// por marcação, em ordem de leitura (`page.index`, `range.start`). `None`
-/// sem itens — lista vazia ou só trechos sem texto (defensivo: a criação
-/// exige slice não-vazio). N 1-based como a UI (`index() + 1`).
+/// Marcações como Markdown, para a área de transferência (#50) e para
+/// arquivo (#135): um item por marcação, em ordem de leitura (`page.index`,
+/// `range.start`). Nenhuma some em silêncio: trecho sem texto legível vira
+/// "trecho indisponível". `None` só sem marcações. N 1-based como a UI.
 fn annotations_markdown(
     doc_name: &str,
     annotations: &[Annotation],
     text: &[Option<TextLayer>],
 ) -> Option<String> {
-    // Uma linha só: quebras do trecho/nota não quebram o item.
-    fn one_line(s: &str) -> String {
-        s.split_whitespace().collect::<Vec<_>>().join(" ")
+    if annotations.is_empty() {
+        return None;
     }
     let mut sorted: Vec<&Annotation> = annotations.iter().collect();
     sorted.sort_by_key(|a| (a.page.index(), a.range.start));
-    let mut lines = vec![format!("## Destaques — {doc_name}"), String::new()];
+    let doc_name = doc_name.split_whitespace().collect::<Vec<_>>().join(" ");
+    let mut lines = vec![
+        format!("## Destaques — {}", md_escape(&doc_name)),
+        String::new(),
+    ];
     for annot in sorted {
+        // Intervalo fora da camada (texto mudou) não vira trecho cortado: some
+        // o trecho e fica o aviso. Em uma linha só: quebras do PDF são layout.
         let quote = text
             .get(annot.page.index() as usize)
             .and_then(|layer| layer.as_ref())
-            .map(|layer| one_line(&layer.slice(annot.range)))
+            .filter(|layer| annot.range.end <= layer.plain.len())
+            .map(|layer| {
+                layer
+                    .slice(annot.range)
+                    .split_whitespace()
+                    .collect::<Vec<_>>()
+                    .join(" ")
+            })
             .unwrap_or_default();
-        if quote.is_empty() {
-            continue;
-        }
-        let n = annot.page.index() + 1;
-        let line = match annot.kind {
-            AnnotKind::Note if !annot.text.trim().is_empty() => {
-                format!(
-                    "- p.{n} — \"{quote}\" — Nota: \"{}\"",
-                    one_line(&annot.text)
-                )
-            }
-            AnnotKind::Note => format!("- p.{n} — \"{quote}\" _(nota)_"),
-            AnnotKind::Highlight => format!("- p.{n} — \"{quote}\" _(destaque)_"),
-            AnnotKind::Underline => format!("- p.{n} — \"{quote}\" _(sublinhado)_"),
-            AnnotKind::Strikeout => format!("- p.{n} — \"{quote}\" _(riscado)_"),
+        let quote = if quote.is_empty() {
+            "_(trecho indisponível)_".to_string()
+        } else {
+            format!("\"{}\"", md_escape(&quote))
         };
-        lines.push(line);
-    }
-    if lines.len() <= 2 {
-        return None;
+        // A nota guarda as linhas de quem escreveu, inclusive a linha em branco
+        // entre parágrafos; cada linha continua o item da lista.
+        let mut note_lines: Vec<String> = Vec::new();
+        for line in annot.text.lines().map(str::trim) {
+            if !line.is_empty() {
+                note_lines.push(md_escape_line(line));
+            } else if note_lines.last().is_some_and(|last| !last.is_empty()) {
+                note_lines.push(String::new());
+            }
+        }
+        if note_lines.last().is_some_and(String::is_empty) {
+            note_lines.pop();
+        }
+        let note = note_lines.join("  \n  ");
+        let n = annot.page.index() + 1;
+        lines.push(match annot.kind {
+            AnnotKind::Note if !note.is_empty() => format!("- p.{n} — {quote} — Nota: \"{note}\""),
+            AnnotKind::Note => format!("- p.{n} — {quote} _(nota)_"),
+            AnnotKind::Highlight => format!("- p.{n} — {quote} _(destaque)_"),
+            AnnotKind::Underline => format!("- p.{n} — {quote} _(sublinhado)_"),
+            AnnotKind::Strikeout => format!("- p.{n} — {quote} _(riscado)_"),
+        });
     }
     Some(lines.join("\n"))
+}
+
+/// Texto literal em Markdown: escapa o que viraria ênfase, link, código,
+/// HTML, citação, título ou tabela.
+fn md_escape(s: &str) -> String {
+    let mut out = String::with_capacity(s.len());
+    for c in s.chars() {
+        if matches!(
+            c,
+            '\\' | '`' | '*' | '_' | '[' | ']' | '<' | '>' | '#' | '|' | '&'
+        ) {
+            out.push('\\');
+        }
+        out.push(c);
+    }
+    out
+}
+
+/// Como `md_escape`, para texto que abre linha: `-`/`+`/`=` e `1.`/`1)` no
+/// começo virariam sublista ou sublinhado de título dentro do item.
+fn md_escape_line(s: &str) -> String {
+    let mut out = md_escape(s);
+    let digits = out.bytes().take_while(u8::is_ascii_digit).count();
+    if out.starts_with(['-', '+', '=']) {
+        out.insert(0, '\\');
+    } else if digits > 0 && out[digits..].starts_with(['.', ')']) {
+        out.insert(digits, '\\');
+    }
+    out
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -2238,6 +2340,8 @@ pub enum Message {
     CopySelection,
     /// ⋯/M: destaques como Markdown na área de transferência; ignora sem itens.
     CopyAnnotations,
+    /// ⋯: marcações como arquivo Markdown escolhido no diálogo (#135).
+    ExportAnnotations,
     /// Marca a seleção atual (H/U/S ou menu ⋯); ignora sem seleção.
     Annotate(AnnotKind),
     /// Janela perdeu o foco no meio do drag: o Up nunca chega, então a
@@ -2969,14 +3073,11 @@ impl Session {
                 if let Session::Ready(ready) = self {
                     ready.overflow_open = false;
                     if !ready.annotations.is_empty() {
-                        let source = ready.source.path();
-                        let name = source
-                            .file_name()
-                            .map(|name| name.to_string_lossy().into_owned())
-                            .unwrap_or_else(|| source.display().to_string());
-                        if let Some(md) =
-                            annotations_markdown(&name, &ready.annotations, &ready.pages.text)
-                        {
+                        if let Some(md) = annotations_markdown(
+                            &doc_file_name(ready.source.path()),
+                            &ready.annotations,
+                            &ready.pages.text,
+                        ) {
                             ready.save_status = Some(
                                 ready
                                     .lang
@@ -2987,6 +3088,28 @@ impl Session {
                                     .into(),
                             );
                             return clipboard::write(md);
+                        }
+                    }
+                }
+                Task::none()
+            }
+            Message::ExportAnnotations => {
+                if let Session::Ready(ready) = self {
+                    ready.overflow_open = false;
+                    if !ready.annotations.is_empty() {
+                        // O diálogo nativo já pede confirmação para substituir.
+                        let dest = rfd::FileDialog::new()
+                            .add_filter("Markdown", &["md"])
+                            .set_file_name(suggested_export_name(ready.source.path()))
+                            .save_file();
+                        if let Some(status) = export_annotations(
+                            ready.source.path(),
+                            &ready.annotations,
+                            &ready.pages.text,
+                            ready.lang,
+                            dest,
+                        ) {
+                            ready.save_status = Some(status);
                         }
                     }
                 }
@@ -4811,6 +4934,7 @@ fn acts_on_active_document(message: &Message) -> bool {
             | Message::SearchPrev
             | Message::CopySelection
             | Message::CopyAnnotations
+            | Message::ExportAnnotations
             | Message::Annotate(_)
             | Message::AnnotUndo
             | Message::AnnotRedo
@@ -9196,22 +9320,121 @@ mod tests {
     }
 
     #[test]
-    fn copy_annotations_skips_quoteless() {
+    fn markdown_reports_unavailable_excerpts_instead_of_dropping_them() {
         let text = vec![fake_layer(0, "trecho")];
-        // Lista vazia.
         assert!(annotations_markdown("doc.pdf", &[], &text).is_none());
-        // H/U/S sem citação (range vazio) e nota sem citação nem texto: nada
-        // para renderizar — `None`, não cabeçalho solitário.
         let annots = vec![
             fake_annot(1, 0, 0, 0, AnnotKind::Highlight, ""),
-            fake_annot(2, 0, 0, 0, AnnotKind::Note, ""),
+            fake_annot(2, 0, 50, 60, AnnotKind::Underline, ""),
             fake_annot(3, 0, 0, 0, AnnotKind::Note, "sem trecho"),
+            fake_annot(4, 1, 0, 6, AnnotKind::Strikeout, ""),
         ];
-        assert!(annotations_markdown("doc.pdf", &annots, &text).is_none());
-        // Camada ausente também rende citação vazia (pula, não quebra).
-        let missing: Vec<Option<TextLayer>> = vec![None];
-        let annots = vec![fake_annot(1, 0, 0, 6, AnnotKind::Highlight, "")];
-        assert!(annotations_markdown("doc.pdf", &annots, &missing).is_none());
+        assert_eq!(
+            annotations_markdown("doc.pdf", &annots, &text).unwrap(),
+            "## Destaques — doc.pdf\n\
+             \n\
+             - p.1 — _(trecho indisponível)_ _(destaque)_\n\
+             - p.1 — _(trecho indisponível)_ — Nota: \"sem trecho\"\n\
+             - p.1 — _(trecho indisponível)_ _(sublinhado)_\n\
+             - p.2 — _(trecho indisponível)_ _(riscado)_",
+            "intervalo vazio, fora do texto e página sem camada viram aviso, não somem"
+        );
+    }
+
+    #[test]
+    fn markdown_keeps_note_lines_accents_and_escapes_syntax() {
+        let plain = "função *crítica* [ver] <b> & cia";
+        let text = vec![fake_layer(0, plain)];
+        let annots = vec![fake_annot(
+            1,
+            0,
+            0,
+            plain.len(),
+            AnnotKind::Note,
+            "Revisar ação\n\n\n- item_a\n===\n2. depois #fim\n  `código`  \n\n",
+        )];
+        assert_eq!(
+            annotations_markdown("relatório_final\n.pdf", &annots, &text).unwrap(),
+            "## Destaques — relatório\\_final .pdf\n\
+             \n\
+             - p.1 — \"função \\*crítica\\* \\[ver\\] \\<b\\> \\& cia\" — Nota: \"Revisar ação  \n    \n  \
+             \\- item\\_a  \n  \
+             \\===  \n  \
+             2\\. depois \\#fim  \n  \
+             \\`código\\`\"",
+            "uma linha em branco entre parágrafos fica; as do fim e as repetidas não"
+        );
+    }
+
+    fn export_tmp(name: &str) -> PathBuf {
+        let dir = std::env::temp_dir().join(format!("tsuro-export-{}-{name}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        dir
+    }
+
+    #[test]
+    fn export_writes_the_markdown_and_names_only_the_file() {
+        let dir = export_tmp("ok");
+        let source = dir.join("guia.pdf");
+        let dest = dir.join("notas.md");
+        std::fs::write(&dest, "conteúdo antigo").unwrap();
+        let text = vec![fake_layer(0, "ola mundo")];
+        let annots = vec![fake_annot(1, 0, 0, 3, AnnotKind::Note, "linha 1\nlinha 2")];
+
+        let status = export_annotations(&source, &annots, &text, Lang::Pt, Some(dest.clone()));
+        let written = std::fs::read_to_string(&dest).unwrap();
+        let status_en = export_annotations(&source, &annots, &text, Lang::En, Some(dest));
+        let _ = std::fs::remove_dir_all(&dir);
+
+        assert_eq!(
+            written,
+            "## Destaques — guia.pdf\n\
+             \n\
+             - p.1 — \"ola\" — Nota: \"linha 1  \n  linha 2\"\n",
+            "substitui o conteúdo antigo"
+        );
+        assert_eq!(status.as_deref(), Some("Marcações exportadas: notas.md"));
+        assert_eq!(status_en.as_deref(), Some("Annotations exported: notas.md"));
+    }
+
+    #[test]
+    fn export_cancel_writes_nothing_and_says_nothing() {
+        let dir = export_tmp("cancel");
+        let annots = vec![fake_annot(1, 0, 0, 3, AnnotKind::Highlight, "")];
+        let status = export_annotations(&dir.join("guia.pdf"), &annots, &[], Lang::Pt, None);
+        let entries = std::fs::read_dir(&dir).unwrap().count();
+        let _ = std::fs::remove_dir_all(&dir);
+        assert_eq!(status, None);
+        assert_eq!(entries, 0);
+    }
+
+    #[test]
+    fn export_refuses_the_open_pdf_and_reports_write_failure() {
+        let dir = export_tmp("fail");
+        let source = dir.join("guia.pdf");
+        std::fs::write(&source, b"%PDF-1.4 original").unwrap();
+        let annots = vec![fake_annot(1, 0, 0, 3, AnnotKind::Highlight, "")];
+
+        let refused = export_annotations(&source, &annots, &[], Lang::Pt, Some(source.clone()));
+        let pdf_after = std::fs::read(&source).unwrap();
+
+        let missing = dir.join("nao-existe").join("notas.md");
+        let failed = export_annotations(&source, &annots, &[], Lang::Pt, Some(missing.clone()));
+        let missing_exists = missing.exists();
+        let _ = std::fs::remove_dir_all(&dir);
+
+        assert_eq!(pdf_after, b"%PDF-1.4 original", "o PDF não muda");
+        assert_eq!(
+            refused.as_deref(),
+            Some("Escolha outro nome — o original nunca é sobrescrito.")
+        );
+        assert!(!missing_exists);
+        let failed = failed.unwrap_or_default();
+        assert!(
+            failed.starts_with("Não foi possível exportar as marcações:"),
+            "falha de gravação não vira sucesso: {failed:?}"
+        );
     }
 
     #[test]
