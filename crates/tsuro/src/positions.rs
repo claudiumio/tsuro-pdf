@@ -98,14 +98,22 @@ fn mtime_matches(stored: u64, current_ns: u64) -> bool {
     stored == current_ns || (stored < LEGACY_MTIME_SECS_MAX && stored == current_ns / 1_000_000_000)
 }
 
-fn escape_path(path: &Path) -> String {
-    path.to_string_lossy()
-        .replace('\\', "\\\\")
+pub(crate) fn escape_path(path: &Path) -> String {
+    escape_field(&path.to_string_lossy())
+}
+
+pub(crate) fn unescape_path(raw: &str) -> PathBuf {
+    PathBuf::from(unescape_field(raw))
+}
+
+/// Campo de uma linha só: `\`, tab e quebra de linha escapados.
+pub(crate) fn escape_field(raw: &str) -> String {
+    raw.replace('\\', "\\\\")
         .replace('\t', "\\t")
         .replace('\n', "\\n")
 }
 
-fn unescape_path(raw: &str) -> PathBuf {
+pub(crate) fn unescape_field(raw: &str) -> String {
     let mut out = String::with_capacity(raw.len());
     let mut chars = raw.chars();
     while let Some(c) = chars.next() {
@@ -120,7 +128,7 @@ fn unescape_path(raw: &str) -> PathBuf {
             out.push(c);
         }
     }
-    PathBuf::from(out)
+    out
 }
 
 fn encode_zoom(zoom: Zoom) -> String {
