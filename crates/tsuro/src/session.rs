@@ -5811,8 +5811,9 @@ impl Ready {
     /// Salva o rascunho como nota (`kind: Note`, texto do draft) via pilha
     /// de undo (limpa o redo, como `annotate_selection`). Texto vazio ou
     /// só-espaço descarta sem criar (sem undo entry). Edição de nota
-    /// existente vira `Remove(antiga)` + `Add(nova)` na pilha — desfazer os
-    /// dois passos restaura o texto antigo. `false` sem draft ou descartado.
+    /// existente vira `Remove(antiga)` + `Add(nova)` com o mesmo ID na
+    /// pilha — desfazer os dois passos restaura o texto antigo. `false` sem
+    /// draft ou descartado.
     pub(crate) fn save_note_draft(&mut self) -> bool {
         let Some(draft) = self.note_draft.take() else {
             return false;
@@ -5833,8 +5834,17 @@ impl Ready {
             self.apply_annot_action(AnnotAction::Remove(old.clone()));
             self.annot_undo.push(AnnotAction::Remove(old.clone()));
         }
+        // Editar mantém o ID (D-E, #128): diário e painel referenciam a nota por ele.
+        let id = match previous.as_ref() {
+            Some(old) => old.id,
+            None => {
+                let id = self.next_annot_id;
+                self.next_annot_id += 1;
+                id
+            }
+        };
         let annot = Annotation {
-            id: self.next_annot_id,
+            id,
             page: draft.page,
             range: draft.range,
             quads: draft.quads,
@@ -5842,7 +5852,6 @@ impl Ready {
             text,
             marker: previous.and_then(|old| old.marker),
         };
-        self.next_annot_id += 1;
         self.apply_annot_action(AnnotAction::Add(annot.clone()));
         self.annot_undo.push(AnnotAction::Add(annot));
         self.annot_redo.clear();
@@ -9923,21 +9932,32 @@ mod tests {
         ready.note_draft = Some(dummy_draft_with("antiga"));
         assert!(ready.save_note_draft());
         let id = ready.annotations[0].id;
-        // Edição (draft com editing = Some(id)): Remove(antiga) + Add(nova).
         let mut draft = dummy_draft_with("nova");
         draft.editing = Some(id);
         ready.note_draft = Some(draft);
         assert!(ready.save_note_draft());
-        assert_eq!(ready.annotations.len(), 1);
-        assert_ne!(ready.annotations[0].id, id);
-        assert_eq!(ready.annotations[0].text, "nova");
-        // Desfaz a edição: primeiro some, segundo restaura o texto antigo.
+        let texts = |ready: &Ready| {
+            ready
+                .annotations
+                .iter()
+                .map(|a| (a.id, a.text.clone()))
+                .collect::<Vec<_>>()
+        };
+        assert_eq!(texts(&ready), [(id, "nova".into())], "edição mantém o ID");
         assert!(ready.annot_undo_once());
-        assert!(ready.annotations.is_empty());
+        assert!(ready.annotations.is_empty(), "1º undo tira a nova");
         assert!(ready.annot_undo_once());
-        assert_eq!(ready.annotations.len(), 1);
-        assert_eq!(ready.annotations[0].id, id);
-        assert_eq!(ready.annotations[0].text, "antiga");
+        assert_eq!(
+            texts(&ready),
+            [(id, "antiga".into())],
+            "2º undo devolve a antiga"
+        );
+        assert!(ready.annot_redo_once());
+        assert!(ready.annot_redo_once());
+        assert_eq!(texts(&ready), [(id, "nova".into())], "redo refaz a edição");
+        ready.note_draft = Some(dummy_draft_with("outra"));
+        assert!(ready.save_note_draft());
+        assert_ne!(ready.annotations[1].id, id, "nota nova ainda ganha ID novo");
     }
 
     #[test]
