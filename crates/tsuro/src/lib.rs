@@ -10,6 +10,7 @@ pub mod view;
 
 pub(crate) mod engine;
 pub(crate) mod print;
+pub(crate) mod recovery;
 pub(crate) mod spool;
 pub(crate) mod update;
 
