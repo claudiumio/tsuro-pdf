@@ -31,7 +31,7 @@ O log de operações só compensaria com milhares de marcações por documento, 
 
 ### 2.2 Um ponto de checkpoint, como `saved_marks`
 
-`Ready` ganha `journaled: Vec<Annotation>`, o último conjunto gravado com sucesso. Depois de cada `update`, se `annotations != journaled`, agenda um checkpoint com atraso `D`. Isso:
+`Ready` ganha `journaled: Vec<Annotation>`, o último conjunto gravado com sucesso. Depois de cada `update`, se `encode(annotations)` difere do último texto gravado, agenda um checkpoint com atraso `D`. Comparar o texto codificado, e não `Vec<Annotation>` com `PartialEq`, evita dois erros de `f32`: um NaN nunca seria igual a si mesmo e regravaria para sempre, e `-0.0 == 0.0` esconderia uma mudança. Isso:
 
 - cobre criar, editar, apagar, mover, desfazer e refazer sem tocar nos seis métodos de mutação;
 - nunca grava o estado intermediário de uma edição (`Remove` + `Add` acontecem dentro do mesmo handler);
@@ -68,6 +68,7 @@ end <quantidade> <checksum-hex>
 - A linha `end` com quantidade e checksum detecta truncamento e corrupção. Sem ela, o arquivo é rejeitado inteiro.
 - Gravação: escrever `<id>.tmp`, `sync_all`, renomear `<id>.journal` para `<id>.prev`, renomear `.tmp` para `<id>.journal` e fsync do diretório no Unix. Leitura tenta `.journal` e cai para `.prev`. Assim o último checkpoint validado sempre existe (critério 4), inclusive se o processo morrer entre os dois renames.
 - Isso cobre crash do processo e queda de energia em sistemas de arquivos que honram fsync.
+- O leitor separa linhas só por `\n`. O escape não cobre `\r`, e `str::lines()` cortaria um `\r` final do texto da nota sem o checksum perceber.
 
 ### 2.6 Concorrência: cada aba escreve só no seu arquivo
 
@@ -79,7 +80,9 @@ A aba segura um lock exclusivo num arquivo lateral `<instância>.lock` enquanto 
 2. ignorar os que têm `.lock` ainda preso (outra aba ou outro processo vivo);
 3. dos restantes, oferecer os de hash igual.
 
-Restaurar copia as marcações para a aba atual, que passa a gravar no próprio diário. O diário antigo só é apagado depois de o novo ter o primeiro checkpoint confirmado. Uma falha no meio deixa os dois arquivos, nunca nenhum.
+Restaurar copia as marcações para a aba atual, que passa a gravar no próprio diário. O diário antigo só é apagado depois de o novo ter o primeiro checkpoint confirmado. Uma falha no meio deixa os dois arquivos, nunca nenhum. `adopt` recusa se a aba ainda não tem checkpoint próprio. Se o lock do diário antigo estiver ocupado por um instante (a sonda de outro processo), `adopt` devolve `WouldBlock` e a sessão tenta de novo depois, sem tratar como erro.
+
+O `Journal` só é criado no primeiro checkpoint. Aba sem marcações nunca deixa `.lock` no disco.
 
 ### 2.7 Ciclo de vida
 
@@ -90,7 +93,7 @@ Restaurar copia as marcações para a aba atual, que passa a gravar no próprio 
 | Salvar cópia anotada | não apaga, não grava nada na cópia (critério 6) |
 | Exportar Markdown ou copiar | não apaga |
 | Fechar com "Descartar" confirmado | apaga |
-| Fechar sem marcações | apaga (o diário está vazio) |
+| Fechar sem marcações | nada a apagar (o diário nunca foi criado) |
 | Fechar limpo depois de salvar cópia | **decisão D-B abaixo** |
 | `ReloadDisk` | mantém até o usuário descartar |
 | Crash | fica no disco, oferecido na próxima abertura |
