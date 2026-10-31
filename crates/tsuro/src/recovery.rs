@@ -414,6 +414,7 @@ fn remove_instance(dir: &Path, id: &InstanceId, lock: File) -> io::Result<()> {
             _ => {}
         }
     }
+    sync_dir(dir)?;
     drop(lock);
     Ok(())
 }
