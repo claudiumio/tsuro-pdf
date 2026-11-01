@@ -15,6 +15,7 @@ use crate::browse::{EmptyState, FsEntry, Thumb};
 use crate::i18n::Lang;
 use crate::kiri::{self, CheckSeverity, Theme, Tokens};
 use crate::page::{MediaBox, PageNo};
+use crate::prefs::ThemePref;
 use crate::print::{PrintOrientation, MAX_COPIES};
 use crate::search::Search;
 #[cfg(target_os = "macos")]
@@ -889,7 +890,7 @@ fn overflow_layer(tabs: &Tabs, t: Tokens) -> Element<'_, Message> {
     } else {
         44.0
     };
-    let card = container(overflow_menu(tabs, t))
+    let card = container(overflow_menu(tabs, tabs.settings.theme_pref, t))
         .width(Length::Fill)
         .height(Length::Fill)
         .align_x(Alignment::End)
@@ -905,7 +906,7 @@ fn overflow_layer(tabs: &Tabs, t: Tokens) -> Element<'_, Message> {
 
 /// Menu ⋯ (#42): grupos Arquivo/Editar/Ver/Ir/Ajuda com dicas de atalho.
 /// Recentes na mesma lista da tela vazia; Sobre abre o cartão de versão.
-fn overflow_menu(ready: &Ready, t: Tokens) -> Element<'_, Message> {
+fn overflow_menu(ready: &Ready, pref: ThemePref, t: Tokens) -> Element<'_, Message> {
     let mut items = column![].spacing(2).width(Length::Fill);
     items = items.push(section_title(t.lang.pick("Arquivo", "File"), t));
     items = items.push(menu_item(
@@ -1060,11 +1061,26 @@ fn overflow_menu(ready: &Ready, t: Tokens) -> Element<'_, Message> {
         Message::SetViewMode(ViewMode::Continuous),
         !single,
     ));
-    let dark = ready.theme.is_dark();
     items = items.push(
         row![
-            menu_theme_button(t, t.lang.pick("Escuro", "Dark"), Theme::Dark, dark),
-            menu_theme_button(t, t.lang.pick("Claro", "Light"), Theme::Light, !dark),
+            menu_theme_button(
+                t,
+                t.lang.pick("Sistema", "System"),
+                ThemePref::System,
+                pref == ThemePref::System
+            ),
+            menu_theme_button(
+                t,
+                t.lang.pick("Escuro", "Dark"),
+                ThemePref::Dark,
+                pref == ThemePref::Dark
+            ),
+            menu_theme_button(
+                t,
+                t.lang.pick("Claro", "Light"),
+                ThemePref::Light,
+                pref == ThemePref::Light
+            ),
         ]
         .spacing(4),
     );
@@ -1947,15 +1963,30 @@ fn settings_layer(settings: &SettingsPanel, t: Tokens) -> Element<'static, Messa
 
 #[allow(clippy::too_many_lines)]
 fn settings_card(settings: &SettingsPanel, t: Tokens) -> Element<'static, Message> {
-    let dark = t.is_dark;
     let mut body = column![
         text(t.lang.pick("Configurações", "Settings"))
             .size(16)
             .color(t.ink),
         section_title(t.lang.pick("Tema", "Theme"), t),
         row![
-            menu_theme_button(t, t.lang.pick("Escuro", "Dark"), Theme::Dark, dark),
-            menu_theme_button(t, t.lang.pick("Claro", "Light"), Theme::Light, !dark),
+            menu_theme_button(
+                t,
+                t.lang.pick("Sistema", "System"),
+                ThemePref::System,
+                settings.theme_pref == ThemePref::System
+            ),
+            menu_theme_button(
+                t,
+                t.lang.pick("Escuro", "Dark"),
+                ThemePref::Dark,
+                settings.theme_pref == ThemePref::Dark
+            ),
+            menu_theme_button(
+                t,
+                t.lang.pick("Claro", "Light"),
+                ThemePref::Light,
+                settings.theme_pref == ThemePref::Light
+            ),
         ]
         .spacing(4),
         section_title(t.lang.pick("Leitor padrão", "Default reader"), t),
@@ -2302,12 +2333,12 @@ fn save_warning_card(t: Tokens) -> Element<'static, Message> {
 fn menu_theme_button(
     t: Tokens,
     label: &'static str,
-    theme: Theme,
+    pref: ThemePref,
     active: bool,
 ) -> Element<'static, Message> {
     control_active(
         t,
-        button(text(label).size(13)).on_press(Message::SetTheme(theme)),
+        button(text(label).size(13)).on_press(Message::SetTheme(pref)),
         active,
     )
     .width(Length::Fill)
