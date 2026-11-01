@@ -3481,6 +3481,8 @@ fn status_dot(color: Color) -> Element<'static, Message> {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum ContentCheck {
     Matches,
+    /// `DocumentModified` com cobertura total. O mesmo estado vem de um CMS sem
+    /// messageDigest (tsuro-sign #161), então o rótulo não afirma adulteração.
     Altered,
     /// `DocumentModified` com cobertura parcial: o engine não separa alteração
     /// de bytes posteriores, então o rótulo não afirma nenhum dos dois.
@@ -3581,8 +3583,8 @@ impl ContentCheck {
                 lang.pick("Confere com o resumo assinado", "Matches the signed digest")
             }
             Self::Altered => lang.pick(
-                "Não confere: o conteúdo assinado foi alterado",
-                "Does not match: the signed content was changed",
+                "Não confere com o resumo assinado, ou o resumo não pôde ser lido",
+                "Does not match the signed digest, or the digest could not be read",
             ),
             Self::AlteredOrAppended => lang.pick(
                 "Alterado, ou com bytes depois da assinatura: não dá para separar",
@@ -4075,7 +4077,7 @@ mod signature_checks_tests {
     }
 
     #[test]
-    fn digest_mismatch_over_the_whole_file_is_altered() {
+    fn whole_file_digest_failure_is_not_claimed_as_tampering() {
         let s = sig(
             SignatureStatus::DocumentModified,
             Some("SHA-256"),
@@ -4215,8 +4217,8 @@ mod signature_checks_tests {
         assert_eq!(
             pt_en(|l| ContentCheck::Altered.label(l)),
             (
-                "Não confere: o conteúdo assinado foi alterado",
-                "Does not match: the signed content was changed"
+                "Não confere com o resumo assinado, ou o resumo não pôde ser lido",
+                "Does not match the signed digest, or the digest could not be read"
             )
         );
         assert_eq!(
