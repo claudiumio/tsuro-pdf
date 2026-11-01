@@ -3390,14 +3390,7 @@ fn signatures_panel(ready: &Ready, t: Tokens) -> Element<'_, Message> {
         );
     } else {
         for sig in &ready.signatures.signatures {
-            let name = sig
-                .signer_name
-                .as_deref()
-                .or(sig
-                    .certificate
-                    .as_ref()
-                    .and_then(|c| c.common_name.as_deref()))
-                .unwrap_or(t.lang.pick("Assinante", "Signer"));
+            let name = signer_title(sig, t.lang);
             let mut card = column![text(name).size(13).color(t.ink)].spacing(8);
             for check in sig_rows(sig, t.lang) {
                 card = card.push(
@@ -3501,6 +3494,9 @@ enum CoverageCheck {
 enum CryptoCheck {
     Passed,
     UnsupportedDigest,
+    /// tsuro-sign sobrescreve o status ao achar bytes fora do intervalo, então o
+    /// resultado RSA original some: não dá para afirmar nem aprovação nem falha.
+    UnavailablePartialCoverage,
     NotVerified,
 }
 
@@ -3553,6 +3549,13 @@ fn sig_checks(sig: &SignatureInfo) -> SigChecks {
     };
     let crypto = if sha256_passed {
         CryptoCheck::Passed
+    } else if sig.status == S::DocumentModified
+        && sig.byte_range.is_some()
+        && !sig.covers_whole_document
+    {
+        // Sem ByteRange a RSA nunca roda. Com ele, pode ter rodado e tsuro-sign
+        // sobrescreveu o status com bytes fora do intervalo.
+        CryptoCheck::UnavailablePartialCoverage
     } else if matches!(sig.status, S::Unsupported | S::IntactButUntrusted)
         && digest.is_some_and(|alg| alg != "SHA-256")
     {
@@ -3640,6 +3643,10 @@ impl CryptoCheck {
                 "Não verificada: algoritmo de resumo sem suporte",
                 "Not verified: digest algorithm not supported",
             ),
+            Self::UnavailablePartialCoverage => lang.pick(
+                "Não verificada: resultado indisponível quando o intervalo não cobre o arquivo inteiro",
+                "Not verified: result unavailable when the signed range does not cover the whole file",
+            ),
             Self::NotVerified => lang.pick(
                 "Não verificada: a checagem não passou ou não pôde ser feita",
                 "Not verified: the check did not pass or could not run",
@@ -3650,7 +3657,9 @@ impl CryptoCheck {
     fn severity(self) -> CheckSeverity {
         match self {
             Self::Passed => CheckSeverity::Passed,
-            Self::UnsupportedDigest | Self::NotVerified => CheckSeverity::Attention,
+            Self::UnsupportedDigest | Self::UnavailablePartialCoverage | Self::NotVerified => {
+                CheckSeverity::Attention
+            }
         }
     }
 }
@@ -3728,25 +3737,57 @@ fn sig_rows(sig: &SignatureInfo, lang: Lang) -> [CheckRow; 5] {
     ]
 }
 
+/// De onde vem o nome exibido. Só `Certificate` foi conferido com o certificado;
+/// `Declared` é o /Name escrito no PDF, que qualquer um pode preencher.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum SignerSource<'a> {
+    Certificate(&'a str),
+    Declared(&'a str),
+    Unknown,
+}
+
+fn signer_source(sig: &SignatureInfo) -> SignerSource<'_> {
+    if let Some(cn) = sig
+        .certificate
+        .as_ref()
+        .and_then(|c| c.common_name.as_deref())
+    {
+        SignerSource::Certificate(cn)
+    } else if let Some(name) = sig.signer_name.as_deref() {
+        SignerSource::Declared(name)
+    } else {
+        SignerSource::Unknown
+    }
+}
+
+/// Nome do cartão: o do certificado, senão o declarado no PDF, senão genérico.
+fn signer_title(sig: &SignatureInfo, lang: Lang) -> &str {
+    match signer_source(sig) {
+        SignerSource::Certificate(name) | SignerSource::Declared(name) => name,
+        SignerSource::Unknown => lang.pick("Assinante", "Signer"),
+    }
+}
+
 /// Fatos do certificado e do PDF, mostrados sem o rótulo de verificação.
 fn sig_facts(sig: &SignatureInfo, lang: Lang) -> Vec<String> {
     let mut facts = Vec::new();
-    match &sig.certificate {
-        None => facts.push(
+    if matches!(signer_source(sig), SignerSource::Declared(_)) {
+        facts.push(
             lang.pick(
-                "Nome declarado no PDF, sem certificado para conferir",
-                "Name declared in the PDF, no certificate to check",
+                "Nome declarado no PDF, não conferido com o certificado",
+                "Name declared in the PDF, not checked against the certificate",
             )
             .to_string(),
-        ),
-        Some(cert) if cert.is_self_signed => facts.push(
+        );
+    }
+    if sig.certificate.as_ref().is_some_and(|c| c.is_self_signed) {
+        facts.push(
             lang.pick(
                 "Titular e emissor têm o mesmo nome",
                 "Subject and issuer have the same name",
             )
             .to_string(),
-        ),
-        Some(_) => {}
+        );
     }
     if let Some(time) = &sig.signing_time {
         facts.push(format!(
@@ -4110,9 +4151,30 @@ mod signature_checks_tests {
             SigChecks {
                 content: ContentCheck::AlteredOrAppended,
                 coverage: CoverageCheck::PartialFile,
-                crypto: CryptoCheck::NotVerified,
+                crypto: CryptoCheck::UnavailablePartialCoverage,
                 clock: ClockCheck::NotVerified,
             }
+        );
+    }
+
+    #[test]
+    fn partial_coverage_crypto_row_does_not_claim_a_failed_check() {
+        let s = sig(
+            SignatureStatus::DocumentModified,
+            Some("SHA-256"),
+            false,
+            true,
+            true,
+        );
+        let pt = sig_rows(&s, Lang::Pt);
+        assert_eq!(
+            pt[2].text,
+            "Não verificada: resultado indisponível quando o intervalo não cobre o arquivo inteiro"
+        );
+        assert_eq!(pt[2].severity, CheckSeverity::Attention);
+        assert_eq!(
+            sig_rows(&s, Lang::En)[2].text,
+            "Not verified: result unavailable when the signed range does not cover the whole file"
         );
     }
 
@@ -4275,6 +4337,13 @@ mod signature_checks_tests {
             )
         );
         assert_eq!(
+            pt_en(|l| CryptoCheck::UnavailablePartialCoverage.label(l)),
+            (
+                "Não verificada: resultado indisponível quando o intervalo não cobre o arquivo inteiro",
+                "Not verified: result unavailable when the signed range does not cover the whole file"
+            )
+        );
+        assert_eq!(
             pt_en(|l| ClockCheck::WithinValidity.label(l)),
             (
                 "Dentro do prazo; não prova a data da assinatura",
@@ -4371,11 +4440,39 @@ mod signature_checks_tests {
             sig_facts(&s, Lang::En)[0],
             "Subject and issuer have the same name"
         );
-        s.certificate = None;
-        assert_eq!(
-            sig_facts(&s, Lang::Pt)[0],
-            "Nome declarado no PDF, sem certificado para conferir"
+    }
+
+    #[test]
+    fn pdf_name_is_flagged_only_when_the_certificate_has_no_name() {
+        let mut s = sig(
+            SignatureStatus::IntactButUntrusted,
+            Some("SHA-256"),
+            true,
+            true,
+            true,
         );
+        s.signer_name = Some("Banco".into());
+        assert_eq!(signer_title(&s, Lang::Pt), "Maria");
+        assert!(sig_facts(&s, Lang::Pt).is_empty());
+
+        if let Some(cert) = s.certificate.as_mut() {
+            cert.common_name = None;
+        }
+        assert_eq!(signer_title(&s, Lang::Pt), "Banco");
+        assert_eq!(
+            sig_facts(&s, Lang::Pt),
+            vec!["Nome declarado no PDF, não conferido com o certificado".to_string()]
+        );
+        assert_eq!(
+            sig_facts(&s, Lang::En),
+            vec!["Name declared in the PDF, not checked against the certificate".to_string()]
+        );
+
+        s.certificate = None;
+        s.signer_name = None;
+        assert_eq!(signer_title(&s, Lang::Pt), "Assinante");
+        assert_eq!(signer_title(&s, Lang::En), "Signer");
+        assert!(sig_facts(&s, Lang::Pt).is_empty());
     }
 
     #[test]
