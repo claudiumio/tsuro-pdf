@@ -17,7 +17,9 @@ use crate::browse::{
 };
 use crate::engine::PdfiumEngine;
 use crate::i18n::Lang;
-use crate::kiri::{Theme, Tokens};
+use crate::kiri::Theme;
+#[cfg(test)]
+use crate::kiri::Tokens;
 use crate::page::{
     Bitmap, EngineError, Glyph, MediaBox, Outline, OutlineItem, PageEngine, PageNo, PageSurface,
     Quad, Scale, TextLayer, Viewport,
@@ -5472,7 +5474,8 @@ fn query_os_dark() -> Option<bool> {
         ])
         .output()
         .ok()?;
-    let line = String::from_utf8_lossy(&out.stdout)
+    let stdout = String::from_utf8_lossy(&out.stdout);
+    let line = stdout
         .lines()
         .find(|line| line.contains("AppsUseLightTheme"))?;
     match line.split_whitespace().last()? {
