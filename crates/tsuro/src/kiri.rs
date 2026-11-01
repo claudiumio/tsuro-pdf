@@ -583,23 +583,49 @@ pub fn worst_check_color(
     severities.into_iter().max().map(|s| check_color(tokens, s))
 }
 
-/// Cartão do menu ⋯: fundo `elevated`, borda `line`, raio 8, sombra leve.
-pub fn menu_style(tokens: Tokens) -> impl Fn(&iced::Theme) -> container::Style {
+/// Superfície elevada (spec §4/§5): fundo `elevated`, hairline `line` e a
+/// sombra do preset. O raio é o que distingue menu, popover e folha.
+fn raised(
+    tokens: Tokens,
+    role: Radius,
+    preset: Elevation,
+) -> impl Fn(&iced::Theme) -> container::Style {
+    let spec = elevation(preset);
     move |_| container::Style {
         background: Some(Background::Color(tokens.elevated)),
         border: Border {
             color: tokens.line,
-            width: 1.0,
-            radius: 8.0.into(),
+            width: spec.ring.map_or(0.0, |(width, _)| width.max(1.0)),
+            radius: radius(role).into(),
         },
-        shadow: Shadow {
-            color: Color::from_rgba(0.0, 0.0, 0.0, if tokens.is_dark { 0.35 } else { 0.12 }),
-            offset: Vector::new(0.0, 8.0),
-            blur_radius: 24.0,
-        },
+        shadow: spec.shadows[0].unwrap_or_default(),
         text_color: Some(tokens.ink),
         ..container::Style::default()
     }
+}
+
+/// Cartão do menu ⋯ (spec §5): raio 12, item de 24.
+pub fn menu_style(tokens: Tokens) -> impl Fn(&iced::Theme) -> container::Style {
+    raised(tokens, Radius::Menu, Elevation::Menu)
+}
+
+/// Folha de diálogo (spec §5): raio 26. Configurações, impressão, avisos e
+/// recuperação falam nesta altura; só o menu usa o raio menor.
+pub fn sheet_style(tokens: Tokens) -> impl Fn(&iced::Theme) -> container::Style {
+    raised(tokens, Radius::Sheet, Elevation::Popover)
+}
+
+/// Popover (spec §5): raio 20, um por vez. É o vocabulário da paleta, que
+/// flutua sobre o documento e fecha no clique fora.
+pub fn popover_style(tokens: Tokens) -> impl Fn(&iced::Theme) -> container::Style {
+    raised(tokens, Radius::Popover, Elevation::Popover)
+}
+
+/// Véu dos modais (spec §4): preto 25%, o mesmo em todos os sete lugares.
+/// O render faz o blend em espaço linear, então 0.25 de alfa escurece só
+/// ~12%; 0.475 entrega os 25% que o spec mede na tela.
+pub fn scrim() -> Color {
+    Color::from_rgba(0.0, 0.0, 0.0, 0.475)
 }
 
 /// Dica (tooltip) de ícone/botão: fundo `elevated`, borda `line`, raio 6,
@@ -635,6 +661,39 @@ pub fn menu_item_style(tokens: Tokens) -> impl Fn(&iced::Theme, button::Status) 
             text_color: tokens.ink,
             border: Border {
                 radius: 6.0.into(),
+                ..Border::default()
+            },
+            shadow: Shadow::default(),
+        }
+    }
+}
+
+/// Linha do menu ⋯ (spec §5): hover no acento ocupando a largura toda, raio
+/// 8; o modo vigente fica em `accent_bg`, como no resto do chrome.
+pub fn menu_row_style(
+    tokens: Tokens,
+    active: bool,
+) -> impl Fn(&iced::Theme, button::Status) -> button::Style {
+    move |_theme, status| {
+        let background = if active {
+            tokens.accent_bg
+        } else {
+            match status {
+                button::Status::Hovered | button::Status::Pressed => tokens.accent,
+                _ => Color::TRANSPARENT,
+            }
+        };
+        button::Style {
+            background: Some(Background::Color(background)),
+            text_color: if active {
+                tokens.accent
+            } else if matches!(status, button::Status::Hovered | button::Status::Pressed) {
+                tokens.page
+            } else {
+                tokens.ink
+            },
+            border: Border {
+                radius: radius(Radius::Item).into(),
                 ..Border::default()
             },
             shadow: Shadow::default(),

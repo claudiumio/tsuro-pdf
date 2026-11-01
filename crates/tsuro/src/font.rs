@@ -128,6 +128,61 @@ mod tests {
         None
     }
 
+    /// Every non-ASCII glyph `view.rs` draws must exist in the embedded
+    /// Regular face: iced paints tofu for a missing glyph, and ▸/▾ slipped
+    /// through that way when Inter became the default font.
+    #[test]
+    fn chrome_glyphs_have_a_face() {
+        let mut uncovered: Vec<char> = include_str!("view.rs")
+            .lines()
+            .filter_map(|line| line.split("//").next())
+            .flat_map(str::chars)
+            .filter(|&ch| ch as u32 > 0x7F && !covers(REGULAR, ch as u32))
+            .collect();
+        uncovered.sort_unstable();
+        uncovered.dedup();
+        assert!(uncovered.is_empty(), "no embedded face for {uncovered:?}");
+    }
+
+    /// True when any `cmap` subtable maps `cp` to a glyph.
+    fn covers(bytes: &[u8], cp: u32) -> bool {
+        let mut cmap_off = 0usize;
+        for rec in bytes[12..].chunks_exact(16).take(be16(bytes, 4) as usize) {
+            if &rec[0..4] == b"cmap" {
+                cmap_off = be32(rec, 8) as usize;
+            }
+        }
+        (0..be16(bytes, cmap_off + 2) as usize).any(|i| {
+            let off = cmap_off + be32(bytes, cmap_off + 4 + i * 8 + 4) as usize;
+            match be16(bytes, off) {
+                4 => covers_segments(bytes, off, cp),
+                12 => covers_groups(bytes, off, cp),
+                _ => false,
+            }
+        })
+    }
+
+    /// Format 4: segment list of (end, start, delta, range offset).
+    fn covers_segments(bytes: &[u8], off: usize, cp: u32) -> bool {
+        let segs = be16(bytes, off + 6) as usize / 2;
+        let (ends, starts) = (off + 14, off + 16 + segs * 2);
+        (0..segs).any(|i| {
+            let (end, start) = (be16(bytes, ends + i * 2), be16(bytes, starts + i * 2));
+            let delta = be16(bytes, starts + segs * 2 + i * 2);
+            let range = be16(bytes, starts + segs * 4 + i * 2);
+            u32::from(start) <= cp && cp <= u32::from(end) && (range != 0 || delta != 0)
+        })
+    }
+
+    /// Format 12: grouped (start, end) ranges.
+    fn covers_groups(bytes: &[u8], off: usize, cp: u32) -> bool {
+        (0..be32(bytes, off + 12) as usize).any(|i| {
+            let group = off + 16 + i * 12;
+            let (start, end) = (be32(bytes, group), be32(bytes, group + 4));
+            start <= cp && cp <= end
+        })
+    }
+
     fn be16(b: &[u8], i: usize) -> u16 {
         u16::from_be_bytes([b[i], b[i + 1]])
     }

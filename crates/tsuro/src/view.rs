@@ -365,9 +365,13 @@ fn tip<'a>(
 ) -> Element<'a, Message> {
     tooltip::Tooltip::new(
         content,
-        container(text(label).size(13))
-            .padding(Padding::from([4, 8]))
-            .style(kiri::tooltip_style(t)),
+        container(
+            text(label)
+                .size(11)
+                .font(crate::font::inter(font::Weight::Medium)),
+        )
+        .padding(Padding::from([3, 6]))
+        .style(kiri::tooltip_style(t)),
         tooltip::Position::Bottom,
     )
     .gap(6)
@@ -382,9 +386,13 @@ fn tip_owned<'a>(
 ) -> Element<'a, Message> {
     tooltip::Tooltip::new(
         content,
-        container(text(label).size(13))
-            .padding(Padding::from([4, 8]))
-            .style(kiri::tooltip_style(t)),
+        container(
+            text(label)
+                .size(11)
+                .font(crate::font::inter(font::Weight::Medium)),
+        )
+        .padding(Padding::from([3, 6]))
+        .style(kiri::tooltip_style(t)),
         tooltip::Position::Bottom,
     )
     .gap(6)
@@ -885,7 +893,7 @@ fn overflow_layer(tabs: &Tabs, t: Tokens) -> Element<'_, Message> {
         .width(Length::Fill)
         .height(Length::Fill)
         .style(|_| container::Style {
-            background: Some(Background::Color(Color::from_rgba(0.0, 0.0, 0.0, 0.25))),
+            background: Some(Background::Color(kiri::scrim())),
             ..container::Style::default()
         });
     // Com 2+ abas a faixa soma TAB_STRIP_HEIGHT à topbar
@@ -925,9 +933,9 @@ fn overflow_menu(ready: &Ready, pref: ThemePref, t: Tokens) -> Element<'_, Messa
         t,
         "folder",
         if ready.recents_expanded {
-            t.lang.pick("Recentes ▾", "Recent ▾")
+            t.lang.pick("Recentes ▼", "Recent ▼")
         } else {
-            t.lang.pick("Recentes ▸", "Recent ▸")
+            t.lang.pick("Recentes ▶", "Recent ▶")
         },
         Message::ToggleRecents,
         false,
@@ -1133,12 +1141,18 @@ fn overflow_menu(ready: &Ready, pref: ThemePref, t: Tokens) -> Element<'_, Messa
         Message::ToggleAbout,
         false,
     ));
-    container(items)
-        .width(Length::Fixed(264.0))
+    container(scrollable(items))
+        .width(Length::Fixed(300.0))
+        // Altura máxima com rolagem interna: com muitos recentes o menu
+        // nunca deixa item fora da tela.
+        .max_height(MENU_MAX_H)
         .padding(6)
         .style(kiri::menu_style(t))
         .into()
 }
+
+/// Altura máxima do menu ⋯ antes de rolar por dentro.
+const MENU_MAX_H: f32 = 560.0;
 
 /// Rótulo de recente no menu: `pasta/arquivo.pdf` (como o cartão da tela
 /// vazia, numa linha só), com elipse no meio se passar de 30.
@@ -1174,8 +1188,8 @@ fn menu_item(
     }
     button(content)
         .width(Length::Fill)
-        .padding(Padding::from([8, 10]))
-        .style(kiri::panel_seg_style(t, active))
+        .padding(Padding::from([4, 10]))
+        .style(kiri::menu_row_style(t, active))
         .on_press(message)
         .into()
 }
@@ -1186,12 +1200,12 @@ fn menu_recent(t: Tokens, label: String, message: Message) -> Element<'static, M
     button(text(label).size(13))
         .width(Length::Fill)
         .padding(Padding {
-            top: 8.0,
+            top: 4.0,
             right: 10.0,
-            bottom: 8.0,
+            bottom: 4.0,
             left: 34.0,
         })
-        .style(kiri::panel_seg_style(t, false))
+        .style(kiri::menu_row_style(t, false))
         .on_press(message)
         .into()
 }
@@ -1207,7 +1221,7 @@ fn menu_disabled(t: Tokens, label: &'static str) -> Element<'static, Message> {
         .align_y(Alignment::Center),
     )
     .width(Length::Fill)
-    .padding(Padding::from([8, 10]))
+    .padding(Padding::from([4, 10]))
     .into()
 }
 
@@ -1218,7 +1232,7 @@ fn print_layer<'a>(ready: &'a Ready, dialog: &'a PrintDialog, t: Tokens) -> Elem
         .width(Length::Fill)
         .height(Length::Fill)
         .style(|_| container::Style {
-            background: Some(Background::Color(Color::from_rgba(0.0, 0.0, 0.0, 0.55))),
+            background: Some(Background::Color(kiri::scrim())),
             ..container::Style::default()
         });
     let card = container(mouse_area(print_card(ready, dialog, t)).on_press(Message::PrintNop))
@@ -1262,7 +1276,7 @@ fn print_card<'a>(ready: &'a Ready, dialog: &'a PrintDialog, t: Tokens) -> Eleme
     container(col)
         .width(Length::Fixed(620.0))
         .padding(16)
-        .style(kiri::menu_style(t))
+        .style(kiri::sheet_style(t))
         .into()
 }
 
@@ -1494,7 +1508,7 @@ fn note_layer(ready: &Ready, t: Tokens) -> Element<'_, Message> {
         .width(Length::Fill)
         .height(Length::Fill)
         .style(|_| container::Style {
-            background: Some(Background::Color(Color::from_rgba(0.0, 0.0, 0.0, 0.25))),
+            background: Some(Background::Color(kiri::scrim())),
             ..container::Style::default()
         });
     let card = container(mouse_area(note_card(draft, t)).on_press(Message::PrintNop))
@@ -1688,7 +1702,7 @@ fn recovery_layer(ready: &Ready, t: Tokens) -> Element<'static, Message> {
         .width(Length::Fill)
         .height(Length::Fill)
         .style(|_| container::Style {
-            background: Some(Background::Color(Color::from_rgba(0.0, 0.0, 0.0, 0.25))),
+            background: Some(Background::Color(kiri::scrim())),
             ..container::Style::default()
         });
     let card = container(mouse_area(recovery_card(ready, t)).on_press(Message::PrintNop))
@@ -1809,7 +1823,7 @@ fn recovery_card(ready: &Ready, t: Tokens) -> Element<'static, Message> {
     container(body.push(buttons))
         .width(Length::Fixed(440.0))
         .padding(16)
-        .style(kiri::menu_style(t))
+        .style(kiri::sheet_style(t))
         .into()
 }
 
@@ -1879,7 +1893,7 @@ fn save_warning_layer(t: Tokens) -> Element<'static, Message> {
         .width(Length::Fill)
         .height(Length::Fill)
         .style(|_| container::Style {
-            background: Some(Background::Color(Color::from_rgba(0.0, 0.0, 0.0, 0.25))),
+            background: Some(Background::Color(kiri::scrim())),
             ..container::Style::default()
         });
     let card = container(mouse_area(save_warning_card(t)).on_press(Message::PrintNop))
@@ -1897,7 +1911,7 @@ fn about_layer(t: Tokens) -> Element<'static, Message> {
         .width(Length::Fill)
         .height(Length::Fill)
         .style(|_| container::Style {
-            background: Some(Background::Color(Color::from_rgba(0.0, 0.0, 0.0, 0.25))),
+            background: Some(Background::Color(kiri::scrim())),
             ..container::Style::default()
         });
     let card = container(mouse_area(about_card(t)).on_press(Message::PrintNop))
@@ -1944,7 +1958,7 @@ fn about_card(t: Tokens) -> Element<'static, Message> {
     container(body)
         .width(Length::Fixed(320.0))
         .padding(16)
-        .style(kiri::menu_style(t))
+        .style(kiri::sheet_style(t))
         .into()
 }
 
@@ -1955,7 +1969,7 @@ fn settings_layer(settings: &SettingsPanel, t: Tokens) -> Element<'static, Messa
         .width(Length::Fill)
         .height(Length::Fill)
         .style(|_| container::Style {
-            background: Some(Background::Color(Color::from_rgba(0.0, 0.0, 0.0, 0.25))),
+            background: Some(Background::Color(kiri::scrim())),
             ..container::Style::default()
         });
     let card = container(mouse_area(settings_card(settings, t)).on_press(Message::PrintNop))
@@ -2145,7 +2159,7 @@ fn settings_card(settings: &SettingsPanel, t: Tokens) -> Element<'static, Messag
     container(body)
         .padding(12)
         .width(324)
-        .style(kiri::menu_style(t))
+        .style(kiri::sheet_style(t))
         .into()
 }
 
@@ -2155,7 +2169,7 @@ fn close_prompt_layer(t: Tokens) -> Element<'static, Message> {
         .width(Length::Fill)
         .height(Length::Fill)
         .style(|_| container::Style {
-            background: Some(Background::Color(Color::from_rgba(0.0, 0.0, 0.0, 0.25))),
+            background: Some(Background::Color(kiri::scrim())),
             ..container::Style::default()
         });
     let card = container(mouse_area(close_prompt_card(t)).on_press(Message::PrintNop))
@@ -2197,7 +2211,7 @@ fn close_prompt_card(t: Tokens) -> Element<'static, Message> {
     )
     .width(Length::Fixed(440.0))
     .padding(16)
-    .style(kiri::menu_style(t))
+    .style(kiri::sheet_style(t))
     .into()
 }
 
@@ -2207,7 +2221,7 @@ fn palette_layer(palette: &PaletteState, t: Tokens) -> Element<'_, Message> {
         .width(Length::Fill)
         .height(Length::Fill)
         .style(|_| container::Style {
-            background: Some(Background::Color(Color::from_rgba(0.0, 0.0, 0.0, 0.25))),
+            background: Some(Background::Color(kiri::scrim())),
             ..container::Style::default()
         });
     // Âncora no topo (Spotlight/VSCode), não no centro como os outros modais.
@@ -2298,7 +2312,7 @@ fn palette_card(palette: &PaletteState, t: Tokens) -> Element<'_, Message> {
     container(column![query, list].spacing(8))
         .width(Length::Fixed(560.0))
         .padding(12)
-        .style(kiri::menu_style(t))
+        .style(kiri::popover_style(t))
         .into()
 }
 
@@ -2331,7 +2345,7 @@ fn save_warning_card(t: Tokens) -> Element<'static, Message> {
     )
     .width(Length::Fixed(440.0))
     .padding(16)
-    .style(kiri::menu_style(t))
+    .style(kiri::sheet_style(t))
     .into()
 }
 
@@ -2365,7 +2379,7 @@ fn menu_lang_button(
     .into()
 }
 
-/// Progresso Kiri: 2px, fill `accent` proporcional à página visível.
+/// Progresso Kiri: 6px, fill `accent` proporcional à página visível.
 fn progress(ready: &Ready, t: Tokens) -> Element<'static, Message> {
     let n = ready.page_count().max(1);
     let done = (ready.visible.index() + 1).min(n);
@@ -2373,7 +2387,7 @@ fn progress(ready: &Ready, t: Tokens) -> Element<'static, Message> {
     let filled = ((done * 1000) / n).clamp(1, 1000) as u16;
     let mut bar = row![container(Space::with_width(Length::Fill))
         .width(Length::FillPortion(filled))
-        .height(Length::Fixed(2.0))
+        .height(Length::Fixed(6.0))
         .style(move |_| container::Style {
             background: Some(Background::Color(t.accent)),
             ..container::Style::default()
@@ -2387,7 +2401,7 @@ fn progress(ready: &Ready, t: Tokens) -> Element<'static, Message> {
     }
     container(bar)
         .width(Length::Fill)
-        .height(Length::Fixed(2.0))
+        .height(Length::Fixed(6.0))
         .style(move |_| container::Style {
             background: Some(Background::Color(t.surface)),
             ..container::Style::default()
@@ -2976,7 +2990,7 @@ fn outline_tab(ready: &Ready, t: Tokens) -> Element<'_, Message> {
         let is_focus = focus.as_ref() == Some(&path);
         let fold: Element<'_, Message> = if has_children {
             let collapsed = ready.outline_collapsed.contains(&path);
-            button(text(if collapsed { "▸" } else { "▾" }).size(11))
+            button(text(if collapsed { "▶" } else { "▼" }).size(11))
                 .padding(Padding::from([3, 5]))
                 .style(kiri::panel_fold_style(t))
                 .on_press(Message::OutlineFold(path.clone()))
