@@ -2779,6 +2779,9 @@ pub enum Message {
     },
     OpenRecent(PathBuf),
     RecentsReady(Vec<PathBuf>),
+    /// One embedded Inter face finished registering at boot (see
+    /// `crate::font`); the weight identifies which of the four arrived.
+    FontsLoaded(iced::font::Weight),
 }
 
 #[derive(Debug, Clone)]
@@ -2843,7 +2846,7 @@ impl Session {
             Session::Empty(_) => empty_tasks(self.lang()),
             _ => Task::none(),
         };
-        (self, Task::batch([open, check]))
+        (self, Task::batch([open, check, crate::font::register()]))
     }
 
     pub fn update(&mut self, message: Message) -> Task<Message> {
@@ -4333,6 +4336,12 @@ impl Session {
                     Session::Failed { .. } => {}
                 }
                 self.schedule_thumb()
+            }
+            Message::FontsLoaded(weight) => {
+                // Boot evidence: the four embedded Inter faces registered;
+                // the app default family is `crate::font::INTER`.
+                println!("Inter {weight:?} registered; default family: Inter");
+                Task::none()
             }
         }
     }
