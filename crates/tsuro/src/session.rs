@@ -30,6 +30,7 @@ use crate::print::{
     print_selection_pdf, write_and_open_print_pdf, PrintOrientation, PrintRange, PrintSelection,
     MAX_COPIES,
 };
+use crate::recovery::{self, Abandoned, Checkpoint, CheckpointJob, ContentId, Journal};
 use crate::search::Search;
 use crate::spool::{list_printers, spool_pdf, PrinterInfo};
 use crate::update::{self, release_version, UpdateError};
@@ -72,6 +73,9 @@ const LOADING_TICK: std::time::Duration = std::time::Duration::from_millis(90);
 
 /// Poll do auto-reload (issue #46): barato (`stat` por aba), sem watcher.
 const RELOAD_POLL: std::time::Duration = std::time::Duration::from_secs(2);
+
+/// Atraso entre a mudança nas marcações e o checkpoint do diário (#128, D-D).
+const CHECKPOINT_DELAY: std::time::Duration = std::time::Duration::from_millis(500);
 
 /// Quantos PDFs da pasta aberta ganham prévia no Início (os recentes, sempre).
 const HOME_LISTING_THUMBS: usize = 24;
@@ -647,6 +651,184 @@ pub(crate) struct AnnotationRow {
 enum AnnotAction {
     Add(Annotation),
     Remove(Annotation),
+}
+
+/// Resultado de um checkpoint do diário (#128). Opaco: só a aba o desfaz.
+#[derive(Debug, Clone)]
+pub struct CheckpointDone(recovery::CheckpointDone);
+
+/// Cartão de recuperação desta aba (#128, spec 2.7). Falha de gravação não mora
+/// aqui: é `Ready.journal_failed`, para que uma falha não esconda uma oferta.
+#[derive(Debug, Clone, PartialEq)]
+pub(crate) enum RecoveryState {
+    Nenhum,
+    /// Diários sem dono com o mesmo conteúdo; o primeiro é o mais recente.
+    Disponivel(Vec<Abandoned>),
+    /// Restauração aceita: o diário antigo sai no primeiro checkpoint próprio.
+    Restaurando,
+    /// Diários do mesmo caminho com outro conteúdo: preservados, nada aplicado.
+    Incompativel(Vec<Abandoned>),
+}
+
+impl RecoveryState {
+    /// O que oferecer ao abrir. Conteúdo igual vence; mesmo caminho com conteúdo
+    /// diferente vira `Incompativel`. Diário sem marcações não tem o que restaurar.
+    pub(crate) fn found(found: &[Abandoned], content: ContentId, path: &std::path::Path) -> Self {
+        let marks = |a: &&Abandoned| !a.checkpoint.annotations.is_empty();
+        let same: Vec<Abandoned> = found
+            .iter()
+            .filter(marks)
+            .filter(|a| a.checkpoint.content == content)
+            .cloned()
+            .collect();
+        if !same.is_empty() {
+            return Self::Disponivel(same);
+        }
+        let other: Vec<Abandoned> = found
+            .iter()
+            .filter(marks)
+            .filter(|a| a.checkpoint.path.as_path() == path && a.checkpoint.content != content)
+            .cloned()
+            .collect();
+        if other.is_empty() {
+            Self::Nenhum
+        } else {
+            Self::Incompativel(other)
+        }
+    }
+}
+
+impl Ready {
+    /// As marcações divergem do último conjunto entregue ao diário.
+    fn checkpoint_due(&self) -> bool {
+        !self.checkpoint_inflight && !recovery::same_marks(&self.annotations, &self.journaled)
+    }
+
+    /// Trabalho do checkpoint do conjunto atual; `None` se o diário já o tem ou
+    /// se outro checkpoint está em voo.
+    fn begin_checkpoint(&mut self) -> Option<CheckpointJob> {
+        if !self.checkpoint_due() {
+            return None;
+        }
+        self.checkpoint_armed = false;
+        self.checkpoint_inflight = true;
+        self.journaled = self.annotations.clone();
+        let checkpoint = Checkpoint {
+            content: self.content,
+            path: self.source.path().to_path_buf(),
+            annotations: self.annotations.clone(),
+        };
+        Some(CheckpointJob::new(
+            recovery::recovery_dir(),
+            self.journal.clone(),
+            checkpoint,
+            self.adopt.clone(),
+        ))
+    }
+
+    /// Aplica o resultado de um checkpoint. Falha liga o aviso e mantém a
+    /// memória; a adoção pendente espera o próximo checkpoint.
+    fn finish_checkpoint(&mut self, done: recovery::CheckpointDone) {
+        self.checkpoint_inflight = false;
+        if done.journal.is_some() {
+            self.journal = done.journal;
+        }
+        self.adopt = done.adopt;
+        match done.result {
+            Err(_) => self.journal_failed = true,
+            Ok(()) => {
+                self.journal_failed = false;
+                if self.adopt.is_none() && self.recovery == RecoveryState::Restaurando {
+                    self.recovery = RecoveryState::Nenhum;
+                }
+            }
+        }
+    }
+
+    /// Restaurar: o diário mais recente vira o conjunto da aba, com IDs novos a
+    /// partir do maior. O diário antigo só sai depois do próprio checkpoint.
+    fn restore_recovery(&mut self) {
+        let RecoveryState::Disponivel(offers) = &self.recovery else {
+            return;
+        };
+        let Some(chosen) = offers.first().cloned() else {
+            return;
+        };
+        self.annotations = chosen.checkpoint.annotations.clone();
+        self.next_annot_id = self.annotations.iter().map(|a| a.id + 1).max().unwrap_or(0);
+        self.selected_annot = None;
+        self.note_draft = None;
+        self.note_drag = None;
+        self.annot_undo.clear();
+        self.annot_redo.clear();
+        self.adopt = Some(chosen);
+        self.recovery = RecoveryState::Restaurando;
+        self.discard_ask = false;
+    }
+
+    /// Descarte confirmado: apaga os diários oferecidos. Se o disco recusar, o
+    /// cartão volta, para o usuário ver que nada saiu.
+    fn discard_recovery(&mut self) {
+        self.discard_ask = false;
+        let offers = match &self.recovery {
+            RecoveryState::Disponivel(offers) | RecoveryState::Incompativel(offers) => {
+                offers.clone()
+            }
+            _ => return,
+        };
+        let removed = recovery::retire_ids(
+            &recovery::recovery_dir(),
+            offers.iter().map(|offer| &offer.id),
+        );
+        if removed.is_ok() {
+            self.recovery = RecoveryState::Nenhum;
+        }
+    }
+
+    /// Decidir depois: o cartão some e os diários ficam para a próxima abertura.
+    fn decide_later_recovery(&mut self) {
+        self.discard_ask = false;
+        if self.recovery_prompt() {
+            self.recovery = RecoveryState::Nenhum;
+        }
+    }
+
+    /// Forget que não apagou um diário deixa a oferta dele: só sai a oferta
+    /// cujo diário saiu do disco. Sem ofertas sobrando, o cartão fecha.
+    fn keep_offers_present(&mut self, present: &[recovery::InstanceId]) {
+        let remaining = match &mut self.recovery {
+            RecoveryState::Disponivel(offers) | RecoveryState::Incompativel(offers) => {
+                offers.retain(|offer| present.contains(&offer.id));
+                offers.len()
+            }
+            _ => return,
+        };
+        if remaining == 0 {
+            self.recovery = RecoveryState::Nenhum;
+            self.discard_ask = false;
+        }
+    }
+
+    /// Cartão de recuperação aberto (`Disponivel` ou `Incompativel`).
+    pub(crate) fn recovery_prompt(&self) -> bool {
+        matches!(
+            self.recovery,
+            RecoveryState::Disponivel(_) | RecoveryState::Incompativel(_)
+        )
+    }
+
+    /// Fim da aba (fechar limpo ou descartado): o diário próprio sai com ela, e
+    /// o diário antigo ainda pendente de adoção também, porque as marcações
+    /// restauradas foram descartadas. Falhar aqui deixa os arquivos no disco: a
+    /// próxima abertura os oferece.
+    fn retire_journal(&mut self) {
+        if let Some(journal) = self.journal.take() {
+            let _ = journal.retire();
+        }
+        if let Some(old) = self.adopt.take() {
+            let _ = recovery::retire_ids(&recovery::recovery_dir(), [&old.id]);
+        }
+    }
 }
 
 /// Rascunho de nota em edição (issue #30): ancorado a um trecho, com o
@@ -1334,6 +1516,9 @@ pub struct Tabs {
     home: Option<EmptyState>,
     /// HUD flutuante: visível ao mover o mouse, some parado.
     pub(crate) hud: HudState,
+    /// Maior geração de uma aba que já saiu da faixa. Guardada para que fechar a
+    /// aba de maior geração não faça a próxima reusá-la: respostas velhas casariam.
+    retired_gen: u64,
 }
 
 /// Fechamento que ainda precisa de confirmação.
@@ -1371,6 +1556,7 @@ impl Tabs {
             shift_held: false,
             home: None,
             hud: HudState::default(),
+            retired_gen: 0,
         }
     }
 
@@ -1492,11 +1678,15 @@ impl Tabs {
         self.docs.iter_mut().find(|doc| doc.open_gen == gen)
     }
 
-    /// Maior geração em uso; a próxima aba recebe `max + 1`. As gerações não se
-    /// repetem porque é por elas que as respostas assíncronas se acham.
+    /// Maior geração já usada: em uso, pendente ou de aba que já saiu da faixa.
+    /// As gerações não se repetem, porque é por elas que as respostas assíncronas
+    /// se acham; a de uma aba fechada não volta.
     fn max_gen(&self) -> u64 {
         let docs = self.docs.iter().map(|doc| doc.open_gen);
-        docs.chain(self.pending_gen()).max().unwrap_or(0)
+        docs.chain(self.pending_gen())
+            .chain([self.retired_gen])
+            .max()
+            .unwrap_or(0)
     }
 
     /// Toda aba vê a mesma janela (as inativas não recebem evento de resize).
@@ -1560,6 +1750,7 @@ impl Tabs {
     fn remove(&mut self, index: usize) -> Ready {
         let before = self.docs.len();
         let gone = self.docs.remove(index);
+        self.retired_gen = self.retired_gen.max(gone.open_gen);
         if index < self.active {
             self.active -= 1;
         }
@@ -1653,6 +1844,10 @@ pub struct SettingsPanel {
     pub update: UpdateState,
     #[cfg(target_os = "macos")]
     pub(crate) permissions: PermissionsState,
+    /// Configurações → Recuperação: "Esquecer diários" pede confirmação antes.
+    pub(crate) forget_ask: bool,
+    /// Resultado do último "Esquecer diários de recuperação".
+    pub(crate) forget_status: Option<String>,
 }
 
 impl SettingsPanel {
@@ -1808,6 +2003,22 @@ pub struct Ready {
     page_data_inflight: HashSet<u32>,
     page_data_failed: HashSet<u32>,
     viewport: Viewport,
+    /// Diário de recuperação (#128, spec 2.2/2.6): identidade do conteúdo,
+    /// diário criado no primeiro checkpoint e o último conjunto tentado.
+    content: ContentId,
+    journal: Option<Arc<Journal>>,
+    /// Último conjunto entregue ao diário (tentado, mesmo se a gravação falhou):
+    /// uma falha só é retentada na próxima mudança, não em loop.
+    journaled: Vec<Annotation>,
+    checkpoint_armed: bool,
+    checkpoint_inflight: bool,
+    /// Diário antigo esperando a adoção (só depois do primeiro checkpoint próprio).
+    adopt: Option<Abandoned>,
+    pub(crate) recovery: RecoveryState,
+    /// Confirmação do descarte no cartão de recuperação (`Descartar pede confirmação`).
+    pub(crate) discard_ask: bool,
+    /// Última gravação do diário falhou: linha de aviso, independente do cartão.
+    pub(crate) journal_failed: bool,
 }
 
 /// Modo de intervalo do diálogo (v1: sem lista livre tipo "1-3, 5").
@@ -2410,6 +2621,23 @@ pub enum Message {
     /// Botão vermelho do post-it (só em edição): remove a nota que está sendo
     /// editada e fecha o rascunho; Ctrl+Z desfaz como qualquer marcação.
     NoteDelete,
+    /// Diário (#128): o atraso do checkpoint de `doc_gen` terminou.
+    CheckpointDue {
+        doc_gen: u64,
+    },
+    /// Resultado do checkpoint de `doc_gen` (gravação feita fora da UI).
+    Checkpointed {
+        doc_gen: u64,
+        done: CheckpointDone,
+    },
+    /// Cartão de recuperação: restaurar, pedir/cancelar o descarte, confirmar, decidir depois.
+    RecoveryRestore,
+    RecoveryDiscardAsk(bool),
+    RecoveryDiscardConfirm,
+    RecoveryLater,
+    /// Configurações → Recuperação: esquecer diários sem dono (com confirmação).
+    ForgetRecoveryAsk(bool),
+    ForgetRecoveryConfirm,
     Rendered {
         page: PageNo,
         scale: Scale,
@@ -2607,10 +2835,10 @@ impl Session {
             Session::Loading { source, gen, .. } => {
                 let source = source.clone();
                 let gen = *gen;
-                Task::perform(open_ready(source), move |result| Message::Opened {
-                    gen,
-                    result,
-                })
+                Task::perform(
+                    open_ready(source, Some(recovery::recovery_dir())),
+                    move |result| Message::Opened { gen, result },
+                )
             }
             Session::Empty(_) => empty_tasks(self.lang()),
             _ => Task::none(),
@@ -2619,6 +2847,11 @@ impl Session {
     }
 
     pub fn update(&mut self, message: Message) -> Task<Message> {
+        let task = self.route(message);
+        Task::batch([task, self.arm_checkpoints()])
+    }
+
+    fn route(&mut self, message: Message) -> Task<Message> {
         if self.settings().open
             && (acts_on_active_document(&message)
                 || matches!(
@@ -2821,6 +3054,106 @@ impl Session {
                     }
                 }
                 self.schedule_work()
+            }
+            Message::CheckpointDue { doc_gen } => {
+                let Session::Ready(tabs) = self else {
+                    return Task::none();
+                };
+                let Some(doc) = tabs.by_gen(doc_gen) else {
+                    return Task::none();
+                };
+                doc.checkpoint_armed = false;
+                let Some(job) = doc.begin_checkpoint() else {
+                    return Task::none();
+                };
+                Task::perform(
+                    async move {
+                        // Pânico no checkpoint: o diário antigo fica e é oferecido de novo.
+                        tokio::task::spawn_blocking(move || job.run())
+                            .await
+                            .unwrap_or_else(|err| recovery::CheckpointDone {
+                                journal: None,
+                                result: Err(err.to_string()),
+                                adopt: None,
+                            })
+                    },
+                    move |done| Message::Checkpointed {
+                        doc_gen,
+                        done: CheckpointDone(done),
+                    },
+                )
+            }
+            Message::Checkpointed { doc_gen, done } => {
+                // Documento que saiu no meio do voo: `done` solta o lock aqui e os
+                // arquivos ficam para a próxima abertura.
+                if let Session::Ready(tabs) = self {
+                    if let Some(doc) = tabs.by_gen(doc_gen) {
+                        doc.finish_checkpoint(done.0);
+                    }
+                }
+                Task::none()
+            }
+            Message::RecoveryRestore => {
+                if let Session::Ready(tabs) = self {
+                    tabs.active_mut().restore_recovery();
+                }
+                Task::none()
+            }
+            Message::RecoveryDiscardAsk(ask) => {
+                if let Session::Ready(tabs) = self {
+                    tabs.active_mut().discard_ask = ask;
+                }
+                Task::none()
+            }
+            Message::RecoveryDiscardConfirm => {
+                let dir = recovery::recovery_dir();
+                if let Session::Ready(tabs) = self {
+                    tabs.active_mut().discard_recovery();
+                    // O mesmo diário pode estar em cache em outra aba: cada uma
+                    // solta só a oferta cujo arquivo saiu do disco.
+                    let present = recovery::instance_ids(&dir);
+                    for doc in tabs.docs_mut() {
+                        doc.keep_offers_present(&present);
+                    }
+                }
+                Task::none()
+            }
+            Message::RecoveryLater => {
+                if let Session::Ready(tabs) = self {
+                    tabs.active_mut().decide_later_recovery();
+                }
+                Task::none()
+            }
+            Message::ForgetRecoveryAsk(ask) => {
+                self.settings_mut().forget_ask = ask;
+                Task::none()
+            }
+            Message::ForgetRecoveryConfirm => {
+                let lang = self.lang();
+                let dir = recovery::recovery_dir();
+                let outcome = recovery::forget(&dir);
+                let present = recovery::instance_ids(&dir);
+                // Forget apaga diários de todas as abas: cada aba mantém só a
+                // oferta cujo diário ainda existe, e a falha vai para o status.
+                if let Session::Ready(tabs) = self {
+                    for doc in tabs.docs_mut() {
+                        doc.keep_offers_present(&present);
+                    }
+                }
+                let settings = self.settings_mut();
+                settings.forget_ask = false;
+                let forgotten = lang.pick("Diários esquecidos:", "Journals forgotten:");
+                settings.forget_status = Some(if outcome.failed == 0 {
+                    format!("{forgotten} {}", outcome.removed)
+                } else {
+                    format!(
+                        "{forgotten} {}. {} {}.",
+                        outcome.removed,
+                        lang.pick("Não foi possível apagar", "Could not delete"),
+                        outcome.failed
+                    )
+                });
+                Task::none()
             }
             Message::Close => self.close_document(),
             Message::GoHome => self.go_home(),
@@ -4072,10 +4405,10 @@ impl Session {
                 };
             }
         }
-        Task::perform(open_ready(source), move |result| Message::Opened {
-            gen,
-            result,
-        })
+        Task::perform(
+            open_ready(source, Some(recovery::recovery_dir())),
+            move |result| Message::Opened { gen, result },
+        )
     }
 
     pub fn finish_open(&mut self, result: Result<Ready, OpenError>) {
@@ -4282,6 +4615,8 @@ impl Session {
         let open_gen = self.open_gen();
         let render_scale = self.render_scale();
         let settings = self.settings().carried();
+        // Diários das abas que saem: fechar limpo ou descartado apaga o próprio.
+        self.retire_journals();
         // Toda aba solta o seu documento na worker (issue #40): sem isto o
         // parse de cada uma ficaria vivo até o processo acabar.
         if let Session::Ready(tabs) = self {
@@ -4326,7 +4661,9 @@ impl Session {
         if index >= tabs.len() {
             return Task::none();
         }
-        tabs.remove(index).close_engine();
+        let mut doc = tabs.remove(index);
+        doc.retire_journal();
+        doc.close_engine();
         Task::batch([self.schedule_work(), self.nav_follow_active()])
     }
 
@@ -4334,7 +4671,10 @@ impl Session {
         match target {
             CloseTarget::Document => self.finish_close_document(),
             CloseTarget::Tab(index) => self.finish_close_tab(index),
-            CloseTarget::Quit(id) => close_window(id),
+            CloseTarget::Quit(id) => {
+                self.retire_journals();
+                close_window(id)
+            }
         }
     }
 
@@ -4408,7 +4748,49 @@ impl Session {
             }
             return Task::none();
         }
+        self.retire_journals();
         close_window(id)
+    }
+
+    /// Um timer por aba com mudança pendente. O timer só marca o atraso: o
+    /// checkpoint sai da mensagem `CheckpointDue`. A flag `checkpoint_armed`
+    /// impede que mensagens seguidas (hover, arrasto) adiem o checkpoint para sempre.
+    fn arm_checkpoints(&mut self) -> Task<Message> {
+        Task::batch(self.start_checkpoint_timers().1)
+    }
+
+    /// Arma um timer por aba com mudança pendente e devolve quantos armou. Mensagens
+    /// seguidas não armam de novo: a flag `checkpoint_armed` segura o timer já em voo.
+    fn start_checkpoint_timers(&mut self) -> (usize, Vec<Task<Message>>) {
+        let Session::Ready(tabs) = self else {
+            return (0, Vec::new());
+        };
+        let mut timers = Vec::new();
+        for doc in tabs.docs_mut() {
+            if doc.checkpoint_armed || !doc.checkpoint_due() {
+                continue;
+            }
+            doc.checkpoint_armed = true;
+            let doc_gen = doc.open_gen;
+            timers.push(Task::perform(
+                async move {
+                    let _ =
+                        tokio::task::spawn_blocking(|| std::thread::sleep(CHECKPOINT_DELAY)).await;
+                    doc_gen
+                },
+                |doc_gen| Message::CheckpointDue { doc_gen },
+            ));
+        }
+        (timers.len(), timers)
+    }
+
+    /// Encerrar a janela (limpo ou descartado): cada diário das abas sai com ela.
+    fn retire_journals(&mut self) {
+        if let Session::Ready(tabs) = self {
+            for doc in tabs.docs_mut() {
+                doc.retire_journal();
+            }
+        }
     }
 
     fn any_unsaved(&self) -> bool {
@@ -6931,6 +7313,11 @@ impl Document {
             PdfiumEngine::open(bytes.clone()).map_err(|e| OpenError::Engine(e.to_string()))?;
         let pages = PageCatalog::extract_first(&engine)?;
         let signatures = analyze_pdf(bytes.as_ref()).map_err(|e| OpenError::Sign(e.to_string()))?;
+        let content = ContentId {
+            hash: recovery::content_hash(&bytes),
+            len: bytes.len() as u64,
+            pages: engine.page_count(),
+        };
         let mut ready = Ready {
             source,
             engine,
@@ -6992,6 +7379,15 @@ impl Document {
             failed: HashSet::new(),
             page_data_inflight: HashSet::new(),
             page_data_failed: HashSet::new(),
+            content,
+            journal: None,
+            journaled: Vec::new(),
+            checkpoint_armed: false,
+            checkpoint_inflight: false,
+            adopt: None,
+            recovery: RecoveryState::Nenhum,
+            discard_ask: false,
+            journal_failed: false,
             viewport: Viewport {
                 width: 960.0,
                 height: 720.0,
@@ -7017,23 +7413,35 @@ fn schedule_reload(doc: &mut Ready, current: Option<(u64, u64)>) -> Task<Message
     doc.reload_inflight = true;
     let doc_gen = doc.open_gen;
     let source = doc.source.clone();
-    Task::perform(open_ready(source), move |result| Message::Reloaded {
+    Task::perform(open_ready(source, None), move |result| Message::Reloaded {
         doc_gen,
         result,
         identity: current,
     })
 }
 
-async fn open_ready(source: OpenSource) -> Result<Ready, OpenError> {
+/// Abre o arquivo fora do executor. `scan` (só na abertura; a recarga não
+/// procura) lista os diários sem dono do mesmo conteúdo na pasta dada.
+async fn open_ready(source: OpenSource, scan: Option<PathBuf>) -> Result<Ready, OpenError> {
     let bytes = tokio::fs::read(source.path())
         .await
         .map_err(|e| OpenError::Io(e.to_string()))?;
     let bytes = Arc::<[u8]>::from(bytes);
-    // Parse Pdfium + assinaturas fora do executor async: nada aqui pode
-    // bloquear a janela.
-    tokio::task::spawn_blocking(move || Document::from_bytes(source, bytes))
-        .await
-        .map_err(|e| OpenError::Engine(e.to_string()))?
+    // Parse Pdfium, assinaturas, hash do conteúdo e leitura dos diários fora do
+    // executor async: nada aqui pode bloquear a janela.
+    tokio::task::spawn_blocking(move || -> Result<Ready, OpenError> {
+        let mut ready = Document::from_bytes(source, bytes)?;
+        if let Some(dir) = scan {
+            ready.recovery = RecoveryState::found(
+                &recovery::abandoned(&dir),
+                ready.content,
+                ready.source.path(),
+            );
+        }
+        Ok(ready)
+    })
+    .await
+    .map_err(|e| OpenError::Engine(e.to_string()))?
 }
 
 impl PageCatalog {
@@ -15616,5 +16024,638 @@ mod tests {
             }
             other => panic!("esperava Ready, veio {other:?}"),
         }
+    }
+
+    /// Pasta só deste teste: o PDF é uma cópia do fixture e o diário fica ao
+    /// lado, nunca no diretório real do usuário nem sobre o fixture.
+    fn recovery_case<R>(name: &str, f: impl FnOnce(&std::path::Path, &std::path::Path) -> R) -> R {
+        let root = std::env::temp_dir().join(format!(
+            "tsuro-session-recovery-{}-{name}",
+            std::process::id()
+        ));
+        let _ = std::fs::remove_dir_all(&root);
+        std::fs::create_dir_all(&root).unwrap();
+        let doc = root.join("guia-folio.pdf");
+        std::fs::copy(sample_pdf(), &doc).unwrap();
+        let journals = root.join("recovery");
+        // `apply_open` grava recentes e lê posições: nada disso toca o usuário.
+        let result = crate::browse::with_recents_path(root.join("recents.txt"), || {
+            crate::positions::with_positions_path(root.join("positions.txt"), || {
+                recovery::with_recovery_dir(journals.clone(), || f(&doc, &journals))
+            })
+        });
+        let _ = std::fs::remove_dir_all(&root);
+        result
+    }
+
+    /// Abre uma aba como a janela: `begin_open` reserva a geração e `Opened` a
+    /// entrega. Devolve a geração da aba.
+    fn open_tab(session: &mut Session, path: &std::path::Path) -> u64 {
+        let _ = session.begin_open(OpenSource::Path(path.to_path_buf()));
+        let gen = match session {
+            Session::Loading { gen, .. } => *gen,
+            Session::Ready(tabs) => tabs.pending_gen().expect("aba pendente"),
+            other => panic!("esperava abertura em curso, veio {other:?}"),
+        };
+        apply(
+            session,
+            Message::Opened {
+                gen,
+                result: Ok(open_like_window(path)),
+            },
+        );
+        gen
+    }
+
+    #[test]
+    fn closed_tab_generation_is_never_reused_by_a_new_tab() {
+        recovery_case("gen-reuse", |doc, _| {
+            let mut session = Session::Empty(EmptyState::default());
+            let first = open_tab(&mut session, doc);
+            let second = open_tab(&mut session, doc);
+            assert!(second > first);
+            let b = ready_mut(&mut session);
+            b.annotations = vec![recovery_mark(0, "b")];
+            // O checkpoint da aba B roda na worker; a resposta chega depois de fechá-la.
+            let late = CheckpointDone(b.begin_checkpoint().expect("há o que gravar").run());
+            apply(&mut session, Message::CloseTab(1));
+            apply(&mut session, Message::CloseDiscard);
+            let third = open_tab(&mut session, doc);
+            assert!(third > second, "a geração da aba fechada não volta");
+            apply(
+                &mut session,
+                Message::Checkpointed {
+                    doc_gen: second,
+                    done: late,
+                },
+            );
+            assert!(
+                active_ready(&session).journal.is_none(),
+                "resposta velha não entra na aba nova"
+            );
+        });
+    }
+
+    #[test]
+    fn discarding_restored_marks_before_the_first_checkpoint_removes_the_old_journal() {
+        recovery_case("discard-before-checkpoint", |doc, journals| {
+            let mut first = open_like_window(doc);
+            first.annotations = vec![recovery_mark(0, "a")];
+            assert!(checkpoint_now(&mut first));
+            drop(first);
+            let mut session = Session::Ready(Tabs::single(open_like_window(doc)));
+            apply(&mut session, Message::RecoveryRestore);
+            assert!(
+                ready_mut(&mut session).journal.is_none(),
+                "restaurado, sem checkpoint próprio ainda"
+            );
+            apply(&mut session, Message::Close);
+            apply(&mut session, Message::CloseDiscard);
+            assert!(matches!(session, Session::Empty(_)));
+            assert_eq!(
+                entries(journals),
+                0,
+                "descartar antes do primeiro checkpoint não deixa o diário antigo"
+            );
+        });
+    }
+
+    #[test]
+    fn forgetting_journals_clears_the_offers_cached_in_every_tab() {
+        recovery_case("forget-tabs", |doc, journals| {
+            let mut first = open_like_window(doc);
+            first.annotations = vec![recovery_mark(0, "a")];
+            assert!(checkpoint_now(&mut first));
+            drop(first);
+            let mut session = Session::Empty(EmptyState::default());
+            open_tab(&mut session, doc);
+            open_tab(&mut session, doc);
+            let Session::Ready(tabs) = &session else {
+                panic!("esperava abas")
+            };
+            assert!(
+                tabs.docs().iter().all(|doc| doc.recovery_prompt()),
+                "as duas abas oferecem o diário"
+            );
+            apply(&mut session, Message::ForgetRecoveryAsk(true));
+            apply(&mut session, Message::ForgetRecoveryConfirm);
+            assert_eq!(entries(journals), 0);
+            let Session::Ready(tabs) = &session else {
+                panic!("esperava abas")
+            };
+            assert!(
+                tabs.docs()
+                    .iter()
+                    .all(|doc| doc.recovery == RecoveryState::Nenhum),
+                "nenhuma aba guarda oferta de diário apagado"
+            );
+            apply(&mut session, Message::SelectTab(0));
+            apply(&mut session, Message::RecoveryRestore);
+            assert!(
+                active_ready(&session).annotations.is_empty(),
+                "restaurar não traz de volta marcações esquecidas"
+            );
+        });
+    }
+
+    #[test]
+    fn recovery_failure_is_shown_even_when_the_disk_copy_is_stale() {
+        let Some(mut ready) = sample_ready() else {
+            return;
+        };
+        ready.disk_stale = true;
+        ready.journal_failed = true;
+        assert_eq!(
+            crate::view::doc_warnings(&ready),
+            [
+                crate::view::DocWarning::DiskStale,
+                crate::view::DocWarning::RecoveryFailed
+            ],
+            "os dois avisos aparecem"
+        );
+    }
+
+    /// Abre como a janela: o caminho assíncrono de `Opened`, com a varredura de
+    /// diários na pasta de recuperação.
+    fn open_like_window(path: &std::path::Path) -> Ready {
+        tokio::runtime::Builder::new_current_thread()
+            .build()
+            .unwrap()
+            .block_on(open_ready(
+                OpenSource::Path(path.to_path_buf()),
+                Some(recovery::recovery_dir()),
+            ))
+            .expect("o fixture abre")
+    }
+
+    fn recovery_mark(id: u64, text: &str) -> Annotation {
+        Annotation {
+            id,
+            page: PageNo::first(),
+            range: TextRange { start: 0, end: 4 },
+            quads: vec![Quad::from_rect(10.0, 20.0, 110.0, 32.5)],
+            kind: AnnotKind::Highlight,
+            text: text.to_string(),
+            marker: None,
+        }
+    }
+
+    /// Roda o checkpoint que a sessão agendaria; a tarefa de fundo faz o mesmo.
+    /// `false` se não havia nada a gravar.
+    fn checkpoint_now(ready: &mut Ready) -> bool {
+        let Some(job) = ready.begin_checkpoint() else {
+            return false;
+        };
+        ready.finish_checkpoint(job.run());
+        true
+    }
+
+    fn offered(ready: &Ready) -> &[Abandoned] {
+        match &ready.recovery {
+            RecoveryState::Disponivel(offers) => offers,
+            other => panic!("esperava oferta de restauração, veio {other:?}"),
+        }
+    }
+
+    fn entries(dir: &std::path::Path) -> usize {
+        std::fs::read_dir(dir).map_or(0, |dir| dir.count())
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn forget_that_fails_keeps_the_offer_it_could_not_remove() {
+        use std::os::unix::fs::PermissionsExt;
+        recovery_case("forget-partial", |doc, journals| {
+            for text in ["um", "dois"] {
+                let mut ready = open_like_window(doc);
+                ready.annotations = vec![recovery_mark(0, text)];
+                assert!(checkpoint_now(&mut ready));
+            }
+            let mut session = Session::Ready(Tabs::single(open_like_window(doc)));
+            assert_eq!(
+                offered(active_ready(&session)).len(),
+                2,
+                "as duas marcações são oferecidas"
+            );
+            // Um diário que não sai do disco: o lock sem permissão impede apagá-lo.
+            let stuck = std::fs::read_dir(journals)
+                .unwrap()
+                .map(|entry| entry.unwrap().path())
+                .find(|path| path.extension().is_some_and(|ext| ext == "lock"))
+                .expect("há um lock");
+            std::fs::set_permissions(&stuck, std::fs::Permissions::from_mode(0o000)).unwrap();
+            apply(&mut session, Message::ForgetRecoveryAsk(true));
+            apply(&mut session, Message::ForgetRecoveryConfirm);
+            std::fs::set_permissions(&stuck, std::fs::Permissions::from_mode(0o600)).unwrap();
+            let remaining = offered(active_ready(&session)).to_vec();
+            assert_eq!(remaining.len(), 1, "só o diário que saiu some da oferta");
+            assert_eq!(
+                session_settings(&session).forget_status.as_deref(),
+                Some("Diários esquecidos: 1. Não foi possível apagar 1."),
+                "a falha aparece no status de Configurações"
+            );
+            apply(&mut session, Message::RecoveryRestore);
+            assert_eq!(
+                active_ready(&session).annotations,
+                remaining[0].checkpoint.annotations,
+                "restaurar o diário que ficou ainda funciona"
+            );
+        });
+    }
+
+    fn session_settings(session: &Session) -> &SettingsPanel {
+        match session {
+            Session::Ready(tabs) => &tabs.settings,
+            other => panic!("esperava Ready, veio {other:?}"),
+        }
+    }
+
+    #[test]
+    fn three_marks_survive_a_crash_and_restore_offers_exactly_them() {
+        recovery_case("crash", |doc, _| {
+            let before = std::fs::read(doc).unwrap();
+            let mut ready = open_like_window(doc);
+            assert_eq!(ready.recovery, RecoveryState::Nenhum, "primeira abertura");
+            ready.annotations = vec![
+                recovery_mark(0, "primeira"),
+                recovery_mark(1, "segunda"),
+                recovery_mark(2, "terceira"),
+            ];
+            assert!(checkpoint_now(&mut ready));
+            let written = ready.annotations.clone();
+            // O processo morre: a aba some sem fechar. O lock solta; os arquivos ficam.
+            drop(ready);
+            let mut session = Session::Ready(Tabs::single(open_like_window(doc)));
+            assert_eq!(offered(active_ready(&session)).len(), 1);
+            assert_eq!(
+                offered(active_ready(&session))[0].checkpoint.annotations,
+                written
+            );
+            apply(&mut session, Message::RecoveryRestore);
+            assert_eq!(
+                active_ready(&session).annotations,
+                written,
+                "as três, nem mais nem menos"
+            );
+            assert_eq!(std::fs::read(doc).unwrap(), before, "PDF original intocado");
+        });
+    }
+
+    #[test]
+    fn restoring_twice_gives_the_same_set_without_duplicates() {
+        recovery_case("twice", |doc, journals| {
+            let mut first = open_like_window(doc);
+            first.annotations = vec![
+                recovery_mark(0, "a"),
+                recovery_mark(1, "b"),
+                recovery_mark(2, "c"),
+            ];
+            assert!(checkpoint_now(&mut first));
+            drop(first);
+
+            let mut session = Session::Ready(Tabs::single(open_like_window(doc)));
+            apply(&mut session, Message::RecoveryRestore);
+            let restored = active_ready(&session).annotations.clone();
+            assert_eq!(restored.len(), 3);
+            assert_eq!(
+                active_ready(&session).next_annot_id,
+                3,
+                "próximo ID = máximo + 1"
+            );
+            assert_eq!(
+                entries(journals),
+                2,
+                "o diário antigo ainda existe até o próprio checkpoint"
+            );
+            checkpoint_now(ready_mut(&mut session));
+            assert_eq!(entries(journals), 2, "adotado: só o diário novo sobra");
+            drop(session);
+
+            let mut again = Session::Ready(Tabs::single(open_like_window(doc)));
+            assert_eq!(
+                offered(active_ready(&again)).len(),
+                1,
+                "uma oferta só, sem duplicata"
+            );
+            apply(&mut again, Message::RecoveryRestore);
+            assert_eq!(
+                active_ready(&again).annotations,
+                restored,
+                "mesmo conjunto de novo"
+            );
+        });
+    }
+
+    #[test]
+    fn changed_pdf_is_incompatible_and_keeps_the_journal() {
+        recovery_case("changed", |doc, journals| {
+            let mut first = open_like_window(doc);
+            first.annotations = vec![recovery_mark(0, "a")];
+            assert!(checkpoint_now(&mut first));
+            drop(first);
+            // Um byte a mais no fim: conteúdo diferente, PDF continua válido.
+            let mut bytes = std::fs::read(doc).unwrap();
+            bytes.push(b'\n');
+            std::fs::write(doc, &bytes).unwrap();
+
+            let mut session = Session::Ready(Tabs::single(open_like_window(doc)));
+            assert!(
+                matches!(&active_ready(&session).recovery, RecoveryState::Incompativel(offers) if offers.len() == 1),
+                "mesmo caminho, conteúdo diferente: incompatível"
+            );
+            apply(&mut session, Message::RecoveryRestore);
+            assert!(
+                active_ready(&session).annotations.is_empty(),
+                "nada aplicado"
+            );
+            assert_eq!(entries(journals), 2, "diário preservado");
+        });
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn failed_write_keeps_memory_warns_and_retries_on_the_next_change() {
+        use std::os::unix::fs::PermissionsExt;
+        recovery_case("disk-full", |doc, journals| {
+            std::fs::create_dir_all(journals).unwrap();
+            let set_mode = |mode: u32| {
+                std::fs::set_permissions(journals, std::fs::Permissions::from_mode(mode)).unwrap();
+            };
+            set_mode(0o500);
+            let mut ready = open_like_window(doc);
+            ready.annotations = vec![
+                recovery_mark(0, "a"),
+                recovery_mark(1, "b"),
+                recovery_mark(2, "c"),
+            ];
+            assert!(checkpoint_now(&mut ready));
+            assert!(ready.journal_failed, "gravação recusada");
+            assert_eq!(ready.annotations.len(), 3, "memória intacta");
+            assert!(
+                !ready.checkpoint_due(),
+                "sem mudança nova, sem nova tentativa"
+            );
+
+            set_mode(0o700);
+            ready.annotations.push(recovery_mark(3, "d"));
+            assert!(ready.checkpoint_due(), "a próxima mudança retenta");
+            assert!(checkpoint_now(&mut ready));
+            assert!(!ready.journal_failed, "aviso sai quando grava");
+            drop(ready);
+            let reopened = open_like_window(doc);
+            assert_eq!(offered(&reopened)[0].checkpoint.annotations.len(), 4);
+        });
+    }
+
+    #[test]
+    fn saving_a_copy_keeps_the_original_journal_and_the_copy_offers_nothing() {
+        recovery_case("copy", |doc, journals| {
+            let mut ready = open_like_window(doc);
+            ready.annotations = vec![
+                recovery_mark(0, "a"),
+                recovery_mark(1, "b"),
+                recovery_mark(2, "c"),
+            ];
+            assert!(checkpoint_now(&mut ready));
+            let mut session = Session::Ready(Tabs::single(ready));
+            let copy = doc.with_file_name("guia-anotado.pdf");
+            let mut bytes = std::fs::read(doc).unwrap();
+            bytes.extend_from_slice(b"\n% copia anotada\n");
+            std::fs::write(&copy, &bytes).unwrap();
+            let open_gen = active_ready(&session).open_gen;
+            let saved = active_ready(&session).annotations.clone();
+            apply(
+                &mut session,
+                Message::SaveCopyDone {
+                    doc_gen: open_gen,
+                    path: copy.clone(),
+                    saved,
+                    result: Ok(()),
+                },
+            );
+            assert_eq!(entries(journals), 2, "salvar a cópia não apaga o diário");
+            drop(session);
+
+            let copied = open_like_window(&copy);
+            assert_eq!(
+                copied.recovery,
+                RecoveryState::Nenhum,
+                "a cópia não recebe oferta"
+            );
+            let original = open_like_window(doc);
+            assert_eq!(offered(&original)[0].checkpoint.annotations.len(), 3);
+        });
+    }
+
+    #[test]
+    fn same_content_at_another_path_is_offered_with_its_origin() {
+        recovery_case("moved", |doc, _| {
+            let mut first = open_like_window(doc);
+            first.annotations = vec![recovery_mark(0, "a")];
+            assert!(checkpoint_now(&mut first));
+            drop(first);
+            let elsewhere = doc.with_file_name("copia-identica.pdf");
+            std::fs::copy(doc, &elsewhere).unwrap();
+            let ready = open_like_window(&elsewhere);
+            assert_eq!(offered(&ready)[0].checkpoint.path, doc.to_path_buf());
+        });
+    }
+
+    #[test]
+    fn journal_appears_only_with_the_first_checkpoint() {
+        recovery_case("lazy", |doc, journals| {
+            let mut ready = open_like_window(doc);
+            assert!(!ready.checkpoint_due(), "sem marcações não há o que gravar");
+            assert!(ready.begin_checkpoint().is_none());
+            assert!(!journals.exists(), "nenhum arquivo sem marcação");
+            ready.annotations = vec![recovery_mark(0, "a")];
+            assert!(checkpoint_now(&mut ready));
+            assert_eq!(entries(journals), 2, "lock e diário na primeira gravação");
+        });
+    }
+
+    #[test]
+    fn removing_every_mark_leaves_nothing_to_offer() {
+        recovery_case("emptied", |doc, _| {
+            let mut ready = open_like_window(doc);
+            ready.annotations = vec![recovery_mark(0, "a")];
+            assert!(checkpoint_now(&mut ready));
+            ready.annotations.clear();
+            assert!(
+                checkpoint_now(&mut ready),
+                "apagar tudo também é um checkpoint"
+            );
+            drop(ready);
+            let reopened = open_like_window(doc);
+            assert_eq!(reopened.recovery, RecoveryState::Nenhum, "nada a restaurar");
+        });
+    }
+
+    #[test]
+    fn discard_asks_for_confirmation_and_only_then_deletes() {
+        recovery_case("discard", |doc, journals| {
+            let mut first = open_like_window(doc);
+            first.annotations = vec![recovery_mark(0, "a")];
+            assert!(checkpoint_now(&mut first));
+            drop(first);
+            let mut session = Session::Ready(Tabs::single(open_like_window(doc)));
+            apply(&mut session, Message::RecoveryDiscardAsk(true));
+            assert!(active_ready(&session).discard_ask);
+            assert_eq!(entries(journals), 2, "pedir não apaga");
+            apply(&mut session, Message::RecoveryDiscardAsk(false));
+            assert!(
+                !active_ready(&session).discard_ask,
+                "cancelar volta ao cartão"
+            );
+            apply(&mut session, Message::RecoveryDiscardAsk(true));
+            apply(&mut session, Message::RecoveryDiscardConfirm);
+            assert_eq!(active_ready(&session).recovery, RecoveryState::Nenhum);
+            assert_eq!(entries(journals), 0, "confirmado: apagado");
+        });
+    }
+
+    #[test]
+    fn decide_later_keeps_the_journal_for_the_next_open() {
+        recovery_case("later", |doc, journals| {
+            let mut first = open_like_window(doc);
+            first.annotations = vec![recovery_mark(0, "a")];
+            assert!(checkpoint_now(&mut first));
+            drop(first);
+            let mut session = Session::Ready(Tabs::single(open_like_window(doc)));
+            apply(&mut session, Message::RecoveryLater);
+            assert_eq!(active_ready(&session).recovery, RecoveryState::Nenhum);
+            assert_eq!(entries(journals), 2);
+        });
+    }
+
+    #[test]
+    fn closing_after_a_saved_copy_retires_the_journal() {
+        recovery_case("clean-close", |doc, journals| {
+            let mut ready = open_like_window(doc);
+            ready.annotations = vec![recovery_mark(0, "a")];
+            assert!(checkpoint_now(&mut ready));
+            ready.saved_marks = ready.annotations.clone();
+            let mut session = Session::Ready(Tabs::single(ready));
+            apply(&mut session, Message::Close);
+            assert!(matches!(session, Session::Empty(_)), "fechou sem perguntar");
+            assert_eq!(entries(journals), 0, "fechar limpo apaga o diário");
+        });
+    }
+
+    #[test]
+    fn discarding_on_close_deletes_the_journal() {
+        recovery_case("discard-close", |doc, journals| {
+            let mut ready = open_like_window(doc);
+            ready.annotations = vec![recovery_mark(0, "a")];
+            assert!(checkpoint_now(&mut ready));
+            let mut session = Session::Ready(Tabs::single(ready));
+            apply(&mut session, Message::Close);
+            assert!(
+                matches!(&session, Session::Ready(tabs) if tabs.close_prompt()),
+                "marcações não salvas pedem confirmação"
+            );
+            apply(&mut session, Message::CloseDiscard);
+            assert!(matches!(session, Session::Empty(_)));
+            assert_eq!(entries(journals), 0);
+        });
+    }
+
+    #[test]
+    fn reload_from_disk_keeps_the_journal_on_disk() {
+        recovery_case("reload", |doc, journals| {
+            let mut ready = open_like_window(doc);
+            ready.annotations = vec![recovery_mark(0, "a")];
+            assert!(checkpoint_now(&mut ready));
+            let mut session = Session::Ready(Tabs::single(ready));
+            let open_gen = active_ready(&session).open_gen;
+            let fresh = open_like_window(doc);
+            apply(
+                &mut session,
+                Message::Reloaded {
+                    doc_gen: open_gen,
+                    result: Ok(fresh),
+                    identity: None,
+                },
+            );
+            assert!(
+                active_ready(&session).annotations.is_empty(),
+                "recarga descarta a memória"
+            );
+            assert_eq!(
+                entries(journals),
+                2,
+                "o diário sai da memória e fica no disco"
+            );
+        });
+    }
+
+    #[test]
+    fn forget_removes_unowned_journals_from_settings() {
+        recovery_case("forget", |doc, journals| {
+            let mut first = open_like_window(doc);
+            first.annotations = vec![recovery_mark(0, "a")];
+            assert!(checkpoint_now(&mut first));
+            drop(first);
+            let mut session = Session::Ready(Tabs::single(open_like_window(doc)));
+            apply(&mut session, Message::ForgetRecoveryAsk(true));
+            assert!(session_settings(&session).forget_ask);
+            apply(&mut session, Message::ForgetRecoveryConfirm);
+            assert_eq!(entries(journals), 0);
+            assert!(
+                session_settings(&session)
+                    .forget_status
+                    .as_deref()
+                    .is_some_and(|status| status.ends_with('1')),
+                "um diário esquecido"
+            );
+        });
+    }
+
+    #[test]
+    fn discard_in_one_tab_drops_the_same_offer_cached_in_another() {
+        recovery_case("discard-tabs", |doc, journals| {
+            let mut first = open_like_window(doc);
+            first.annotations = vec![recovery_mark(0, "descartada")];
+            assert!(checkpoint_now(&mut first));
+            drop(first);
+            let mut session = Session::Empty(EmptyState::default());
+            open_tab(&mut session, doc);
+            open_tab(&mut session, doc);
+            let Session::Ready(tabs) = &session else {
+                panic!("esperava abas")
+            };
+            assert!(
+                tabs.docs().iter().all(|doc| doc.recovery_prompt()),
+                "as duas abas oferecem o mesmo diário"
+            );
+            // Descarte confirmado na aba ativa (a segunda).
+            apply(&mut session, Message::RecoveryDiscardAsk(true));
+            apply(&mut session, Message::RecoveryDiscardConfirm);
+            assert_eq!(entries(journals), 0, "o diário saiu do disco");
+            apply(&mut session, Message::SelectTab(0));
+            assert_eq!(
+                active_ready(&session).recovery,
+                RecoveryState::Nenhum,
+                "a outra aba não oferece mais o diário descartado"
+            );
+            apply(&mut session, Message::RecoveryRestore);
+            assert!(
+                active_ready(&session).annotations.is_empty(),
+                "restaurar na outra aba não traz de volta marcações descartadas"
+            );
+        });
+    }
+
+    #[test]
+    fn hud_wake_arms_one_checkpoint_timer_per_pending_change() {
+        recovery_case("armed", |doc, _| {
+            let mut ready = open_like_window(doc);
+            ready.annotations = vec![recovery_mark(0, "a")];
+            let mut session = Session::Ready(Tabs::single(ready));
+            let first = session.start_checkpoint_timers().0;
+            assert_eq!(first, 1, "mudança pendente arma um timer");
+            let second = session.start_checkpoint_timers().0;
+            assert_eq!(second, 0, "mensagens seguidas não rearmam");
+        });
     }
 }
