@@ -2727,22 +2727,41 @@ fn ready_body(tabs: &Tabs, t: Tokens) -> Element<'_, Message> {
         .or(ready.print_status.as_deref())
         .or(tabs.open_error())
         .or(restored);
-    let warn = ready
-        .disk_stale()
-        .then(|| disk_stale_row(ready, t))
-        .or_else(|| ready.journal_failed.then(|| recovery_failed_row(t)));
-    match (warn, status) {
-        (None, None) => panes.into(),
-        (Some(warn), None) => column![warn, panes].spacing(8).height(Length::Fill).into(),
-        (None, Some(status)) => column![text(status).size(13).color(t.muted), panes]
-            .spacing(8)
-            .height(Length::Fill)
-            .into(),
-        (Some(warn), Some(status)) => column![warn, text(status).size(13).color(t.muted), panes]
-            .spacing(8)
-            .height(Length::Fill)
-            .into(),
+    let mut rows: Vec<Element<'_, Message>> = doc_warnings(ready)
+        .into_iter()
+        .map(|warning| match warning {
+            DocWarning::DiskStale => disk_stale_row(ready, t),
+            DocWarning::RecoveryFailed => recovery_failed_row(t),
+        })
+        .collect();
+    if let Some(status) = status {
+        rows.push(text(status).size(13).color(t.muted).into());
     }
+    if rows.is_empty() {
+        return panes.into();
+    }
+    rows.push(panes.into());
+    column(rows).spacing(8).height(Length::Fill).into()
+}
+
+/// Avisos da faixa do documento, na ordem em que aparecem.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum DocWarning {
+    DiskStale,
+    RecoveryFailed,
+}
+
+/// Avisos do documento. Disco e recuperação são independentes: cada um aparece
+/// sozinho ou junto.
+pub(crate) fn doc_warnings(ready: &Ready) -> Vec<DocWarning> {
+    let mut warnings = Vec::new();
+    if ready.disk_stale() {
+        warnings.push(DocWarning::DiskStale);
+    }
+    if ready.journal_failed {
+        warnings.push(DocWarning::RecoveryFailed);
+    }
+    warnings
 }
 
 fn disk_stale_row(ready: &Ready, t: Tokens) -> Element<'static, Message> {
