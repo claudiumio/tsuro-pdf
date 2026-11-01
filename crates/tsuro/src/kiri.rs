@@ -767,7 +767,14 @@ pub fn menu_row_style(
             text_color: if active {
                 tokens.accent
             } else if matches!(status, button::Status::Hovered | button::Status::Pressed) {
-                tokens.page
+                // Sobre o acento: branco só quando o acento é escuro. No tema
+                // claro o teal #1f7d76 pede branco; no escuro, #4db8b0 é claro
+                // e o texto tem que ser quase preto (branco dá 2.2:1).
+                if tokens.is_dark {
+                    hex(0x14, 0x14, 0x14)
+                } else {
+                    tokens.page
+                }
             } else {
                 tokens.ink
             },
