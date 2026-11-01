@@ -9,11 +9,11 @@ use iced::widget::{
 use iced::{font, Font};
 use iced::{mouse, Alignment, Background, Border, Color, Element, Length, Padding, Point, Task};
 use iced::{Rectangle, Size};
-use tsuro_sign::SignatureStatus;
+use tsuro_sign::{SignatureInfo, SignatureStatus};
 
 use crate::browse::{EmptyState, FsEntry, Thumb};
 use crate::i18n::Lang;
-use crate::kiri::{self, Theme, Tokens};
+use crate::kiri::{self, CheckSeverity, Theme, Tokens};
 use crate::page::{MediaBox, PageNo};
 use crate::print::{PrintOrientation, MAX_COPIES};
 use crate::search::Search;
@@ -695,7 +695,14 @@ fn topbar(session: &Session, t: Tokens) -> Element<'_, Message> {
         // Copiar/fechar/fit-page vivem no menu ⋯ (`overflow_menu`).
         let shield =
             bar_button(t, "shield", ready.signatures_open).on_press(Message::ToggleSignatures);
-        let dot = kiri::status_dot_color(t, ready.signatures.signatures.iter().map(|s| s.status));
+        let dot = kiri::worst_check_color(
+            t,
+            ready
+                .signatures
+                .signatures
+                .iter()
+                .flat_map(|s| sig_rows(s, t.lang).map(|r| r.severity)),
+        );
         let shield_el: Element<'_, Message> = match dot {
             Some(dot) => tip(
                 t,
@@ -3391,22 +3398,29 @@ fn signatures_panel(ready: &Ready, t: Tokens) -> Element<'_, Message> {
                     .as_ref()
                     .and_then(|c| c.common_name.as_deref()))
                 .unwrap_or(t.lang.pick("Assinante", "Signer"));
-            // Mesmo veredito do escudo da toolbar (status_dot_color).
-            let dot = kiri::status_dot_color(t, std::iter::once(sig.status)).unwrap_or(t.muted);
-            col = col.push(
-                container(
+            let mut card = column![text(name).size(13).color(t.ink)].spacing(8);
+            for check in sig_rows(sig, t.lang) {
+                card = card.push(
                     column![
-                        row![status_dot(dot), text(name).size(13).color(t.ink),]
-                            .spacing(8)
-                            .align_y(Alignment::Center),
-                        text(status_label(sig.status, t.lang)).size(12).color(t.ink),
-                        text(&sig.status_detail).size(11).color(t.muted),
+                        text(check.title).size(10).color(t.muted),
+                        row![
+                            status_dot(kiri::check_color(t, check.severity)),
+                            text(check.text).size(12).color(t.ink).width(Length::Fill),
+                        ]
+                        .spacing(8)
+                        .align_y(Alignment::Start),
                     ]
-                    .spacing(4),
-                )
-                .width(Length::Fill)
-                .padding(12)
-                .style(kiri::panel_card_style(t)),
+                    .spacing(2),
+                );
+            }
+            for fact in sig_facts(sig, t.lang) {
+                card = card.push(text(fact).size(11).color(t.muted));
+            }
+            col = col.push(
+                container(card)
+                    .width(Length::Fill)
+                    .padding(12)
+                    .style(kiri::panel_card_style(t)),
             );
         }
     }
@@ -3462,23 +3476,286 @@ fn status_dot(color: Color) -> Element<'static, Message> {
         .into()
 }
 
-fn status_label(status: SignatureStatus, lang: Lang) -> &'static str {
-    match status {
-        SignatureStatus::Valid => lang.pick("Válida", "Valid"),
-        SignatureStatus::IntactButUntrusted => lang.pick(
-            "Íntegra (sem confiança pública)",
-            "Intact, not publicly trusted",
-        ),
-        SignatureStatus::DocumentModified => lang.pick("Documento alterado", "Document modified"),
-        SignatureStatus::Invalid => lang.pick("Inválida", "Invalid"),
-        SignatureStatus::Unsupported => lang.pick("Não suportada", "Unsupported"),
-        SignatureStatus::CertificateExpired => {
-            lang.pick("Certificado expirado", "Certificate expired")
+/// Dimensões independentes de uma assinatura. Cada uma sai de um check que o
+/// `tsuro-sign` executou; sem resultado, fica "não verificada".
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum ContentCheck {
+    Matches,
+    Altered,
+    /// `DocumentModified` com cobertura parcial: o engine não separa alteração
+    /// de bytes posteriores, então o rótulo não afirma nenhum dos dois.
+    AlteredOrAppended,
+    NotVerified,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum CoverageCheck {
+    WholeFile,
+    PartialFile,
+    NotVerified,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum CryptoCheck {
+    Passed,
+    UnsupportedDigest,
+    NotVerified,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum ClockCheck {
+    WithinValidity,
+    Expired,
+    NotYetValid,
+    NotVerified,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct SigChecks {
+    content: ContentCheck,
+    coverage: CoverageCheck,
+    crypto: CryptoCheck,
+    clock: ClockCheck,
+}
+
+/// Dimensões a partir dos campos de `SignatureInfo`, na ordem de `verify_cms`.
+/// `status` mistura etapas, então cada dimensão lê só o que a etapa garante.
+fn sig_checks(sig: &SignatureInfo) -> SigChecks {
+    use SignatureStatus as S;
+    let digest = sig.digest_algorithm.as_deref();
+    // Estes status só existem depois de o digest SHA-256 e a RSA baterem.
+    let sha256_passed = digest == Some("SHA-256")
+        && matches!(
+            sig.status,
+            S::Valid | S::IntactButUntrusted | S::CertificateExpired | S::CertificateNotYetValid
+        );
+    let sha1_matched =
+        sig.status == S::Unsupported && digest == Some("SHA-1") && sig.covers_whole_document;
+    let content = if sig.byte_range.is_none() {
+        ContentCheck::NotVerified
+    } else if sig.status == S::DocumentModified {
+        if sig.covers_whole_document {
+            ContentCheck::Altered
+        } else {
+            ContentCheck::AlteredOrAppended
         }
-        SignatureStatus::CertificateNotYetValid => {
-            lang.pick("Certificado ainda não válido", "Certificate not yet valid")
+    } else if sha256_passed || sha1_matched {
+        ContentCheck::Matches
+    } else {
+        ContentCheck::NotVerified
+    };
+    let coverage = match (sig.byte_range, sig.covers_whole_document) {
+        (None, _) => CoverageCheck::NotVerified,
+        (Some(_), true) => CoverageCheck::WholeFile,
+        (Some(_), false) => CoverageCheck::PartialFile,
+    };
+    let crypto = if sha256_passed {
+        CryptoCheck::Passed
+    } else if matches!(sig.status, S::Unsupported | S::IntactButUntrusted)
+        && digest.is_some_and(|alg| alg != "SHA-256")
+    {
+        CryptoCheck::UnsupportedDigest
+    } else {
+        CryptoCheck::NotVerified
+    };
+    let clock = match sig.status {
+        S::CertificateExpired => ClockCheck::Expired,
+        S::CertificateNotYetValid => ClockCheck::NotYetValid,
+        S::Valid | S::IntactButUntrusted if sha256_passed && sig.certificate.is_some() => {
+            ClockCheck::WithinValidity
+        }
+        _ => ClockCheck::NotVerified,
+    };
+    SigChecks {
+        content,
+        coverage,
+        crypto,
+        clock,
+    }
+}
+
+impl ContentCheck {
+    fn label(self, lang: Lang) -> &'static str {
+        match self {
+            Self::Matches => {
+                lang.pick("Confere com o resumo assinado", "Matches the signed digest")
+            }
+            Self::Altered => lang.pick(
+                "Não confere: o conteúdo assinado foi alterado",
+                "Does not match: the signed content was changed",
+            ),
+            Self::AlteredOrAppended => lang.pick(
+                "Alterado, ou com bytes depois da assinatura: não dá para separar",
+                "Changed, or bytes added after signing: cannot tell apart",
+            ),
+            Self::NotVerified => lang.pick("Não verificado", "Not verified"),
         }
     }
+
+    fn severity(self) -> CheckSeverity {
+        match self {
+            Self::Matches => CheckSeverity::Passed,
+            Self::Altered => CheckSeverity::Failure,
+            Self::AlteredOrAppended | Self::NotVerified => CheckSeverity::Attention,
+        }
+    }
+}
+
+impl CoverageCheck {
+    fn label(self, lang: Lang) -> &'static str {
+        match self {
+            Self::WholeFile => lang.pick(
+                "O intervalo assinado cobre o arquivo inteiro",
+                "The signed range covers the whole file",
+            ),
+            Self::PartialFile => lang.pick(
+                "O intervalo assinado não cobre o arquivo inteiro",
+                "The signed range does not cover the whole file",
+            ),
+            Self::NotVerified => lang.pick(
+                "Não verificado: intervalo de bytes ausente",
+                "Not verified: byte range missing",
+            ),
+        }
+    }
+
+    fn severity(self) -> CheckSeverity {
+        match self {
+            Self::WholeFile => CheckSeverity::Passed,
+            Self::PartialFile | Self::NotVerified => CheckSeverity::Attention,
+        }
+    }
+}
+
+impl CryptoCheck {
+    fn label(self, lang: Lang) -> &'static str {
+        match self {
+            Self::Passed => lang.pick(
+                "Confere com a chave pública do certificado no PDF",
+                "Matches the public key of the certificate in the PDF",
+            ),
+            Self::UnsupportedDigest => lang.pick(
+                "Não verificada: algoritmo de resumo sem suporte",
+                "Not verified: digest algorithm not supported",
+            ),
+            Self::NotVerified => lang.pick(
+                "Não verificada: a checagem não passou ou não pôde ser feita",
+                "Not verified: the check did not pass or could not run",
+            ),
+        }
+    }
+
+    fn severity(self) -> CheckSeverity {
+        match self {
+            Self::Passed => CheckSeverity::Passed,
+            Self::UnsupportedDigest | Self::NotVerified => CheckSeverity::Attention,
+        }
+    }
+}
+
+impl ClockCheck {
+    fn label(self, lang: Lang) -> &'static str {
+        match self {
+            Self::WithinValidity => lang.pick(
+                "Dentro do prazo; não prova a data da assinatura",
+                "Within validity; does not prove the signing date",
+            ),
+            Self::Expired => lang.pick(
+                "Vencido neste relógio; não mostra se valia na assinatura",
+                "Expired on this clock; does not show whether it was valid when signed",
+            ),
+            Self::NotYetValid => lang.pick(
+                "Ainda não válido neste relógio",
+                "Not yet valid on this clock",
+            ),
+            Self::NotVerified => lang.pick("Não verificado", "Not verified"),
+        }
+    }
+
+    fn severity(self) -> CheckSeverity {
+        match self {
+            Self::WithinValidity => CheckSeverity::Passed,
+            Self::Expired | Self::NotYetValid | Self::NotVerified => CheckSeverity::Attention,
+        }
+    }
+}
+
+/// Linha da ficha: título da dimensão, rótulo do estado e gravidade (cor).
+struct CheckRow {
+    title: &'static str,
+    text: &'static str,
+    severity: CheckSeverity,
+}
+
+/// Cinco linhas fixas, sem Vec: o dot do escudo consome isto a cada frame.
+fn sig_rows(sig: &SignatureInfo, lang: Lang) -> [CheckRow; 5] {
+    let checks = sig_checks(sig);
+    [
+        CheckRow {
+            title: lang.pick("Conteúdo assinado", "Signed content"),
+            text: checks.content.label(lang),
+            severity: checks.content.severity(),
+        },
+        CheckRow {
+            title: lang.pick("Cobertura do arquivo", "File coverage"),
+            text: checks.coverage.label(lang),
+            severity: checks.coverage.severity(),
+        },
+        CheckRow {
+            title: lang.pick("Assinatura criptográfica", "Cryptographic signature"),
+            text: checks.crypto.label(lang),
+            severity: checks.crypto.severity(),
+        },
+        CheckRow {
+            title: lang.pick(
+                "Certificado no relógio deste computador",
+                "Certificate on this computer's clock",
+            ),
+            text: checks.clock.label(lang),
+            severity: checks.clock.severity(),
+        },
+        // tsuro-sign não confere cadeia nem âncora: a linha é fixa até existir essa checagem.
+        CheckRow {
+            title: lang.pick("Cadeia de confiança", "Trust chain"),
+            text: lang.pick(
+                "Não verificada. Sem âncoras de confiança neste app; isso não é confiança pública.",
+                "Not verified. No trust anchors in this app; this is not public trust.",
+            ),
+            severity: CheckSeverity::Attention,
+        },
+    ]
+}
+
+/// Fatos do certificado e do PDF, mostrados sem o rótulo de verificação.
+fn sig_facts(sig: &SignatureInfo, lang: Lang) -> Vec<String> {
+    let mut facts = Vec::new();
+    match &sig.certificate {
+        None => facts.push(
+            lang.pick(
+                "Nome declarado no PDF, sem certificado para conferir",
+                "Name declared in the PDF, no certificate to check",
+            )
+            .to_string(),
+        ),
+        Some(cert) if cert.is_self_signed => facts.push(
+            lang.pick(
+                "Titular e emissor têm o mesmo nome",
+                "Subject and issuer have the same name",
+            )
+            .to_string(),
+        ),
+        Some(_) => {}
+    }
+    if let Some(time) = &sig.signing_time {
+        facts.push(format!(
+            "{} {time}",
+            lang.pick(
+                "Data declarada no PDF, não verificada:",
+                "Date declared in the PDF, not verified:",
+            )
+        ));
+    }
+    facts
 }
 
 /// Trilho da barra indeterminada de abertura (issue #41): 2px, como o
@@ -3705,6 +3982,418 @@ mod tests {
         assert_eq!(
             search_count_text(&two, false, Lang::Pt).as_deref(),
             Some("2 de 2")
+        );
+    }
+}
+
+#[cfg(test)]
+mod signature_checks_tests {
+    use super::*;
+    use crate::i18n::Lang;
+    use std::path::PathBuf;
+    use tsuro_sign::CertificateInfo;
+
+    fn sig(
+        status: SignatureStatus,
+        digest: Option<&str>,
+        covers: bool,
+        byte_range: bool,
+        certificate: bool,
+    ) -> SignatureInfo {
+        SignatureInfo {
+            field_name: None,
+            signer_name: None,
+            reason: None,
+            location: None,
+            contact_info: None,
+            signing_time: None,
+            filter: None,
+            sub_filter: None,
+            byte_range: byte_range.then_some([0, 4, 8, 4]),
+            covers_whole_document: covers,
+            status,
+            status_detail: String::new(),
+            certificate: certificate.then(|| CertificateInfo {
+                subject: "CN=Maria".into(),
+                common_name: Some("Maria".into()),
+                organization: None,
+                issuer: "CN=Autoridade de teste".into(),
+                serial: "1".into(),
+                not_before: "2020-01-01".into(),
+                not_after: "2030-01-01".into(),
+                is_self_signed: false,
+            }),
+            digest_algorithm: digest.map(str::to_string),
+            signature_algorithm: Some("RSA".into()),
+        }
+    }
+
+    fn pt_en(label: impl Fn(Lang) -> &'static str) -> (&'static str, &'static str) {
+        (label(Lang::Pt), label(Lang::En))
+    }
+
+    #[test]
+    fn intact_sha256_signature_passes_each_check_the_engine_ran() {
+        let s = sig(
+            SignatureStatus::IntactButUntrusted,
+            Some("SHA-256"),
+            true,
+            true,
+            true,
+        );
+        assert_eq!(
+            sig_checks(&s),
+            SigChecks {
+                content: ContentCheck::Matches,
+                coverage: CoverageCheck::WholeFile,
+                crypto: CryptoCheck::Passed,
+                clock: ClockCheck::WithinValidity,
+            }
+        );
+    }
+
+    #[test]
+    fn certificate_dates_only_change_the_clock_row() {
+        for (status, clock) in [
+            (SignatureStatus::CertificateExpired, ClockCheck::Expired),
+            (
+                SignatureStatus::CertificateNotYetValid,
+                ClockCheck::NotYetValid,
+            ),
+        ] {
+            let s = sig(status, Some("SHA-256"), true, true, true);
+            assert_eq!(
+                sig_checks(&s),
+                SigChecks {
+                    content: ContentCheck::Matches,
+                    coverage: CoverageCheck::WholeFile,
+                    crypto: CryptoCheck::Passed,
+                    clock,
+                }
+            );
+        }
+    }
+
+    #[test]
+    fn digest_mismatch_over_the_whole_file_is_altered() {
+        let s = sig(
+            SignatureStatus::DocumentModified,
+            Some("SHA-256"),
+            true,
+            true,
+            true,
+        );
+        assert_eq!(
+            sig_checks(&s),
+            SigChecks {
+                content: ContentCheck::Altered,
+                coverage: CoverageCheck::WholeFile,
+                crypto: CryptoCheck::NotVerified,
+                clock: ClockCheck::NotVerified,
+            }
+        );
+    }
+
+    #[test]
+    fn bytes_after_the_signed_range_are_not_called_altered() {
+        let s = sig(
+            SignatureStatus::DocumentModified,
+            Some("SHA-256"),
+            false,
+            true,
+            true,
+        );
+        assert_eq!(
+            sig_checks(&s),
+            SigChecks {
+                content: ContentCheck::AlteredOrAppended,
+                coverage: CoverageCheck::PartialFile,
+                crypto: CryptoCheck::NotVerified,
+                clock: ClockCheck::NotVerified,
+            }
+        );
+    }
+
+    #[test]
+    fn missing_byte_range_is_not_reported_as_altered() {
+        let s = sig(SignatureStatus::DocumentModified, None, false, false, true);
+        assert_eq!(
+            sig_checks(&s),
+            SigChecks {
+                content: ContentCheck::NotVerified,
+                coverage: CoverageCheck::NotVerified,
+                crypto: CryptoCheck::NotVerified,
+                clock: ClockCheck::NotVerified,
+            }
+        );
+    }
+
+    #[test]
+    fn invalid_status_is_not_verified_rather_than_failed() {
+        // RSA que não confere e chave ausente (ECDSA, parse) chegam ambos como `Invalid`.
+        let rsa_mismatch = sig(SignatureStatus::Invalid, Some("SHA-256"), true, true, true);
+        let parse_error = sig(SignatureStatus::Invalid, None, true, true, false);
+        for s in [rsa_mismatch, parse_error] {
+            assert_eq!(
+                sig_checks(&s),
+                SigChecks {
+                    content: ContentCheck::NotVerified,
+                    coverage: CoverageCheck::WholeFile,
+                    crypto: CryptoCheck::NotVerified,
+                    clock: ClockCheck::NotVerified,
+                }
+            );
+        }
+    }
+
+    #[test]
+    fn unsupported_digest_is_not_verified_even_when_status_reads_intact() {
+        let s = sig(
+            SignatureStatus::IntactButUntrusted,
+            Some("SHA-512"),
+            true,
+            true,
+            true,
+        );
+        assert_eq!(
+            sig_checks(&s),
+            SigChecks {
+                content: ContentCheck::NotVerified,
+                coverage: CoverageCheck::WholeFile,
+                crypto: CryptoCheck::UnsupportedDigest,
+                clock: ClockCheck::NotVerified,
+            }
+        );
+    }
+
+    #[test]
+    fn sha1_digest_matches_but_rsa_is_not_checked() {
+        let s = sig(
+            SignatureStatus::Unsupported,
+            Some("SHA-1"),
+            true,
+            true,
+            true,
+        );
+        assert_eq!(
+            sig_checks(&s),
+            SigChecks {
+                content: ContentCheck::Matches,
+                coverage: CoverageCheck::WholeFile,
+                crypto: CryptoCheck::UnsupportedDigest,
+                clock: ClockCheck::NotVerified,
+            }
+        );
+    }
+
+    #[test]
+    fn unsupported_status_without_hash_payload_is_not_verified() {
+        let s = sig(
+            SignatureStatus::Unsupported,
+            Some("SHA-256"),
+            true,
+            true,
+            true,
+        );
+        assert_eq!(
+            sig_checks(&s),
+            SigChecks {
+                content: ContentCheck::NotVerified,
+                coverage: CoverageCheck::WholeFile,
+                crypto: CryptoCheck::NotVerified,
+                clock: ClockCheck::NotVerified,
+            }
+        );
+    }
+
+    #[test]
+    fn every_state_has_its_pt_and_en_label() {
+        assert_eq!(
+            pt_en(|l| ContentCheck::Matches.label(l)),
+            ("Confere com o resumo assinado", "Matches the signed digest")
+        );
+        assert_eq!(
+            pt_en(|l| ContentCheck::Altered.label(l)),
+            (
+                "Não confere: o conteúdo assinado foi alterado",
+                "Does not match: the signed content was changed"
+            )
+        );
+        assert_eq!(
+            pt_en(|l| ContentCheck::AlteredOrAppended.label(l)),
+            (
+                "Alterado, ou com bytes depois da assinatura: não dá para separar",
+                "Changed, or bytes added after signing: cannot tell apart"
+            )
+        );
+        assert_eq!(
+            pt_en(|l| ContentCheck::NotVerified.label(l)),
+            ("Não verificado", "Not verified")
+        );
+        assert_eq!(
+            pt_en(|l| CoverageCheck::WholeFile.label(l)),
+            (
+                "O intervalo assinado cobre o arquivo inteiro",
+                "The signed range covers the whole file"
+            )
+        );
+        assert_eq!(
+            pt_en(|l| CoverageCheck::PartialFile.label(l)),
+            (
+                "O intervalo assinado não cobre o arquivo inteiro",
+                "The signed range does not cover the whole file"
+            )
+        );
+        assert_eq!(
+            pt_en(|l| CoverageCheck::NotVerified.label(l)),
+            (
+                "Não verificado: intervalo de bytes ausente",
+                "Not verified: byte range missing"
+            )
+        );
+        assert_eq!(
+            pt_en(|l| CryptoCheck::Passed.label(l)),
+            (
+                "Confere com a chave pública do certificado no PDF",
+                "Matches the public key of the certificate in the PDF"
+            )
+        );
+        assert_eq!(
+            pt_en(|l| CryptoCheck::UnsupportedDigest.label(l)),
+            (
+                "Não verificada: algoritmo de resumo sem suporte",
+                "Not verified: digest algorithm not supported"
+            )
+        );
+        assert_eq!(
+            pt_en(|l| CryptoCheck::NotVerified.label(l)),
+            (
+                "Não verificada: a checagem não passou ou não pôde ser feita",
+                "Not verified: the check did not pass or could not run"
+            )
+        );
+        assert_eq!(
+            pt_en(|l| ClockCheck::WithinValidity.label(l)),
+            (
+                "Dentro do prazo; não prova a data da assinatura",
+                "Within validity; does not prove the signing date"
+            )
+        );
+        assert_eq!(
+            pt_en(|l| ClockCheck::Expired.label(l)),
+            (
+                "Vencido neste relógio; não mostra se valia na assinatura",
+                "Expired on this clock; does not show whether it was valid when signed"
+            )
+        );
+        assert_eq!(
+            pt_en(|l| ClockCheck::NotYetValid.label(l)),
+            (
+                "Ainda não válido neste relógio",
+                "Not yet valid on this clock"
+            )
+        );
+        assert_eq!(
+            pt_en(|l| ClockCheck::NotVerified.label(l)),
+            ("Não verificado", "Not verified")
+        );
+    }
+
+    #[test]
+    fn only_a_digest_mismatch_over_the_whole_file_reads_as_failure() {
+        let altered = sig(
+            SignatureStatus::DocumentModified,
+            Some("SHA-256"),
+            true,
+            true,
+            true,
+        );
+        let appended = sig(
+            SignatureStatus::DocumentModified,
+            Some("SHA-256"),
+            false,
+            true,
+            true,
+        );
+        assert_eq!(
+            sig_rows(&altered, Lang::Pt)[0].severity,
+            CheckSeverity::Failure
+        );
+        assert_eq!(
+            sig_rows(&appended, Lang::Pt)[0].severity,
+            CheckSeverity::Attention
+        );
+    }
+
+    #[test]
+    fn trust_chain_row_stays_not_verified_even_for_the_best_signature() {
+        let s = sig(
+            SignatureStatus::IntactButUntrusted,
+            Some("SHA-256"),
+            true,
+            true,
+            true,
+        );
+        let rows = sig_rows(&s, Lang::Pt);
+        assert_eq!(rows[4].title, "Cadeia de confiança");
+        assert_eq!(
+            rows[4].text,
+            "Não verificada. Sem âncoras de confiança neste app; isso não é confiança pública."
+        );
+        assert_eq!(rows[4].severity, CheckSeverity::Attention);
+        // Nenhuma verificação vira "ok" global: o dot do escudo nunca fica verde.
+        assert_eq!(
+            rows.iter().map(|r| r.severity).max(),
+            Some(CheckSeverity::Attention)
+        );
+    }
+
+    #[test]
+    fn facts_say_what_was_declared_and_not_verified() {
+        let mut s = sig(
+            SignatureStatus::IntactButUntrusted,
+            Some("SHA-256"),
+            true,
+            true,
+            true,
+        );
+        s.signing_time = Some("2024-05-01 10:00:00".into());
+        assert_eq!(
+            sig_facts(&s, Lang::Pt),
+            vec!["Data declarada no PDF, não verificada: 2024-05-01 10:00:00".to_string()]
+        );
+        if let Some(cert) = s.certificate.as_mut() {
+            cert.is_self_signed = true;
+        }
+        assert_eq!(
+            sig_facts(&s, Lang::En)[0],
+            "Subject and issuer have the same name"
+        );
+        s.certificate = None;
+        assert_eq!(
+            sig_facts(&s, Lang::Pt)[0],
+            "Nome declarado no PDF, sem certificado para conferir"
+        );
+    }
+
+    #[test]
+    fn signed_contract_fixture_reads_as_separate_checks() {
+        let path = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+            .join("../../public/samples/contrato-assinado.pdf");
+        let bytes = std::fs::read(&path).expect("contrato-assinado.pdf");
+        let analysis = tsuro_sign::analyze_pdf(&bytes).expect("parse");
+        let [signature] = analysis.signatures.as_slice() else {
+            panic!("one signature expected, got {:?}", analysis.signatures);
+        };
+        let checks = sig_checks(signature);
+        assert_eq!(checks.content, ContentCheck::Matches);
+        assert_eq!(checks.coverage, CoverageCheck::WholeFile);
+        assert_eq!(checks.crypto, CryptoCheck::Passed);
+        // Vencido ou dentro do prazo conforme o relógio do teste; nunca "não verificado".
+        assert_ne!(checks.clock, ClockCheck::NotVerified);
+        assert_eq!(
+            sig_rows(signature, Lang::Pt)[4].severity,
+            CheckSeverity::Attention
         );
     }
 }
