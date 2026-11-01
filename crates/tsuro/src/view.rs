@@ -20,10 +20,10 @@ use crate::search::Search;
 #[cfg(target_os = "macos")]
 use crate::session::PermissionsState;
 use crate::session::{
-    display_pt, display_rect, marker_side, page_pt_at, AnnotKind, Message, NavCmd, NoteDraft,
-    OpenSource, PaletteItem, PaletteState, PrintDialog, RangeMode, Ready, Session, SettingsPanel,
-    Tabs, UpdateState, ViewMode, Zoom, ZoomFactor, DOC_GAP, DOC_PAD_BOTTOM, DOC_PAD_TOP, DOC_PAD_X,
-    PAGES_PANEL_W, SIG_PANEL_W, THUMB_ROW,
+    display_pt, display_rect, marker_side, page_pt_at, AnnotKind, AnnotationRow, Message, NavCmd,
+    NoteDraft, OpenSource, PaletteItem, PaletteState, PanelTab, PrintDialog, RangeMode, Ready,
+    Session, SettingsPanel, Tabs, UpdateState, ViewMode, Zoom, ZoomFactor, ANNOT_ROW, DOC_GAP,
+    DOC_PAD_BOTTOM, DOC_PAD_TOP, DOC_PAD_X, PAGES_PANEL_W, SIG_PANEL_W, THUMB_ROW,
 };
 
 /// Altura do chrome Kiri: toolbar 36px + progresso 2px + respiro.
@@ -48,6 +48,10 @@ const POSTIT_EDITOR_H: f32 = 112.0;
 
 pub fn pages_scroll_id() -> scrollable::Id {
     scrollable::Id::new("tsuro-pages")
+}
+
+pub fn annotations_scroll_id() -> scrollable::Id {
+    scrollable::Id::new("tsuro-annotations")
 }
 
 pub fn doc_scroll_id() -> scrollable::Id {
@@ -2626,21 +2630,19 @@ fn short_name(path: &std::path::Path) -> String {
     middle_truncate(&name, 24)
 }
 
-/// Painel de navegação (Stitch sidebar): cabeçalho `Navegação`, abas segmentadas
-/// Miniaturas | Sumário e lista virtualizada (miniaturas ou sumário).
+/// Painel de navegação (Stitch sidebar): cabeçalho `Navegação`, controle
+/// segmentado Páginas | Sumário | Marcações e a lista da aba escolhida.
 fn pages_panel(ready: &Ready, t: Tokens) -> Element<'_, Message> {
     let mut col = column![text(t.lang.pick("Navegação", "Navigation"))
         .size(13)
         .color(t.ink)]
     .spacing(8);
-    if ready.outline.is_some() {
-        col = col.push(panel_tabs(ready, t));
-    }
-    if ready.outline.is_some() && ready.outline_open {
-        col = col.push(outline_tab(ready, t));
-    } else {
-        col = col.push(thumbs_tab(ready, t));
-    }
+    col = col.push(panel_tabs(ready, t));
+    col = match ready.panel {
+        Some(PanelTab::Outline) if ready.outline.is_some() => col.push(outline_tab(ready, t)),
+        Some(PanelTab::Annotations) => col.push(annotations_tab(ready, t)),
+        _ => col.push(thumbs_tab(ready, t)),
+    };
     container(col.width(Length::Fill).height(Length::Fill))
         .width(Length::Fixed(PAGES_PANEL_W))
         .height(Length::Fill)
@@ -2649,11 +2651,11 @@ fn pages_panel(ready: &Ready, t: Tokens) -> Element<'_, Message> {
         .into()
 }
 
-/// Controle segmentado Páginas | Sumário (só quando o PDF tem outline).
+/// Controle segmentado do painel. Sumário só aparece com outline no PDF;
+/// Marcações existe sempre, inclusive sem sumário.
 fn panel_tabs(ready: &Ready, t: Tokens) -> Element<'_, Message> {
-    // Rótulo curto e sem quebra: no painel de 156px "Miniaturas" partia em
-    // duas linhas. "Páginas" é o mesmo nome do botão que abre o painel.
-    let seg = |label: &'static str, active: bool, msg: Message| {
+    // Rótulo curto e sem quebra: no painel de 200px cada segmento tem ~1/3.
+    let seg = |label: &'static str, active: bool, tab: Option<PanelTab>| {
         button(
             text(label)
                 .size(12)
@@ -2664,24 +2666,31 @@ fn panel_tabs(ready: &Ready, t: Tokens) -> Element<'_, Message> {
         .width(Length::Fill)
         .padding(Padding::from([5, 8]))
         .style(kiri::panel_seg_style(t, active))
-        .on_press(msg)
+        .on_press(Message::SetPanelTab(tab))
     };
-    container(row![
-        seg(
-            t.lang.pick("Páginas", "Pages"),
-            !ready.outline_open,
-            Message::OutlineTab(false)
-        ),
-        seg(
+    let mut tabs = row![seg(
+        t.lang.pick("Páginas", "Pages"),
+        ready.panel.is_none(),
+        None
+    )];
+    if ready.outline.is_some() {
+        tabs = tabs.push(seg(
             t.lang.pick("Sumário", "Outline"),
-            ready.outline_open,
-            Message::OutlineTab(true)
-        ),
-    ])
-    .padding(Padding::from(2))
-    .style(kiri::panel_seg_track_style(t))
-    .into()
+            ready.panel == Some(PanelTab::Outline),
+            Some(PanelTab::Outline),
+        ));
+    }
+    tabs = tabs.push(seg(
+        t.lang.pick("Marcações", "Annotations"),
+        ready.panel == Some(PanelTab::Annotations),
+        Some(PanelTab::Annotations),
+    ));
+    container(tabs)
+        .padding(Padding::from(2))
+        .style(kiri::panel_seg_track_style(t))
+        .into()
 }
+
 /// Aba Sumário: árvore clicável com expandir/colapsar (body-md + indent) e
 /// destaque da ativa.
 fn outline_tab(ready: &Ready, t: Tokens) -> Element<'_, Message> {
@@ -2748,6 +2757,132 @@ fn outline_title(title: &str) -> String {
         format!("{}…", &one_line[..end])
     } else {
         one_line
+    }
+}
+
+/// Largura útil de uma linha da lista de marcações, em caracteres (painel de
+/// 200px, texto 12). Linha de altura fixa: texto que quebra estouraria o
+/// cálculo de rolagem do cursor.
+const ANNOT_ROW_CHARS: usize = 30;
+
+/// Aba Marcações: as marcações desta sessão como linhas (página, tipo, trecho,
+/// nota), com busca por trecho e nota. Sem marcações, diz como criar uma; não
+/// promete anotações externas, que a v1 não importa.
+fn annotations_tab(ready: &Ready, t: Tokens) -> Element<'_, Message> {
+    let search = text_input(
+        t.lang
+            .pick("Buscar em trechos e notas", "Search excerpts and notes"),
+        ready.annot_query(),
+    )
+    .on_input(Message::AnnotQuery)
+    .style(kiri::bar_input_style(t))
+    .padding([6, 8])
+    .size(12)
+    .width(Length::Fill);
+    let mut col = column![
+        text(
+            t.lang
+                .pick("Marcações desta sessão", "Marks from this session")
+        )
+        .size(11)
+        .color(t.muted),
+        search,
+    ]
+    .spacing(8);
+    if ready.annotations.is_empty() {
+        col = col.push(
+            text(t.lang.pick(
+                "Nenhuma marcação nesta sessão. Selecione um texto e use H, U, S ou N.",
+                "No marks in this session. Select text and press H, U, S or N.",
+            ))
+            .size(12)
+            .color(t.muted),
+        );
+    } else {
+        let rows = ready.annotation_rows();
+        if rows.is_empty() {
+            col = col.push(
+                text(t.lang.pick(
+                    "Nenhum resultado para a busca.",
+                    "No results for this search.",
+                ))
+                .size(12)
+                .color(t.muted),
+            );
+        } else {
+            let focus = ready.annot_focus();
+            let mut list = column![].spacing(2);
+            for row in &rows {
+                list = list.push(annotation_row(t, row, focus == Some(row.id)));
+            }
+            col = col.push(
+                scrollable(list)
+                    .id(annotations_scroll_id())
+                    .width(Length::Fill)
+                    .height(Length::Fill),
+            );
+        }
+    }
+    col.width(Length::Fill).height(Length::Fill).into()
+}
+
+/// Uma linha da lista: página e tipo, trecho e nota, cada um numa linha de
+/// texto. Altura fixa (`ANNOT_ROW`), que a rolagem do cursor conta.
+fn annotation_row(t: Tokens, row: &AnnotationRow, focus: bool) -> Element<'static, Message> {
+    let excerpt: String = match &row.excerpt {
+        Some(excerpt) => clip_one_line(excerpt, ANNOT_ROW_CHARS),
+        None => t
+            .lang
+            .pick("trecho indisponível", "excerpt unavailable")
+            .into(),
+    };
+    let mut lines = column![
+        text(format!(
+            "{} · {}",
+            annot_kind_label(row.kind, t.lang),
+            row.page.index() + 1
+        ))
+        .size(12)
+        .color(if focus { t.accent } else { t.muted })
+        .wrapping(text::Wrapping::None),
+        text(excerpt)
+            .size(12)
+            .color(t.ink)
+            .wrapping(text::Wrapping::None),
+    ]
+    .width(Length::Fill);
+    if let Some(note) = &row.note {
+        lines = lines.push(
+            text(clip_one_line(note, ANNOT_ROW_CHARS))
+                .size(12)
+                .color(t.muted)
+                .wrapping(text::Wrapping::None),
+        );
+    }
+    button(lines)
+        .width(Length::Fill)
+        .height(Length::Fixed(ANNOT_ROW - 2.0))
+        .padding(Padding::from([4, 6]))
+        .style(kiri::panel_toc_item_style(t, focus))
+        .on_press(Message::AnnotActivate(row.id))
+        .into()
+}
+
+fn annot_kind_label(kind: AnnotKind, lang: Lang) -> &'static str {
+    match kind {
+        AnnotKind::Highlight => lang.pick("Destaque", "Highlight"),
+        AnnotKind::Underline => lang.pick("Sublinhado", "Underline"),
+        AnnotKind::Strikeout => lang.pick("Riscado", "Strikeout"),
+        AnnotKind::Note => lang.pick("Nota", "Note"),
+    }
+}
+
+/// Uma linha, no máximo `max` caracteres, com "…" quando corta.
+fn clip_one_line(text: &str, max: usize) -> String {
+    let one_line = text.split_whitespace().collect::<Vec<_>>().join(" ");
+    match one_line.char_indices().nth(max) {
+        Some((end, _)) => format!("{}…", &one_line[..end]),
+        None => one_line,
     }
 }
 fn thumbs_tab(ready: &Ready, t: Tokens) -> Element<'_, Message> {

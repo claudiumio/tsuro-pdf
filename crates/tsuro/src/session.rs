@@ -46,12 +46,17 @@ const THUMB_PREFETCH: u32 = 3;
 /// linha um pouco abaixo do topo (visível), superestimar a esconderia.
 pub(crate) const OUTLINE_ROW: f32 = 41.0;
 
+/// Altura fixa de uma linha da lista de marcações (3 linhas de texto 12 +
+/// padding + espaço entre linhas): a rolagem do cursor depende dela. A view
+/// põe cada linha nessa altura, senão o ↑/↓ erra a posição.
+pub(crate) const ANNOT_ROW: f32 = 62.0;
+
 /// RGBA byte budget for neighbor/speculative page surfaces (`visible ± 1`).
 /// The mandatory visible-page bitmap at its current scale is excluded.
 const NEIGHBOR_CACHE_BUDGET: usize = 64 * 1024 * 1024;
 
 /// Larguras do chrome (espelham `view.rs`); base da geometria do contínuo.
-pub(crate) const PAGES_PANEL_W: f32 = 156.0;
+pub(crate) const PAGES_PANEL_W: f32 = 200.0;
 pub(crate) const SIG_PANEL_W: f32 = 220.0;
 const PANES_GAP: f32 = 12.0;
 const CHROME_PAD: f32 = 8.0;
@@ -611,6 +616,18 @@ impl Annotation {
     }
 }
 
+/// Uma linha da lista de marcações: dados semânticos, nunca Markdown. A
+/// página é 0-based; a vista soma 1 só na hora de mostrar.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct AnnotationRow {
+    pub id: u64,
+    pub page: PageNo,
+    pub kind: AnnotKind,
+    /// `None` = o texto da página não cobre o trecho (ou não chegou ainda).
+    pub excerpt: Option<String>,
+    pub note: Option<String>,
+}
+
 #[derive(Debug, Clone)]
 enum AnnotAction {
     Add(Annotation),
@@ -688,10 +705,19 @@ pub enum NavCmd {
     GoTo(PageNo),
 }
 
-/// Teclas da árvore do sumário: ↑/↓ movem o cursor, Enter salta para a página.
-/// Sem a aba Sumário aberta o handler ignora (como R/H/U/S sem seleção).
+/// Aba do painel de navegação. `Ready.panel == None` é Páginas (miniaturas).
+/// Marcações existe sempre; Sumário só com outline no PDF.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum OutlineKey {
+pub enum PanelTab {
+    Outline,
+    Annotations,
+}
+
+/// Teclas do painel de lista (sumário e marcações): ↑/↓ movem o cursor,
+/// Enter salta para a página. Sem a aba aberta o handler ignora (como
+/// R/H/U/S sem seleção).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum PanelKey {
     Prev,
     Next,
     Activate,
@@ -1702,8 +1728,13 @@ pub struct Ready {
     sheet_scroll: f32,
     pub signatures_open: bool,
     pub pages_open: bool,
-    /// Aba Sumário ativa no painel de Páginas (só existe se houver outline).
-    pub outline_open: bool,
+    /// Aba do painel de navegação; `None` = Páginas (miniaturas).
+    pub panel: Option<PanelTab>,
+    /// Busca da lista de marcações (trecho e nota); zera ao abrir.
+    annot_query: String,
+    /// Marcação sob o cursor do teclado na lista. Referência por ID: se a
+    /// marcação sumir, o Enter reporta indisponível em vez de saltar.
+    annot_cursor: Option<u64>,
     pub outline: Option<Outline>,
     /// Caminhos colapsados na árvore (`[0, 2]` = 3º filho do 1º item).
     pub outline_collapsed: HashSet<Vec<usize>>,
@@ -2398,8 +2429,9 @@ pub enum Message {
     /// Ajuda → leitor padrão: no Windows abre o painel de apps padrão; nas
     /// demais plataformas abre o Sobre com o passo a passo do SO.
     SetDefaultReader,
-    /// Aba Sumário no painel de Páginas (`true` = sumário, `false` = miniaturas).
-    OutlineTab(bool),
+    /// Aba do painel de navegação (`None` = Páginas). Sumário sem outline cai
+    /// em Páginas.
+    SetPanelTab(Option<PanelTab>),
     /// Expande/colapsa um nó da árvore (caminho de índices desde a raiz).
     OutlineFold(Vec<usize>),
     /// Resultado do carregamento preguiçoso do sumário (outline) após abrir
@@ -2411,8 +2443,13 @@ pub enum Message {
     },
     /// Clique em um item do sumário: navega (com clamp) para a página do item.
     OutlineJump(PageNo),
-    /// ↑/↓/Enter na árvore do sumário (ignorado sem a aba aberta).
-    OutlineKey(OutlineKey),
+    /// ↑/↓/Enter na lista da aba aberta (sumário ou marcações); sem aba de
+    /// lista a mensagem é ignorada.
+    PanelKey(PanelKey),
+    /// Busca da lista de marcações (trecho e nota).
+    AnnotQuery(String),
+    /// Clique numa linha da lista de marcações: cursor + salto + trecho.
+    AnnotActivate(u64),
     OpenPalette,
     PaletteQuery(String),
     PaletteMove(i32),
@@ -2578,12 +2615,12 @@ impl Session {
         }
         // Paleta aberta come ↑/↓/Enter — também a do Início, onde as teclas
         // do documento ficam bloqueadas logo abaixo.
-        if let Message::OutlineKey(cmd) = &message {
+        if let Message::PanelKey(cmd) = &message {
             if self.shown_palette().is_some() {
                 return match cmd {
-                    OutlineKey::Prev => self.palette_move(-1),
-                    OutlineKey::Next => self.palette_move(1),
-                    OutlineKey::Activate => self.palette_confirm(),
+                    PanelKey::Prev => self.palette_move(-1),
+                    PanelKey::Next => self.palette_move(1),
+                    PanelKey::Activate => self.palette_confirm(),
                 };
             }
         }
@@ -3383,10 +3420,13 @@ impl Session {
                 // nada mais é despachado e a folha trava em "Renderizando…".
                 self.schedule_work()
             }
-            Message::OutlineTab(show) => {
+            Message::SetPanelTab(tab) => {
                 if let Session::Ready(ready) = self {
-                    // Só existe aba quando há outline; sem outline, força miniaturas.
-                    ready.outline_open = show && ready.outline.is_some();
+                    // Sumário só existe com outline; sem ele, cai em Páginas.
+                    ready.panel = match tab {
+                        Some(PanelTab::Outline) if ready.outline.is_none() => None,
+                        other => other,
+                    };
                 }
                 Task::none()
             }
@@ -3407,36 +3447,16 @@ impl Session {
                 Task::none()
             }
             Message::OutlineJump(page) => self.outline_jump(page),
-            Message::OutlineKey(cmd) => {
-                let Session::Ready(ready) = self else {
-                    return Task::none();
-                };
-                if !ready.outline_open || ready.outline.is_none() {
-                    return Task::none();
+            Message::PanelKey(cmd) => self.panel_key(cmd),
+            Message::AnnotQuery(query) => {
+                if let Session::Ready(ready) = self {
+                    ready.annot_query = query;
+                    // Cursor de uma busca anterior não sobrevive à lista nova.
+                    ready.annot_cursor = None;
                 }
-                match cmd {
-                    OutlineKey::Prev | OutlineKey::Next => {
-                        let next = matches!(cmd, OutlineKey::Next);
-                        match ready.outline_step(next) {
-                            // Rola junto (senão o cursor sai da janela): +1
-                            // desconta o cabeçalho das abas, que ocupa uma
-                            // linha e está dentro do mesmo scrollable.
-                            Some(row) => scrollable::scroll_to(
-                                crate::view::pages_scroll_id(),
-                                scrollable::AbsoluteOffset {
-                                    x: 0.0,
-                                    y: (row as f32 + 1.0) * OUTLINE_ROW,
-                                },
-                            ),
-                            None => Task::none(),
-                        }
-                    }
-                    OutlineKey::Activate => match ready.outline_cursor_page() {
-                        Some(page) => self.outline_jump(page),
-                        None => Task::none(),
-                    },
-                }
+                Task::none()
             }
+            Message::AnnotActivate(id) => self.annot_activate(id),
             Message::OpenPalette => self.open_palette(),
             Message::PaletteQuery(query) => self.palette_query(query),
             Message::PaletteMove(step) => self.palette_move(step),
@@ -4074,7 +4094,7 @@ impl Session {
                 ready.disk_identity = file_identity(ready.source.path());
                 ready.signatures_open = false;
                 ready.pages_open = false;
-                ready.outline_open = false;
+                ready.panel = None;
                 ready.outline = None;
                 ready.outline_collapsed.clear();
                 ready.outline_cursor = None;
@@ -4765,6 +4785,78 @@ impl Session {
         Task::batch([self.schedule_work(), self.nav_follow_active()])
     }
 
+    /// ↑/↓/Enter da lista da aba aberta. Sumário sem outline e Páginas ignoram.
+    fn panel_key(&mut self, cmd: PanelKey) -> Task<Message> {
+        let Session::Ready(ready) = self else {
+            return Task::none();
+        };
+        match ready.panel {
+            Some(PanelTab::Outline) if ready.outline.is_some() => match cmd {
+                PanelKey::Prev | PanelKey::Next => {
+                    match ready.outline_step(matches!(cmd, PanelKey::Next)) {
+                        // Rola junto (senão o cursor sai da janela): +1
+                        // desconta o cabeçalho das abas, que ocupa uma
+                        // linha e está dentro do mesmo scrollable.
+                        Some(row) => scrollable::scroll_to(
+                            crate::view::pages_scroll_id(),
+                            scrollable::AbsoluteOffset {
+                                x: 0.0,
+                                y: (row as f32 + 1.0) * OUTLINE_ROW,
+                            },
+                        ),
+                        None => Task::none(),
+                    }
+                }
+                PanelKey::Activate => match ready.outline_cursor_page() {
+                    Some(page) => self.outline_jump(page),
+                    None => Task::none(),
+                },
+            },
+            Some(PanelTab::Annotations) => match cmd {
+                PanelKey::Prev | PanelKey::Next => {
+                    match ready.annot_step(matches!(cmd, PanelKey::Next)) {
+                        Some(row) => scrollable::scroll_to(
+                            crate::view::annotations_scroll_id(),
+                            scrollable::AbsoluteOffset {
+                                x: 0.0,
+                                y: row as f32 * ANNOT_ROW,
+                            },
+                        ),
+                        None => Task::none(),
+                    }
+                }
+                PanelKey::Activate => match ready.annot_cursor {
+                    Some(id) => self.annot_activate(id),
+                    None => Task::none(),
+                },
+            },
+            Some(PanelTab::Outline) | None => Task::none(),
+        }
+    }
+
+    /// Enter ou clique numa marcação: salta para a página e revela o trecho.
+    /// Referência que não existe mais (ou página fora do documento) não salta:
+    /// a linha de status avisa, e o cursor solta a referência morta.
+    fn annot_activate(&mut self, id: u64) -> Task<Message> {
+        let Session::Ready(ready) = self else {
+            return Task::none();
+        };
+        if !ready.reveal_annotation(id) {
+            ready.annot_cursor = None;
+            ready.save_status = Some(
+                ready
+                    .lang
+                    .pick(
+                        "Marcação indisponível: ela não existe mais neste documento.",
+                        "Annotation unavailable: it no longer exists in this document.",
+                    )
+                    .into(),
+            );
+            return Task::none();
+        }
+        Task::batch([self.schedule_work(), self.nav_follow_active()])
+    }
+
     /// Passo da busca (#43): anda o índice, salta para a página do hit atual
     /// e alinha a rolagem no contínuo. Sem hits é no-op.
     fn search_step(&mut self, delta: i32) -> Task<Message> {
@@ -4940,7 +5032,9 @@ fn acts_on_active_document(message: &Message) -> bool {
             | Message::AnnotRedo
             | Message::DeleteSelectedAnnot
             | Message::NoteSave
-            | Message::OutlineKey(_)
+            | Message::PanelKey(_)
+            | Message::AnnotQuery(_)
+            | Message::AnnotActivate(_)
             | Message::OpenPrintDialog
             | Message::SaveCopyRequested
             | Message::HistoryBack
@@ -5162,11 +5256,12 @@ pub(crate) fn keyboard_message(
         Key::Named(Named::Delete | Named::Backspace) => Some(Message::DeleteSelectedAnnot),
         // Sem diálogo aberto o handler ignora; com foco em campo, o iced captura antes.
         Key::Named(Named::Escape) => Some(Message::ClosePrintDialog),
-        // ↑/↓ e Enter andam/saltam na árvore do sumário; sem a aba aberta o
-        // handler ignora (setas horizontais continuam com o histórico e a nav).
-        Key::Named(Named::ArrowUp) => Some(Message::OutlineKey(OutlineKey::Prev)),
-        Key::Named(Named::ArrowDown) => Some(Message::OutlineKey(OutlineKey::Next)),
-        Key::Named(Named::Enter) => Some(Message::OutlineKey(OutlineKey::Activate)),
+        // ↑/↓ e Enter andam/saltam na lista da aba aberta (sumário ou
+        // marcações); sem lista aberta o handler ignora (setas horizontais
+        // continuam com o histórico e a nav).
+        Key::Named(Named::ArrowUp) => Some(Message::PanelKey(PanelKey::Prev)),
+        Key::Named(Named::ArrowDown) => Some(Message::PanelKey(PanelKey::Next)),
+        Key::Named(Named::Enter) => Some(Message::PanelKey(PanelKey::Activate)),
         _ => None,
     }
 }
@@ -6183,6 +6278,102 @@ impl Ready {
             .map(|(_, _, _, page, _)| page)
     }
 
+    /// Linhas da lista de marcações, em ordem de leitura e filtradas pela
+    /// busca. Derivadas de `annotations` a cada vista: edição e remoção
+    /// aparecem sem sincronizar nada.
+    pub(crate) fn annotation_rows(&self) -> Vec<AnnotationRow> {
+        let mut sorted: Vec<&Annotation> = self.annotations.iter().collect();
+        sorted.sort_by_key(|annot| (annot.page.index(), annot.range.start));
+        let query = self.annot_query.trim().to_lowercase();
+        sorted
+            .into_iter()
+            .filter_map(|annot| {
+                let excerpt = self.annot_excerpt(annot);
+                let note = (!annot.text.trim().is_empty()).then(|| annot.text.trim().to_string());
+                let hit = query.is_empty()
+                    || excerpt
+                        .as_deref()
+                        .is_some_and(|text| text.to_lowercase().contains(&query))
+                    || note
+                        .as_deref()
+                        .is_some_and(|text| text.to_lowercase().contains(&query));
+                hit.then_some(AnnotationRow {
+                    id: annot.id,
+                    page: annot.page,
+                    kind: annot.kind,
+                    excerpt,
+                    note,
+                })
+            })
+            .collect()
+    }
+
+    /// Trecho marcado em uma linha. `None` quando a camada de texto não cobre
+    /// o intervalo (mesmo critério do Markdown).
+    fn annot_excerpt(&self, annot: &Annotation) -> Option<String> {
+        let layer = self.pages.text.get(annot.page.index() as usize)?.as_ref()?;
+        if annot.range.end > layer.plain.len() {
+            return None;
+        }
+        let text = layer
+            .slice(annot.range)
+            .split_whitespace()
+            .collect::<Vec<_>>()
+            .join(" ");
+        (!text.is_empty()).then_some(text)
+    }
+
+    /// Anda uma linha (↑/↓) e devolve o índice da nova linha, para a rolagem.
+    /// Sem cursor válido, ↓ entra pela primeira linha e ↑ pela última.
+    fn annot_step(&mut self, next: bool) -> Option<usize> {
+        let rows = self.annotation_rows();
+        if rows.is_empty() {
+            return None;
+        }
+        let index = self
+            .annot_cursor
+            .and_then(|id| rows.iter().position(|row| row.id == id));
+        let target = match (index, next) {
+            (Some(i), true) => (i + 1).min(rows.len() - 1),
+            (Some(i), false) => i.saturating_sub(1),
+            (None, true) => 0,
+            (None, false) => rows.len() - 1,
+        };
+        self.annot_cursor = Some(rows[target].id);
+        Some(target)
+    }
+
+    /// Salta para a página da marcação e revela o trecho (seleção do texto).
+    /// `false` se a marcação não existe ou a página saiu do documento; nada
+    /// muda então. O salto deixa a origem no histórico, para o voltar.
+    fn reveal_annotation(&mut self, id: u64) -> bool {
+        let Some(annot) = self.annotations.iter().find(|a| a.id == id).cloned() else {
+            return false;
+        };
+        if annot.page.index() >= self.pages.total {
+            return false;
+        }
+        self.history.visit(self.visible);
+        self.navigate_to(annot.page);
+        self.annot_cursor = Some(id);
+        if self.annot_excerpt(&annot).is_some() {
+            self.selection = Some(Selection {
+                page: annot.page,
+                range: annot.range,
+            });
+        }
+        true
+    }
+
+    pub(crate) fn annot_query(&self) -> &str {
+        &self.annot_query
+    }
+
+    /// Marcação sob o cursor do teclado (`None` = nenhuma na lista).
+    pub(crate) fn annot_focus(&self) -> Option<u64> {
+        self.annot_cursor
+    }
+
     pub(crate) fn thumb_page_window(&self) -> Vec<PageNo> {
         let first = (self.pages_scroll_y / THUMB_ROW).floor().max(0.0) as u32;
         let start = first.saturating_sub(THUMB_PREFETCH);
@@ -6656,7 +6847,9 @@ impl Document {
             sheet_scroll: 0.0,
             signatures_open: false,
             pages_open: false,
-            outline_open: false,
+            panel: None,
+            annot_query: String::new(),
+            annot_cursor: None,
             outline: None,
             outline_collapsed: HashSet::new(),
             outline_cursor: None,
@@ -8068,7 +8261,7 @@ mod tests {
         );
         apply(&mut session, Message::PaletteQuery(String::new()));
         // ↑/↓ andam na lista; Esc fecha só a paleta.
-        apply(&mut session, Message::OutlineKey(OutlineKey::Next));
+        apply(&mut session, Message::PanelKey(PanelKey::Next));
         assert_eq!(home_palette(&session).unwrap().selected(), Some(1));
         apply(&mut session, Message::ClosePrintDialog);
         assert!(home_palette(&session).is_none());
@@ -8485,7 +8678,7 @@ mod tests {
                 msg,
                 Message::Nav(_)
                     | Message::Annotate(_)
-                    | Message::OutlineKey(_)
+                    | Message::PanelKey(_)
                     | Message::CycleTab(_)
                     | Message::CloseTabActive
                     | Message::NoteSave
@@ -11071,8 +11264,8 @@ mod tests {
             },
         );
         // Sem a aba aberta as teclas não andam nem saltam.
-        apply(&mut session, Message::OutlineKey(OutlineKey::Next));
-        apply(&mut session, Message::OutlineKey(OutlineKey::Activate));
+        apply(&mut session, Message::PanelKey(PanelKey::Next));
+        apply(&mut session, Message::PanelKey(PanelKey::Activate));
         match &session {
             Session::Ready(r) => {
                 assert!(r.outline_cursor.is_none());
@@ -11080,14 +11273,14 @@ mod tests {
             }
             _ => unreachable!(),
         }
-        apply(&mut session, Message::OutlineTab(true));
+        apply(&mut session, Message::SetPanelTab(Some(PanelTab::Outline)));
         // O cursor parte da entrada ativa (página 1 → primeiro item).
         match &session {
             Session::Ready(r) => assert_eq!(r.outline_focus(), Some(vec![0])),
             _ => unreachable!(),
         }
         // ↓ anda pela árvore sem navegar: quem salta é o Enter.
-        apply(&mut session, Message::OutlineKey(OutlineKey::Next));
+        apply(&mut session, Message::PanelKey(PanelKey::Next));
         match &session {
             Session::Ready(r) => {
                 assert_eq!(r.outline_focus(), Some(vec![0, 0]));
@@ -11100,7 +11293,7 @@ mod tests {
             Session::Ready(r) => r.history.len(),
             _ => unreachable!(),
         };
-        apply(&mut session, Message::OutlineKey(OutlineKey::Activate));
+        apply(&mut session, Message::PanelKey(PanelKey::Activate));
         match &session {
             Session::Ready(r) => {
                 // Alvo é a página do cursor, com o mesmo clamp do SetPage
@@ -11113,21 +11306,21 @@ mod tests {
         }
         // ↑/↓ não passam das pontas da lista.
         for _ in 0..4 {
-            apply(&mut session, Message::OutlineKey(OutlineKey::Next));
+            apply(&mut session, Message::PanelKey(PanelKey::Next));
         }
         match &session {
             Session::Ready(r) => assert_eq!(r.outline_focus(), Some(vec![1])),
             _ => unreachable!(),
         }
         for _ in 0..4 {
-            apply(&mut session, Message::OutlineKey(OutlineKey::Prev));
+            apply(&mut session, Message::PanelKey(PanelKey::Prev));
         }
         match &session {
             Session::Ready(r) => assert_eq!(r.outline_focus(), Some(vec![0])),
             _ => unreachable!(),
         }
         // Colapsar o nó esconde os filhos: o cursor volta para a ativa.
-        apply(&mut session, Message::OutlineKey(OutlineKey::Next));
+        apply(&mut session, Message::PanelKey(PanelKey::Next));
         apply(&mut session, Message::OutlineFold(vec![0]));
         match &session {
             Session::Ready(r) => {
@@ -11139,21 +11332,21 @@ mod tests {
     }
 
     #[test]
-    fn outline_keys_map_to_outline_messages() {
+    fn panel_keys_map_to_panel_messages() {
         use iced::event::Status;
         use iced::keyboard::Modifiers;
         let plain = Modifiers::empty();
         assert!(matches!(
             keyboard_message(Key::Named(Named::ArrowUp), plain, Status::Ignored),
-            Some(Message::OutlineKey(OutlineKey::Prev))
+            Some(Message::PanelKey(PanelKey::Prev))
         ));
         assert!(matches!(
             keyboard_message(Key::Named(Named::ArrowDown), plain, Status::Ignored),
-            Some(Message::OutlineKey(OutlineKey::Next))
+            Some(Message::PanelKey(PanelKey::Next))
         ));
         assert!(matches!(
             keyboard_message(Key::Named(Named::Enter), plain, Status::Ignored),
-            Some(Message::OutlineKey(OutlineKey::Activate))
+            Some(Message::PanelKey(PanelKey::Activate))
         ));
         // Com modificador a tecla sai do mapa (⌘/Alt+setas seguem no histórico)
         // e com foco em campo o evento chega capturado: nada é despachado.
@@ -11174,9 +11367,9 @@ mod tests {
         let last = ready.page_count().saturating_sub(1);
         let mut session = Session::Ready(Tabs::single(ready));
         // Sem outline, a aba não abre.
-        apply(&mut session, Message::OutlineTab(true));
+        apply(&mut session, Message::SetPanelTab(Some(PanelTab::Outline)));
         match &session {
-            Session::Ready(r) => assert!(!r.outline_open),
+            Session::Ready(r) => assert_eq!(r.panel, None),
             _ => unreachable!(),
         }
         // Com outline, abre; jump com clamp; fold alterna.
@@ -11188,11 +11381,11 @@ mod tests {
                 outline: Some(outline_tree()),
             },
         );
-        apply(&mut session, Message::OutlineTab(true));
+        apply(&mut session, Message::SetPanelTab(Some(PanelTab::Outline)));
         apply(&mut session, Message::OutlineJump(PageNo::from_index(9999)));
         match &session {
             Session::Ready(r) => {
-                assert!(r.outline_open);
+                assert_eq!(r.panel, Some(PanelTab::Outline));
                 assert_eq!(r.visible.index(), last);
                 let expected = r
                     .outline_rows()
@@ -11217,6 +11410,317 @@ mod tests {
             Session::Ready(r) => assert!(r.outline_collapsed.is_empty()),
             _ => unreachable!(),
         }
+    }
+
+    const LIST_PAGE_A: &str = "alfa beta gama delta epsilon zeta eta teta iota kappa lambda mu";
+    const LIST_PAGE_B: &str = "nu xi omicron pi rho sigma tau upsilon phi chi psi omega";
+
+    fn list_word(plain: &str, word: &str) -> TextRange {
+        let start = plain.find(word).expect("palavra no texto sintético");
+        TextRange {
+            start,
+            end: start + word.len(),
+        }
+    }
+
+    fn list_annot(id: u64, page: u32, range: TextRange, kind: AnnotKind, text: &str) -> Annotation {
+        Annotation {
+            id,
+            page: PageNo::from_index(page),
+            range,
+            quads: Vec::new(),
+            kind,
+            text: text.into(),
+            marker: None,
+        }
+    }
+
+    /// Documento de duas páginas com texto sintético e 12 marcações (6 por
+    /// página). Ids 1..=12; as notas são as ids ímpares múltiplas de 3 + 1.
+    /// Inserção em ordem inversa: a lista precisa sair em ordem de leitura.
+    fn annotated_ready() -> Option<Ready> {
+        let mut ready = sample_ready()?;
+        assert!(ready.page_count() >= 2, "fixture de duas páginas");
+        for (page, plain) in [(0u32, LIST_PAGE_A), (1, LIST_PAGE_B)] {
+            ready.pages.text[page as usize] = Some(TextLayer {
+                page: PageNo::from_index(page),
+                plain: plain.into(),
+                glyphs: Vec::new(),
+            });
+        }
+        let mut annots = Vec::new();
+        for i in 0..12u64 {
+            let (page, plain) = if i % 2 == 0 {
+                (0, LIST_PAGE_A)
+            } else {
+                (1, LIST_PAGE_B)
+            };
+            let word = plain.split(' ').nth((i / 2) as usize).expect("palavra");
+            let (kind, text) = if i % 3 == 0 {
+                (AnnotKind::Note, format!("nota {i}"))
+            } else {
+                (AnnotKind::Highlight, String::new())
+            };
+            annots.push(list_annot(i + 1, page, list_word(plain, word), kind, &text));
+        }
+        annots.reverse();
+        ready.annotations = annots;
+        Some(ready)
+    }
+
+    fn with_temp_positions<R>(name: &str, f: impl FnOnce() -> R) -> R {
+        let file = std::env::temp_dir().join(format!(
+            "tsuro-positions-unit-{}-{name}",
+            std::process::id()
+        ));
+        let _ = std::fs::remove_file(&file);
+        crate::positions::with_positions_path(file, f)
+    }
+
+    /// Critério 1: cada marcação da sessão vira uma linha com página, tipo,
+    /// trecho e nota (quando houver), em ordem de leitura.
+    #[test]
+    fn annotation_list_has_a_row_per_session_annotation() {
+        let Some(ready) = annotated_ready() else {
+            return;
+        };
+        let h = AnnotKind::Highlight;
+        let n = AnnotKind::Note;
+        let expected = [
+            (1, n, 0, "alfa", Some("nota 0")),
+            (3, h, 0, "beta", None),
+            (5, h, 0, "gama", None),
+            (7, n, 0, "delta", Some("nota 6")),
+            (9, h, 0, "epsilon", None),
+            (11, h, 0, "zeta", None),
+            (2, h, 1, "nu", None),
+            (4, n, 1, "xi", Some("nota 3")),
+            (6, h, 1, "omicron", None),
+            (8, h, 1, "pi", None),
+            (10, n, 1, "rho", Some("nota 9")),
+            (12, h, 1, "sigma", None),
+        ];
+        type Row = (u64, AnnotKind, u32, Option<String>, Option<String>);
+        let got: Vec<Row> = ready
+            .annotation_rows()
+            .into_iter()
+            .map(|row| (row.id, row.kind, row.page.index(), row.excerpt, row.note))
+            .collect();
+        let want: Vec<Row> = expected
+            .iter()
+            .map(|(id, kind, page, excerpt, note)| {
+                (
+                    *id,
+                    *kind,
+                    *page,
+                    Some(excerpt.to_string()),
+                    note.map(str::to_string),
+                )
+            })
+            .collect();
+        assert_eq!(got, want);
+    }
+
+    /// Critério 2: a busca casa trecho e nota, sem diferenciar caixa; sem
+    /// hit a lista fica vazia enquanto a sessão tem marcações (estado vazio
+    /// da busca, não o da sessão).
+    #[test]
+    fn annotation_search_matches_note_and_excerpt_and_reports_empty_result() {
+        let Some(ready) = annotated_ready() else {
+            return;
+        };
+        let mut session = Session::Ready(Tabs::single(ready));
+        let ids = |session: &Session| -> Vec<u64> {
+            active_ready(session)
+                .annotation_rows()
+                .iter()
+                .map(|row| row.id)
+                .collect()
+        };
+        apply(&mut session, Message::AnnotQuery("NOTA 6".into()));
+        assert_eq!(ids(&session), [7], "palavra só na nota");
+        apply(&mut session, Message::AnnotQuery("gama".into()));
+        assert_eq!(ids(&session), [5], "palavra só no trecho");
+        apply(&mut session, Message::AnnotQuery("zzz".into()));
+        assert!(ids(&session).is_empty(), "sem hit, lista vazia");
+        assert_eq!(
+            active_ready(&session).annotations.len(),
+            12,
+            "a busca não apaga marcações"
+        );
+        apply(&mut session, Message::AnnotQuery(String::new()));
+        assert_eq!(ids(&session).len(), 12, "busca vazia mostra tudo");
+    }
+
+    /// Critério 3: Enter na lista (cursor andado com ↓) salta para a página da
+    /// marcação, revela o trecho e deixa a origem no histórico.
+    #[test]
+    fn annotation_enter_reveals_excerpt_and_records_jump_origin() {
+        let Some(ready) = annotated_ready() else {
+            return;
+        };
+        let mut session = Session::Ready(Tabs::single(ready));
+        with_temp_positions("annot-enter", || {
+            apply(
+                &mut session,
+                Message::SetPanelTab(Some(PanelTab::Annotations)),
+            );
+            // Sete ↓: a linha 7 da lista é a primeira da página 2 ("nu", id 2).
+            for _ in 0..7 {
+                apply(&mut session, Message::PanelKey(PanelKey::Next));
+            }
+            assert_eq!(active_ready(&session).annot_focus(), Some(2));
+            assert_eq!(active_ready(&session).visible, PageNo::first());
+            apply(&mut session, Message::PanelKey(PanelKey::Activate));
+            let ready = active_ready(&session);
+            assert_eq!(ready.visible, PageNo::from_index(1));
+            assert_eq!(
+                ready.selection,
+                Some(Selection {
+                    page: PageNo::from_index(1),
+                    range: list_word(LIST_PAGE_B, "nu"),
+                }),
+                "o trecho aparece selecionado"
+            );
+            assert!(ready.can_history_back(), "origem entra no histórico");
+            apply(&mut session, Message::HistoryBack);
+            assert_eq!(active_ready(&session).visible, PageNo::first());
+            // Origem que chegou só por rolagem (fora da pilha) também volta.
+            if let Session::Ready(tabs) = &mut session {
+                tabs.active_mut().visible = PageNo::from_index(1);
+            }
+            apply(&mut session, Message::PanelKey(PanelKey::Prev));
+            apply(&mut session, Message::PanelKey(PanelKey::Activate));
+            assert_eq!(active_ready(&session).visible, PageNo::first());
+            apply(&mut session, Message::HistoryBack);
+            assert_eq!(
+                active_ready(&session).visible,
+                PageNo::from_index(1),
+                "o voltar devolve à página de origem rolada"
+            );
+        });
+    }
+
+    /// Critério 4: a aba existe sem sumário e a sessão vazia não tem linhas.
+    /// Sumário sem outline continua caindo em Páginas.
+    #[test]
+    fn annotation_tab_opens_without_outline_and_empty_session_has_no_rows() {
+        let Some(ready) = sample_ready() else {
+            return;
+        };
+        let mut session = Session::Ready(Tabs::single(ready));
+        apply(
+            &mut session,
+            Message::SetPanelTab(Some(PanelTab::Annotations)),
+        );
+        let ready = active_ready(&session);
+        assert!(ready.outline.is_none());
+        assert_eq!(ready.panel, Some(PanelTab::Annotations));
+        assert!(ready.annotations.is_empty());
+        assert!(ready.annotation_rows().is_empty());
+        apply(&mut session, Message::SetPanelTab(Some(PanelTab::Outline)));
+        assert_eq!(active_ready(&session).panel, None);
+    }
+
+    /// Critério 5: nota editada, marcação removida e desfeita aparecem na
+    /// lista sem texto antigo nem item removido.
+    #[test]
+    fn annotation_rows_follow_note_edit_remove_and_undo() {
+        let Some(mut ready) = annotated_ready() else {
+            return;
+        };
+        let annot = ready
+            .annotations
+            .iter()
+            .find(|a| a.id == 4)
+            .cloned()
+            .expect("nota 3 (id 4)");
+        ready.note_draft = Some(NoteDraft {
+            page: annot.page,
+            range: annot.range,
+            quads: annot.quads.clone(),
+            content: text_editor::Content::with_text("revisada"),
+            editing: Some(4),
+            anchor: [0.0, 0.0],
+            anchor_scroll: 0.0,
+        });
+        assert!(ready.save_note_draft());
+        let row = ready
+            .annotation_rows()
+            .into_iter()
+            .find(|row| row.id == 4)
+            .expect("a nota editada continua na lista");
+        assert_eq!(row.note.as_deref(), Some("revisada"));
+        ready.annot_query = "nota 3".into();
+        assert!(
+            ready.annotation_rows().is_empty(),
+            "o texto antigo não casa mais"
+        );
+        ready.annot_query.clear();
+        assert!(ready.remove_annotation(4));
+        assert_eq!(ready.annotation_rows().len(), 11);
+        assert!(ready.annotation_rows().iter().all(|row| row.id != 4));
+        assert!(ready.annot_undo_once());
+        assert_eq!(
+            ready.annotation_rows().len(),
+            12,
+            "desfazer devolve a linha"
+        );
+    }
+
+    /// Critério 6: referência para marcação que sumiu (removida ou fora do
+    /// documento) não salta para página nenhuma: avisa e solta a referência.
+    #[test]
+    fn annotation_stale_reference_reports_unavailable_without_jump() {
+        let Some(ready) = annotated_ready() else {
+            return;
+        };
+        let mut session = Session::Ready(Tabs::single(ready));
+        with_temp_positions("annot-stale", || {
+            apply(
+                &mut session,
+                Message::SetPanelTab(Some(PanelTab::Annotations)),
+            );
+            for _ in 0..7 {
+                apply(&mut session, Message::PanelKey(PanelKey::Next));
+            }
+            assert_eq!(active_ready(&session).annot_focus(), Some(2));
+            // Some do documento (remoção fora da lista) com o cursor ainda nela.
+            if let Session::Ready(tabs) = &mut session {
+                assert!(tabs.active_mut().remove_annotation(2));
+            }
+            apply(&mut session, Message::PanelKey(PanelKey::Activate));
+            let ready = active_ready(&session);
+            assert_eq!(ready.visible, PageNo::first(), "não saltou");
+            assert!(!ready.can_history_back(), "nada entrou no histórico");
+            assert!(ready.annot_focus().is_none(), "referência solta");
+            assert!(
+                ready
+                    .save_status
+                    .as_deref()
+                    .is_some_and(|status| status.contains("indisponível")),
+                "avisa pela linha de status"
+            );
+            // Página fora do documento (documento trocado): nada de clamp para
+            // a última página, que seria o salto errado.
+            if let Session::Ready(tabs) = &mut session {
+                tabs.active_mut().annotations.push(list_annot(
+                    99,
+                    9999,
+                    TextRange { start: 0, end: 2 },
+                    AnnotKind::Highlight,
+                    "",
+                ));
+            }
+            apply(&mut session, Message::AnnotActivate(99));
+            let ready = active_ready(&session);
+            assert_eq!(
+                ready.visible,
+                PageNo::first(),
+                "sem salto para página errada"
+            );
+            assert!(!ready.can_history_back());
+        });
     }
 
     #[test]
@@ -13774,13 +14278,13 @@ mod tests {
                 outline: Some(outline_tree()),
             },
         );
-        apply(&mut session, Message::OutlineTab(true));
+        apply(&mut session, Message::SetPanelTab(Some(PanelTab::Outline)));
         match &session {
             Session::Ready(r) => assert_eq!(r.outline_focus(), Some(vec![0])),
             _ => unreachable!(),
         }
         apply(&mut session, Message::OpenPalette);
-        apply(&mut session, Message::OutlineKey(OutlineKey::Next));
+        apply(&mut session, Message::PanelKey(PanelKey::Next));
         match &session {
             Session::Ready(tabs) => {
                 assert!(tabs.palette_open());
@@ -13789,7 +14293,7 @@ mod tests {
             other => panic!("esperava Ready, veio {other:?}"),
         }
         apply(&mut session, Message::PaletteClose);
-        apply(&mut session, Message::OutlineKey(OutlineKey::Next));
+        apply(&mut session, Message::PanelKey(PanelKey::Next));
         match &session {
             Session::Ready(tabs) => {
                 assert!(!tabs.palette_open());
