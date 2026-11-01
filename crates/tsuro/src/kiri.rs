@@ -257,43 +257,29 @@ pub fn tab_pill_style(tokens: Tokens, active: bool) -> impl Fn(&iced::Theme) -> 
     }
 }
 
-/// Cor de um status de assinatura. O dot do escudo usa o pior (`status_dot_color`).
-pub fn status_color(tokens: Tokens, status: tsuro_sign::SignatureStatus) -> Color {
-    use tsuro_sign::SignatureStatus as S;
-    match status {
-        S::Valid => tokens.ok,
-        S::IntactButUntrusted
-        | S::Unsupported
-        | S::CertificateExpired
-        | S::CertificateNotYetValid => tokens.warn,
-        S::DocumentModified | S::Invalid => tokens.danger,
+/// Gravidade de uma verificação exibida na ficha de assinatura. Não existe
+/// "válida" global: cada dimensão tem a sua cor, e o dot do escudo mostra a pior.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
+pub enum CheckSeverity {
+    Passed,
+    Attention,
+    Failure,
+}
+
+pub fn check_color(tokens: Tokens, severity: CheckSeverity) -> Color {
+    match severity {
+        CheckSeverity::Passed => tokens.ok,
+        CheckSeverity::Attention => tokens.warn,
+        CheckSeverity::Failure => tokens.danger,
     }
 }
 
-/// Cor do dot no escudo: pior status vence; `None` sem assinaturas.
-pub fn status_dot_color(
+/// Cor do dot do escudo: pior verificação vence; `None` sem assinaturas.
+pub fn worst_check_color(
     tokens: Tokens,
-    statuses: impl IntoIterator<Item = tsuro_sign::SignatureStatus>,
+    severities: impl IntoIterator<Item = CheckSeverity>,
 ) -> Option<Color> {
-    use tsuro_sign::SignatureStatus as S;
-    fn rank(s: S) -> u8 {
-        match s {
-            S::Valid => 1,
-            S::IntactButUntrusted
-            | S::Unsupported
-            | S::CertificateExpired
-            | S::CertificateNotYetValid => 2,
-            S::DocumentModified | S::Invalid => 3,
-        }
-    }
-    let mut worst: Option<S> = None;
-    for s in statuses {
-        worst = Some(match worst {
-            Some(w) if rank(w) >= rank(s) => w,
-            _ => s,
-        });
-    }
-    worst.map(|s| status_color(tokens, s))
+    severities.into_iter().max().map(|s| check_color(tokens, s))
 }
 
 /// Cartão do menu ⋯: fundo `elevated`, borda `line`, raio 8, sombra leve.
@@ -820,21 +806,19 @@ mod tests {
     }
 
     #[test]
-    fn dot_worst_status_wins_and_empty_has_no_dot() {
-        use tsuro_sign::SignatureStatus as S;
+    fn dot_worst_check_wins_and_empty_has_no_dot() {
+        use CheckSeverity as C;
         let t = Tokens::for_theme(Theme::Dark, Lang::Pt);
-        assert_eq!(status_dot_color(t, []), None);
-        assert_eq!(status_dot_color(t, [S::Valid]), Some(t.ok));
-        assert_eq!(status_dot_color(t, [S::IntactButUntrusted]), Some(t.warn));
+        assert_eq!(worst_check_color(t, []), None);
+        assert_eq!(worst_check_color(t, [C::Passed]), Some(t.ok));
         assert_eq!(
-            status_dot_color(t, [S::Valid, S::CertificateExpired]),
+            worst_check_color(t, [C::Passed, C::Attention]),
             Some(t.warn)
         );
         assert_eq!(
-            status_dot_color(t, [S::Valid, S::IntactButUntrusted, S::Invalid]),
+            worst_check_color(t, [C::Attention, C::Failure, C::Passed]),
             Some(t.danger)
         );
-        assert_eq!(status_dot_color(t, [S::DocumentModified]), Some(t.danger));
     }
 
     #[test]
