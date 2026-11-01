@@ -28,11 +28,15 @@ use crate::session::{
     THUMB_ROW,
 };
 
-/// Altura do chrome Kiri: toolbar 36px + progresso 2px + respiro.
-pub const CHROME_HEIGHT: f32 = 46.0;
+/// Altura da faixa de ferramentas (spec §5, caso expandido): título nativo
+/// da plataforma acima e a nossa faixa de 44 abaixo.
+pub const BAR_HEIGHT: f32 = 44.0;
+
+/// Altura do chrome Kiri: toolbar 44px + progresso 2px + respiro 8px.
+pub const CHROME_HEIGHT: f32 = BAR_HEIGHT + 10.0;
 
 /// Altura da faixa de abas (issue #40), reservada só com 2+ documentos.
-pub const TAB_STRIP_HEIGHT: f32 = 30.0;
+pub const TAB_STRIP_HEIGHT: f32 = 26.0;
 
 /// Papel do post-it (issue #30): amarelo fixo, como o marcador nota do
 /// canvas — papel não segue o tema e a tinta escura lê nos dois.
@@ -91,7 +95,7 @@ pub fn chrome(session: &Session, theme: Theme, lang: Lang) -> Element<'_, Messag
         Session::Ready(ready) => ready_body(ready, t),
     };
 
-    // Toolbar 36px + progresso 2px + respiro 8px = `CHROME_HEIGHT` (46px).
+    // Toolbar 44px + progresso 2px + respiro 8px = `CHROME_HEIGHT` (54px).
     let mut col = column![topbar(session, t)];
     if let Session::Ready(tabs) = session {
         // Progresso de leitura é do documento: some com o Início na tela.
@@ -319,35 +323,35 @@ fn control_active(
         .style(control_style(t, active))
 }
 
-/// Ícone dos botões da barra: 20px + padding 8 = os 36px da barra.
-const BAR_ICON: f32 = 20.0;
-/// Ícone dos segmentos (◀▶, −/+, marcar, HUD): 18px + padding 4 = 26px, a
-/// mesma altura de antes (16 + 5).
-const SEG_ICON: f32 = 18.0;
+/// Ícone dos botões da barra: 16px + padding 6 = os 28px do alvo (spec §5).
+const BAR_ICON: f32 = 16.0;
+/// Ícone dos segmentos (◀▶, −/+, marcar, HUD): 16px + padding 4 = 24px, a
+/// altura de conteúdo do controle segmentado (spec §5).
+const SEG_ICON: f32 = 16.0;
 
-/// Botão-ícone 36×36 da barra (casa, abrir, painéis, ⋯).
+/// Botão-ícone 28×28 da barra (casa, abrir, painéis, ⋯).
 fn bar_button(
     t: Tokens,
     file: &str,
     active: bool,
 ) -> iced::widget::button::Button<'static, Message> {
     button(kiri::ori_icon(file, BAR_ICON))
-        .padding(8)
-        .style(control_style(t, active))
+        .padding(6)
+        .style(kiri::bar_btn_style(t, active))
 }
 
 fn seg_icon(file: &str) -> Element<'static, Message> {
     kiri::ori_icon(file, SEG_ICON)
 }
 
-/// Botão-ícone 26px de altura para dentro de segmentos (`kiri::seg_style` +
-/// padding 2 = 30px).
+/// Botão-ícone 24px de altura para dentro de segmentos (`kiri::seg_style` +
+/// padding 2 = 28px, a mesma altura dos botões da barra).
 fn control_seg(
     t: Tokens,
     btn: iced::widget::button::Button<'_, Message>,
 ) -> iced::widget::button::Button<'_, Message> {
-    btn.padding(Padding::from([4, 5]))
-        .style(control_style(t, false))
+    btn.padding(Padding::from([4, 4]))
+        .style(kiri::bar_btn_style(t, false))
 }
 
 /// Dica (tooltip) de ícone/botão: fundo `kiri::tooltip_style`, para o rótulo
@@ -450,11 +454,11 @@ fn settings_button(t: Tokens, open: bool) -> Element<'static, Message> {
     )
 }
 
-/// Moldura da toolbar Kiri: 36px, fundo `chrome`, respiro horizontal 8px.
+/// Moldura da toolbar Kiri: `BAR_HEIGHT`, fundo `chrome`, respiro horizontal 8px.
 fn toolbar_frame(t: Tokens, content: Element<'_, Message>) -> Element<'_, Message> {
     container(content)
         .width(Length::Fill)
-        .height(Length::Fixed(36.0))
+        .height(Length::Fixed(BAR_HEIGHT))
         .padding(Padding::from([0, 8]))
         .style(move |_| container::Style {
             background: Some(Background::Color(t.chrome)),
@@ -592,9 +596,9 @@ fn topbar(session: &Session, t: Tokens) -> Element<'_, Message> {
                 .on_input(Message::SearchChanged)
                 .on_submit(Message::SearchSubmit)
                 .style(kiri::bar_input_style(t))
-                .padding([2, 4])
+                .padding([4, 8])
                 .size(12)
-                .width(Length::Fixed(120.0)),
+                .width(Length::Fixed(140.0)),
                 search_nav(ready, t),
                 kiri::vsep(t),
                 row![
@@ -607,7 +611,7 @@ fn topbar(session: &Session, t: Tokens) -> Element<'_, Message> {
                             .style(kiri::bar_input_style(t))
                             .font(iced::Font::MONOSPACE)
                             .size(12)
-                            .padding([2, 4])
+                            .padding([4, 6])
                             .width(Length::Fixed(30.0)),
                         t.lang.pick(
                             "Ir para página (Enter confirma)",
@@ -884,11 +888,12 @@ fn overflow_layer(tabs: &Tabs, t: Tokens) -> Element<'_, Message> {
             background: Some(Background::Color(Color::from_rgba(0.0, 0.0, 0.0, 0.25))),
             ..container::Style::default()
         });
-    // Com 2+ abas a faixa soma TAB_STRIP_HEIGHT à topbar (44px).
+    // Com 2+ abas a faixa soma TAB_STRIP_HEIGHT à topbar
+    // (`CHROME_HEIGHT` menos o progresso e o respiro).
     let top = if tabs.len() > 1 {
-        44.0 + TAB_STRIP_HEIGHT
+        CHROME_HEIGHT - 2.0 + TAB_STRIP_HEIGHT
     } else {
-        44.0
+        CHROME_HEIGHT - 2.0
     };
     let card = container(overflow_menu(tabs, tabs.settings.theme_pref, t))
         .width(Length::Fill)
@@ -2840,10 +2845,15 @@ fn tab_strip(tabs: &Tabs, t: Tokens) -> Element<'_, Message> {
     for (index, doc) in tabs.docs().iter().enumerate() {
         let label = short_name(doc.source.path());
         let active = tabs.home().is_none() && index == tabs.active_index();
+        let mut name_text = text(label).size(13);
+        if active {
+            // Aba ativa com peso 600 (spec §5).
+            name_text = name_text.font(crate::font::inter(font::Weight::Semibold));
+        }
         let name = tip_owned(
             t,
-            button(text(label).size(13))
-                .padding(Padding::from([4, 10]))
+            button(name_text)
+                .padding(Padding::from([3, 10]))
                 .style(kiri::ibtn_style(t, false))
                 .on_press(Message::SelectTab(index)),
             identity_tip(doc.source.path()),
@@ -2851,7 +2861,7 @@ fn tab_strip(tabs: &Tabs, t: Tokens) -> Element<'_, Message> {
         let close = tip(
             t,
             button(text("×").size(14).color(t.muted))
-                .padding(Padding::from([4, 8]))
+                .padding(Padding::from([3, 7]))
                 .style(kiri::ibtn_style(t, false))
                 .on_press(Message::CloseTab(index)),
             if cfg!(target_os = "macos") {
@@ -2892,8 +2902,9 @@ fn short_name(path: &std::path::Path) -> String {
 /// segmentado Páginas | Sumário | Marcações e a lista da aba escolhida.
 fn pages_panel(ready: &Ready, t: Tokens) -> Element<'_, Message> {
     let mut col = column![text(t.lang.pick("Navegação", "Navigation"))
-        .size(13)
-        .color(t.ink)]
+        .size(11)
+        .font(crate::font::inter(font::Weight::Bold))
+        .color(t.muted)]
     .spacing(8);
     col = col.push(panel_tabs(ready, t));
     col = match ready.panel {
@@ -2914,7 +2925,7 @@ fn pages_panel(ready: &Ready, t: Tokens) -> Element<'_, Message> {
 fn panel_tabs(ready: &Ready, t: Tokens) -> Element<'_, Message> {
     // Três abas em partes iguais cortavam "Marcações"/"Annotations" (~45px de
     // texto por aba). Cada aba recebe partes pelo tamanho do rótulo: no painel
-    // de 216px sobram 200px úteis, ~8,7px por caractere (23 caracteres por
+    // de 256px sobram 240px úteis, ~8,7px por caractere (23 caracteres por
     // conjunto de rótulos, PT e EN).
     let seg = |label: &'static str, active: bool, tab: Option<PanelTab>| {
         button(
@@ -2925,7 +2936,8 @@ fn panel_tabs(ready: &Ready, t: Tokens) -> Element<'_, Message> {
                 .align_x(Alignment::Center),
         )
         .width(Length::FillPortion(label.chars().count() as u16))
-        .padding(Padding::from([5, 4]))
+        .height(Length::Fixed(24.0))
+        .padding(Padding::from([0, 4]))
         .style(kiri::panel_seg_style(t, active))
         .on_press(Message::SetPanelTab(tab))
     };
@@ -3022,9 +3034,9 @@ fn outline_title(title: &str) -> String {
 }
 
 /// Largura útil de uma linha da lista de marcações, em caracteres (painel de
-/// 200px, texto 12). Linha de altura fixa: texto que quebra estouraria o
+/// 240px, texto 12). Linha de altura fixa: texto que quebra estouraria o
 /// cálculo de rolagem do cursor.
-const ANNOT_ROW_CHARS: usize = 30;
+const ANNOT_ROW_CHARS: usize = 36;
 
 /// Aba Marcações: as marcações desta sessão como linhas (página, tipo, trecho,
 /// nota), com busca por trecho e nota. Sem marcações, diz como criar uma; não

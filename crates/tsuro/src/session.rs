@@ -59,7 +59,7 @@ pub(crate) const ANNOT_ROW: f32 = 62.0;
 const NEIGHBOR_CACHE_BUDGET: usize = 64 * 1024 * 1024;
 
 /// Larguras do chrome (espelham `view.rs`); base da geometria do contínuo.
-pub(crate) const PAGES_PANEL_W: f32 = 216.0;
+pub(crate) const PAGES_PANEL_W: f32 = 256.0;
 pub(crate) const SIG_PANEL_W: f32 = 220.0;
 const PANES_GAP: f32 = 12.0;
 const CHROME_PAD: f32 = 8.0;

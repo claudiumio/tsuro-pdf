@@ -479,6 +479,33 @@ pub fn ibtn_style(
     }
 }
 
+/// Botão de barra (spec §5): pílula, mesmas cores do `ibtn_style` — o raio
+/// 99 vira círculo no alvo de 28×28, como no kit.
+pub fn bar_btn_style(
+    tokens: Tokens,
+    active: bool,
+) -> impl Fn(&iced::Theme, button::Status) -> button::Style {
+    move |_theme, status| {
+        let background = if active {
+            tokens.accent_bg
+        } else {
+            match status {
+                button::Status::Hovered | button::Status::Pressed => tokens.hover,
+                _ => Color::TRANSPARENT,
+            }
+        };
+        button::Style {
+            background: Some(Background::Color(background)),
+            text_color: tokens.ink,
+            border: Border {
+                radius: radius(Radius::Pill).into(),
+                ..Border::default()
+            },
+            shadow: Shadow::default(),
+        }
+    }
+}
+
 /// Pílula central (busca + página): fundo `elevated`, raio 99px.
 pub fn pill_style(tokens: Tokens) -> impl Fn(&iced::Theme) -> container::Style {
     move |_| container::Style {
@@ -524,7 +551,7 @@ pub fn tab_pill_style(tokens: Tokens, active: bool) -> impl Fn(&iced::Theme) -> 
         border: Border {
             color: tokens.line,
             width: 1.0,
-            radius: 8.0.into(),
+            radius: radius(Radius::Tab).into(),
         },
         text_color: Some(tokens.ink),
         ..container::Style::default()
@@ -818,13 +845,23 @@ pub fn bar_mark_style(tokens: Tokens) -> impl Fn(&iced::Theme) -> container::Sty
 }
 
 /// Campo de busca/página dentro da pílula: transparente, sem borda própria
-/// (a moldura é do `pill_style`), placeholder `muted`.
+/// (a moldura é do `pill_style`), placeholder `muted`. Focado, o campo ganha
+/// o anel de acento do kit (spec §5). A borda existe sempre com largura 1 e
+/// só troca de cor, para o foco não empurrar o layout da pílula.
 pub fn bar_input_style(
     tokens: Tokens,
 ) -> impl Fn(&iced::Theme, text_input::Status) -> text_input::Style {
-    move |_theme, _status| text_input::Style {
+    move |_theme, status| text_input::Style {
         background: Background::Color(Color::TRANSPARENT),
-        border: Border::default(),
+        border: Border {
+            color: if matches!(status, text_input::Status::Focused) {
+                tokens.accent
+            } else {
+                Color::TRANSPARENT
+            },
+            width: 1.0,
+            radius: radius(Radius::Pill).into(),
+        },
         icon: tokens.muted,
         placeholder: tokens.muted,
         value: tokens.ink,
@@ -930,7 +967,7 @@ pub fn panel_seg_style(
             background: Some(Background::Color(background)),
             text_color: if active { tokens.accent } else { tokens.ink },
             border: Border {
-                radius: 4.0.into(),
+                radius: radius(Radius::Button).into(),
                 ..Border::default()
             },
             shadow: Shadow::default(),
