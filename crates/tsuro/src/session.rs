@@ -3048,8 +3048,15 @@ impl Session {
                 Task::none()
             }
             Message::RecoveryDiscardConfirm => {
+                let dir = recovery::recovery_dir();
                 if let Session::Ready(tabs) = self {
                     tabs.active_mut().discard_recovery();
+                    // O mesmo diário pode estar em cache em outra aba: cada uma
+                    // solta só a oferta cujo arquivo saiu do disco.
+                    let present = recovery::instance_ids(&dir);
+                    for doc in tabs.docs_mut() {
+                        doc.keep_offers_present(&present);
+                    }
                 }
                 Task::none()
             }
@@ -4707,8 +4714,14 @@ impl Session {
     /// checkpoint sai da mensagem `CheckpointDue`. A flag `checkpoint_armed`
     /// impede que mensagens seguidas (hover, arrasto) adiem o checkpoint para sempre.
     fn arm_checkpoints(&mut self) -> Task<Message> {
+        Task::batch(self.start_checkpoint_timers().1)
+    }
+
+    /// Arma um timer por aba com mudança pendente e devolve quantos armou. Mensagens
+    /// seguidas não armam de novo: a flag `checkpoint_armed` segura o timer já em voo.
+    fn start_checkpoint_timers(&mut self) -> (usize, Vec<Task<Message>>) {
         let Session::Ready(tabs) = self else {
-            return Task::none();
+            return (0, Vec::new());
         };
         let mut timers = Vec::new();
         for doc in tabs.docs_mut() {
@@ -4726,7 +4739,7 @@ impl Session {
                 |doc_gen| Message::CheckpointDue { doc_gen },
             ));
         }
-        Task::batch(timers)
+        (timers.len(), timers)
     }
 
     /// Encerrar a janela (limpo ou descartado): cada diário das abas sai com ela.
@@ -15756,21 +15769,50 @@ mod tests {
     }
 
     #[test]
+    fn discard_in_one_tab_drops_the_same_offer_cached_in_another() {
+        recovery_case("discard-tabs", |doc, journals| {
+            let mut first = open_like_window(doc);
+            first.annotations = vec![recovery_mark(0, "descartada")];
+            assert!(checkpoint_now(&mut first));
+            drop(first);
+            let mut session = Session::Empty(EmptyState::default());
+            open_tab(&mut session, doc);
+            open_tab(&mut session, doc);
+            let Session::Ready(tabs) = &session else {
+                panic!("esperava abas")
+            };
+            assert!(
+                tabs.docs().iter().all(|doc| doc.recovery_prompt()),
+                "as duas abas oferecem o mesmo diário"
+            );
+            // Descarte confirmado na aba ativa (a segunda).
+            apply(&mut session, Message::RecoveryDiscardAsk(true));
+            apply(&mut session, Message::RecoveryDiscardConfirm);
+            assert_eq!(entries(journals), 0, "o diário saiu do disco");
+            apply(&mut session, Message::SelectTab(0));
+            assert_eq!(
+                active_ready(&session).recovery,
+                RecoveryState::Nenhum,
+                "a outra aba não oferece mais o diário descartado"
+            );
+            apply(&mut session, Message::RecoveryRestore);
+            assert!(
+                active_ready(&session).annotations.is_empty(),
+                "restaurar na outra aba não traz de volta marcações descartadas"
+            );
+        });
+    }
+
+    #[test]
     fn hud_wake_arms_one_checkpoint_timer_per_pending_change() {
         recovery_case("armed", |doc, _| {
             let mut ready = open_like_window(doc);
             ready.annotations = vec![recovery_mark(0, "a")];
             let mut session = Session::Ready(Tabs::single(ready));
-            apply(&mut session, Message::HudWake);
-            assert!(
-                active_ready(&session).checkpoint_armed,
-                "mudança pendente arma o timer"
-            );
-            apply(&mut session, Message::HudWake);
-            assert!(
-                active_ready(&session).checkpoint_armed,
-                "mensagens seguidas não rearmam"
-            );
+            let first = session.start_checkpoint_timers().0;
+            assert_eq!(first, 1, "mudança pendente arma um timer");
+            let second = session.start_checkpoint_timers().0;
+            assert_eq!(second, 0, "mensagens seguidas não rearmam");
         });
     }
 }
