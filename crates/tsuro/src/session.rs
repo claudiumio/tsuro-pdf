@@ -4847,10 +4847,16 @@ impl Session {
                         None => Task::none(),
                     }
                 }
-                PanelKey::Activate => match ready.annot_cursor {
-                    Some(id) => self.annot_activate(id),
-                    None => Task::none(),
-                },
+                PanelKey::Activate => {
+                    // Enter na busca sem cursor: a primeira linha filtrada.
+                    let id = ready
+                        .annot_cursor
+                        .or_else(|| ready.annotation_rows().first().map(|row| row.id));
+                    match id {
+                        Some(id) => self.annot_activate(id),
+                        None => Task::none(),
+                    }
+                }
             },
             Some(PanelTab::Outline) | None => Task::none(),
         }
@@ -6413,9 +6419,16 @@ impl Ready {
             self.doc_content_height(),
         ];
         let content = self.stage_size(annot.page);
+        let mut top = reveal_axis(self.doc_scroll_y, view[1], y, h, content[1]);
+        if self.view_mode == ViewMode::Continuous {
+            // Centrar um trecho perto do topo da página sobe além dela. A
+            // rolagem volta do iced como DocScrolled, e `page_at_offset` leria
+            // a página anterior: `visible` e a origem do voltar saem errados.
+            top = top.max(self.page_offset(annot.page));
+        }
         [
             reveal_axis(self.doc_scroll_x, view[0], x, w, content[0]),
-            reveal_axis(self.doc_scroll_y, view[1], y, h, content[1]),
+            top,
         ]
     }
 
@@ -11977,6 +11990,76 @@ mod tests {
         assert_eq!(reveal_axis(0.0, 600.0, 4990.0, 5.0, 5000.0), 4400.0);
         // Palco menor que a janela: nada a rolar.
         assert_eq!(reveal_axis(0.0, 600.0, 100.0, 20.0, 300.0), 0.0);
+    }
+
+    /// Trecho perto do topo da página 2: centrar na janela sobe além do topo
+    /// dela. A rolagem que o iced reporta de volta tem de manter a página do
+    /// trecho, e o voltar tem de levar à origem (sem página intermediária).
+    #[test]
+    fn annotation_reveal_near_page_top_keeps_page_and_back_returns_to_origin() {
+        let Some(mut ready) = annotated_ready() else {
+            return;
+        };
+        set_letter_media(&mut ready);
+        ready.view_mode = ViewMode::Continuous;
+        ready.viewport = Viewport {
+            width: 900.0,
+            height: 600.0,
+        };
+        // PDF: y perto do topo (792 pt) da página de índice 1.
+        ready.annotations = vec![mark_at(43, 1, Quad::from_rect(72.0, 760.0, 200.0, 776.0))];
+        let mut session = Session::Ready(Tabs::single(ready));
+        with_temp_positions("annot-reveal-top", || {
+            apply(&mut session, Message::AnnotActivate(43));
+            let (x, y) = {
+                let ready = active_ready(&session);
+                (ready.doc_scroll_x, ready.doc_scroll_y)
+            };
+            // O iced reporta de volta a rolagem que foi pedida.
+            apply(&mut session, Message::DocScrolled { x, y });
+            assert_eq!(
+                active_ready(&session).visible,
+                PageNo::from_index(1),
+                "a rolagem reportada mantém a página do trecho"
+            );
+            apply(&mut session, Message::HistoryBack);
+            assert_eq!(
+                active_ready(&session).visible,
+                PageNo::first(),
+                "o voltar leva à origem"
+            );
+        });
+    }
+
+    /// Enter na busca (sem cursor na lista) salta para a primeira linha
+    /// filtrada, não para a primeira da lista inteira; sem linha filtrada,
+    /// não faz nada.
+    #[test]
+    fn annotation_activate_without_cursor_picks_first_filtered_row() {
+        let Some(ready) = annotated_ready() else {
+            return;
+        };
+        let mut session = Session::Ready(Tabs::single(ready));
+        with_temp_positions("annot-enter-search", || {
+            apply(
+                &mut session,
+                Message::SetPanelTab(Some(PanelTab::Annotations)),
+            );
+            apply(&mut session, Message::AnnotQuery("nota 9".into()));
+            assert_eq!(active_ready(&session).annot_focus(), None);
+            apply(&mut session, Message::PanelKey(PanelKey::Activate));
+            let ready = active_ready(&session);
+            assert_eq!(ready.annot_focus(), Some(10), "única linha com 'nota 9'");
+            assert_eq!(ready.visible, PageNo::from_index(1), "página da linha 10");
+            apply(&mut session, Message::AnnotQuery("zzz".into()));
+            apply(&mut session, Message::HistoryBack);
+            apply(&mut session, Message::PanelKey(PanelKey::Activate));
+            assert_eq!(
+                active_ready(&session).visible,
+                PageNo::first(),
+                "sem linha filtrada, Enter não salta"
+            );
+        });
     }
 
     #[test]

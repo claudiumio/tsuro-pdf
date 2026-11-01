@@ -21,9 +21,9 @@ use crate::search::Search;
 use crate::session::PermissionsState;
 use crate::session::{
     display_pt, display_rect, marker_side, page_pt_at, AnnotKind, AnnotationRow, Message, NavCmd,
-    NoteDraft, OpenSource, PaletteItem, PaletteState, PanelTab, PrintDialog, RangeMode, Ready,
-    Session, SettingsPanel, Tabs, UpdateState, ViewMode, Zoom, ZoomFactor, ANNOT_ROW, DOC_GAP,
-    DOC_PAD_BOTTOM, DOC_PAD_TOP, DOC_PAD_X, PAGES_PANEL_W, SIG_PANEL_W, THUMB_ROW,
+    NoteDraft, OpenSource, PaletteItem, PaletteState, PanelKey, PanelTab, PrintDialog, RangeMode,
+    Ready, Session, SettingsPanel, Tabs, UpdateState, ViewMode, Zoom, ZoomFactor, ANNOT_ROW,
+    DOC_GAP, DOC_PAD_BOTTOM, DOC_PAD_TOP, DOC_PAD_X, PAGES_PANEL_W, SIG_PANEL_W, THUMB_ROW,
 };
 
 /// Altura do chrome Kiri: toolbar 36px + progresso 2px + respiro.
@@ -2778,6 +2778,8 @@ fn annotations_tab(ready: &Ready, t: Tokens) -> Element<'_, Message> {
         ready.annot_query(),
     )
     .on_input(Message::AnnotQuery)
+    // iced captura o Enter num text_input focado: sem isto, ↓ + Enter não salta.
+    .on_submit(Message::PanelKey(PanelKey::Activate))
     .style(kiri::bar_input_style(t))
     .padding([6, 8])
     .size(12)
