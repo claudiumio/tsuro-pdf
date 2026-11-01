@@ -747,8 +747,11 @@ pub fn menu_item_style(tokens: Tokens) -> impl Fn(&iced::Theme, button::Status) 
     }
 }
 
-/// Linha do menu ⋯ (spec §5): hover no acento ocupando a largura toda, raio
-/// 8; o modo vigente fica em `accent_bg`, como no resto do chrome.
+/// Linha do menu ⋯ (spec §5): raio 8 e 24 px de altura. O hover fica no
+/// neutro `hover`, não no acento cheio do kit: a linha carrega ícone SVG
+/// colorido e dica em `muted`, e os dois somem sobre o acento (o cinza do
+/// tema claro dá quase nenhum contraste no teal). O acento fica para o modo
+/// vigente, que é o que a cor precisa dizer.
 pub fn menu_row_style(
     tokens: Tokens,
     active: bool,
@@ -758,26 +761,13 @@ pub fn menu_row_style(
             tokens.accent_bg
         } else {
             match status {
-                button::Status::Hovered | button::Status::Pressed => tokens.accent,
+                button::Status::Hovered | button::Status::Pressed => tokens.hover,
                 _ => Color::TRANSPARENT,
             }
         };
         button::Style {
             background: Some(Background::Color(background)),
-            text_color: if active {
-                tokens.accent
-            } else if matches!(status, button::Status::Hovered | button::Status::Pressed) {
-                // Sobre o acento: branco só quando o acento é escuro. No tema
-                // claro o teal #1f7d76 pede branco; no escuro, #4db8b0 é claro
-                // e o texto tem que ser quase preto (branco dá 2.2:1).
-                if tokens.is_dark {
-                    hex(0x14, 0x14, 0x14)
-                } else {
-                    tokens.page
-                }
-            } else {
-                tokens.ink
-            },
+            text_color: if active { tokens.accent } else { tokens.ink },
             border: Border {
                 radius: radius(Radius::Item).into(),
                 ..Border::default()
