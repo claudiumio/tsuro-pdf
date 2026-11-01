@@ -322,10 +322,7 @@ pub(crate) fn abandoned(dir: &Path) -> Vec<Abandoned> {
         .into_iter()
         .filter(|id| !owner_alive(dir, id))
         .filter_map(|id| {
-            let checkpoint = load(dir, &id)?;
-            let modified = std::fs::metadata(id.file(dir, JOURNAL))
-                .and_then(|meta| meta.modified())
-                .unwrap_or(std::time::SystemTime::UNIX_EPOCH);
+            let (checkpoint, modified) = load_dated(dir, &id)?;
             Some((modified, Abandoned { id, checkpoint }))
         })
         .collect();
@@ -334,9 +331,19 @@ pub(crate) fn abandoned(dir: &Path) -> Vec<Abandoned> {
 }
 
 pub(crate) fn load(dir: &Path, id: &InstanceId) -> Option<Checkpoint> {
+    load_dated(dir, id).map(|(checkpoint, _)| checkpoint)
+}
+
+/// A data vem do arquivo que forneceu o checkpoint: um crash entre os dois
+/// renames deixa o mais recente só no `.prev`.
+fn load_dated(dir: &Path, id: &InstanceId) -> Option<(Checkpoint, std::time::SystemTime)> {
     [JOURNAL, PREV].into_iter().find_map(|ext| {
-        let raw = std::fs::read_to_string(id.file(dir, ext)).ok()?;
-        decode(&raw)
+        let path = id.file(dir, ext);
+        let checkpoint = decode(&std::fs::read_to_string(&path).ok()?)?;
+        let modified = std::fs::metadata(&path)
+            .and_then(|meta| meta.modified())
+            .unwrap_or(std::time::SystemTime::UNIX_EPOCH);
+        Some((checkpoint, modified))
     })
 }
 
@@ -930,6 +937,28 @@ mod tests {
         drop(newer);
         let ids: Vec<InstanceId> = abandoned(&dir).into_iter().map(|a| a.id).collect();
         assert_eq!(ids, [newer_id, older_id]);
+        std::fs::remove_dir_all(&dir).unwrap();
+    }
+
+    #[test]
+    fn abandoned_dates_a_prev_only_journal_by_its_own_file() {
+        let dir = temp_dir("prev-order");
+        let older = Journal::create(&dir).unwrap();
+        older.write(&checkpoint(&["velha"])).unwrap();
+        let older_id = older.id().clone();
+        drop(older);
+        std::thread::sleep(std::time::Duration::from_millis(30));
+        let newer = Journal::create(&dir).unwrap();
+        newer.write(&checkpoint(&["nova"])).unwrap();
+        let newer_id = newer.id().clone();
+        drop(newer);
+        std::fs::rename(newer_id.file(&dir, JOURNAL), newer_id.file(&dir, PREV)).unwrap();
+        let ids: Vec<InstanceId> = abandoned(&dir).into_iter().map(|a| a.id).collect();
+        assert_eq!(
+            ids,
+            [newer_id, older_id],
+            "crash entre os renames: o .prev novo vem primeiro"
+        );
         std::fs::remove_dir_all(&dir).unwrap();
     }
 
