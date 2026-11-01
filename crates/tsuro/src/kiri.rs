@@ -102,6 +102,280 @@ fn hex(r: u8, g: u8, b: u8) -> Color {
     Color::from_rgb8(r, g, b)
 }
 
+// ── Visual foundation (docs/design/01-fundacao-visual.md) ─────────────────
+// Approved-spec tokens beside the legacy `Tokens`. Nothing here is consumed
+// yet: no rendered pixel changes in this phase — `view.rs` migrates onto
+// these tables in phase 2.
+
+// Typography (spec §2) ──────────────────────────────────────────────────────
+
+/// One named text style: size and line-height in px, numeric weight
+/// (400 regular, 600 emphasized, 700 headline) [kit]. SF tracking does not
+/// apply to Inter — size and line-height are copied, not tracking.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct TextStyle {
+    pub size: f32,
+    pub line_height: f32,
+    pub weight: u16,
+}
+
+/// Named styles of the scale (spec §2 table). Floor 10 pt, body 13/16 [HIG].
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum TextKind {
+    Title2,
+    Title3,
+    Headline,
+    Body,
+    Callout,
+    Subheadline,
+    Footnote,
+}
+
+/// Pure mapping style + emphasis -> metrics. Emphasized lifts 400 to 600;
+/// Headline stays 700 in both variants [kit].
+pub fn text_style(kind: TextKind, emphasized: bool) -> TextStyle {
+    let (size, line_height, regular, strong) = match kind {
+        TextKind::Title2 => (17.0, 22.0, 400, 600),
+        TextKind::Title3 => (15.0, 20.0, 400, 600),
+        TextKind::Headline => (13.0, 16.0, 700, 700),
+        TextKind::Body => (13.0, 16.0, 400, 600),
+        TextKind::Callout => (12.0, 15.0, 400, 600),
+        TextKind::Subheadline => (11.0, 14.0, 400, 600),
+        TextKind::Footnote => (10.0, 13.0, 400, 600),
+    };
+    TextStyle {
+        size,
+        line_height,
+        weight: if emphasized { strong } else { regular },
+    }
+}
+
+// Semantic colors (spec §3) ─────────────────────────────────────────────────
+
+/// Semantic color roles (spec §3 table) for both themes, kit values. The kit
+/// specifies translucent roles (`#000 85%`, `#FFF 55%`); the app's declared
+/// substitute is flat opaque surfaces (spec §5 menu note, principle 4), so
+/// each alpha is composed over the theme's `window_bg`, rounded half up.
+/// Not consumed yet — phase 2 migrates `view.rs` onto these roles.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct Roles {
+    pub label: Color,
+    pub label_2: Color,
+    pub label_3: Color,
+    pub fill_1: Color,
+    pub fill_3: Color,
+    pub separator: Color,
+    pub window_bg: Color,
+    pub under_page: Color,
+    /// Brand accent, Kiri teal (decision D-4 — not the kit's system blue).
+    pub accent: Color,
+    pub red: Color,
+    pub green: Color,
+    pub orange: Color,
+    /// PDF sheet — always white in both themes (declared exception, spec §3).
+    pub page: Color,
+}
+
+impl Roles {
+    pub fn for_theme(theme: Theme) -> Self {
+        match theme {
+            Theme::Dark => Self {
+                label: Color::WHITE,              // #FFF 100%
+                label_2: hex(0x9a, 0x9a, 0x9a),   // #FFF 55% over #1E1E1E
+                label_3: hex(0x56, 0x56, 0x56),   // #FFF 25%
+                fill_1: hex(0x35, 0x35, 0x35),    // #FFF 10%
+                fill_3: hex(0x29, 0x29, 0x29),    // #FFF 5%
+                separator: hex(0x35, 0x35, 0x35), // #FFF 10%
+                window_bg: hex(0x1e, 0x1e, 0x1e),
+                under_page: hex(0x18, 0x18, 0x18),
+                accent: hex(0x4d, 0xb8, 0xb0), // D-4 teal (kit blue: #0A99FF)
+                red: hex(0xff, 0x47, 0x47),
+                green: hex(0x3b, 0xdb, 0x63),
+                orange: hex(0xff, 0x9e, 0x33),
+                page: Color::WHITE,
+            },
+            Theme::Light => Self {
+                label: hex(0x26, 0x26, 0x26),     // #000 85% over #FFF
+                label_2: hex(0x80, 0x80, 0x80),   // #000 50%
+                label_3: hex(0xbf, 0xbf, 0xbf),   // #000 25%
+                fill_1: hex(0xe6, 0xe6, 0xe6),    // #000 10%
+                fill_3: hex(0xf2, 0xf2, 0xf2),    // #000 5%
+                separator: hex(0xc6, 0xc6, 0xc8), // #3C3C43 29%
+                window_bg: Color::WHITE,
+                under_page: hex(0xef, 0xef, 0xed),
+                accent: hex(0x1f, 0x7d, 0x76), // D-4 teal (kit blue: #0078F0)
+                red: hex(0xff, 0x38, 0x3c),
+                green: hex(0x34, 0xc7, 0x59),
+                orange: hex(0xff, 0x8d, 0x28),
+                page: Color::WHITE,
+            },
+        }
+    }
+}
+
+// Spacing, control heights, radius, elevation (spec §4) ─────────────────────
+
+/// Step of the 4 px spacing grid (spec §4) [HIG].
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Spacing {
+    S4,
+    S8,
+    S12,
+    S16,
+    S20,
+    S24,
+}
+
+/// Spacing step -> px.
+pub fn spacing(step: Spacing) -> f32 {
+    match step {
+        Spacing::S4 => 4.0,
+        Spacing::S8 => 8.0,
+        Spacing::S12 => 12.0,
+        Spacing::S16 => 16.0,
+        Spacing::S20 => 20.0,
+        Spacing::S24 => 24.0,
+    }
+}
+
+/// Control heights (spec §4) [kit]: 20 mini, 24 regular, 28 alert-button
+/// default, 36 large. Minimum hit area 20×20, default 28×28 [HIG].
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ControlHeight {
+    Mini,
+    Regular,
+    Alert,
+    Large,
+}
+
+/// Control height -> px.
+pub fn control_height(height: ControlHeight) -> f32 {
+    match height {
+        ControlHeight::Mini => 20.0,
+        ControlHeight::Regular => 24.0,
+        ControlHeight::Alert => 28.0,
+        ControlHeight::Large => 36.0,
+    }
+}
+
+/// Corner-radius scale (spec §4) [kit]. `Pill` is the kit's ∞, rendered as
+/// 99 — the large-value convention the current styles already use.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Radius {
+    Mini,
+    Button,
+    Item,
+    Tab,
+    Menu,
+    Window,
+    Popover,
+    Sheet,
+    Pill,
+}
+
+/// Radius role -> px.
+pub fn radius(role: Radius) -> f32 {
+    match role {
+        Radius::Mini => 4.0,     // mini
+        Radius::Button => 6.0,   // button / field / content segment
+        Radius::Item => 8.0,     // sidebar item, menu item, selection
+        Radius::Tab => 9.0,      // tab
+        Radius::Menu => 12.0,    // menu
+        Radius::Window => 16.0,  // window
+        Radius::Popover => 20.0, // popover
+        Radius::Sheet => 26.0,   // dialog sheet
+        Radius::Pill => 99.0,    // ∞: bar button, alert, search field, rail
+    }
+}
+
+/// Elevation preset of a raised surface (spec §4) [kit]. The kit draws the
+/// window/menu ring as a zero-offset shadow (`0 0 0 Npx rgba(0,0,0,.2)`);
+/// iced has no shadow spread, so the ring is stored as a border.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct ElevationSpec {
+    /// Ring around the surface: (width, color).
+    pub ring: Option<(f32, Color)>,
+    /// Shadow layers in kit order, up to two.
+    pub shadows: [Option<Shadow>; 2],
+    /// Modal scrim color; only the `Scrim` preset sets it.
+    pub scrim: Option<Color>,
+}
+
+/// Elevation presets (spec §4) [kit]. Scrim pins modal black at 25% — the
+/// app repeats 0.25/0.55 in seven places today (spec §4).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Elevation {
+    Window,
+    Menu,
+    Popover,
+    Tooltip,
+    Scrim,
+}
+
+/// Elevation preset -> ring, shadows, scrim.
+pub fn elevation(preset: Elevation) -> ElevationSpec {
+    match preset {
+        Elevation::Window => ElevationSpec {
+            ring: Some((1.0, Color::from_rgba(0.0, 0.0, 0.0, 0.2))),
+            shadows: [
+                Some(Shadow {
+                    color: Color::from_rgba(0.0, 0.0, 0.0, 0.4),
+                    offset: Vector::new(0.0, 16.0),
+                    blur_radius: 33.0,
+                }),
+                None,
+            ],
+            scrim: None,
+        },
+        Elevation::Menu => ElevationSpec {
+            ring: Some((0.5, Color::from_rgba(0.0, 0.0, 0.0, 0.2))),
+            shadows: [
+                Some(Shadow {
+                    color: Color::from_rgba(0.0, 0.0, 0.0, 0.3),
+                    offset: Vector::new(0.0, 4.0),
+                    blur_radius: 24.0,
+                }),
+                None,
+            ],
+            scrim: None,
+        },
+        Elevation::Popover => ElevationSpec {
+            // Kit says "+ hairline" without width/color; kit ring convention.
+            ring: Some((0.5, Color::from_rgba(0.0, 0.0, 0.0, 0.2))),
+            shadows: [
+                Some(Shadow {
+                    color: Color::from_rgba(0.0, 0.0, 0.0, 0.25),
+                    offset: Vector::new(0.0, 18.0),
+                    blur_radius: 46.0,
+                }),
+                None,
+            ],
+            scrim: None,
+        },
+        Elevation::Tooltip => ElevationSpec {
+            ring: None,
+            shadows: [
+                Some(Shadow {
+                    color: Color::from_rgba(0.0, 0.0, 0.0, 0.4),
+                    offset: Vector::new(0.0, 0.0),
+                    blur_radius: 2.0,
+                }),
+                Some(Shadow {
+                    color: Color::from_rgba(0.0, 0.0, 0.0, 0.2),
+                    offset: Vector::new(0.0, 2.0),
+                    blur_radius: 8.0,
+                }),
+            ],
+            scrim: None,
+        },
+        Elevation::Scrim => ElevationSpec {
+            ring: None,
+            shadows: [None, None],
+            scrim: Some(Color::from_rgba(0.0, 0.0, 0.0, 0.25)),
+        },
+    }
+}
+
 /// Ícone Ori (origami tsuru) — cor fixa no SVG, sem `.style()`.
 /// Uso: `ori!("folder-open")` → 16×16. Pílula de busca usa `ori_small!`.
 /// V2 (28 ícones): folder, file-text, x, copy, highlighter, underline,
@@ -828,5 +1102,163 @@ mod tests {
             assert_ne!(t.mark_current, t.mark);
             assert_ne!(t.mark_current, t.page);
         }
+    }
+
+    #[test]
+    fn text_scale_pins_spec_section_2() {
+        assert_eq!(
+            text_style(TextKind::Body, false),
+            TextStyle {
+                size: 13.0,
+                line_height: 16.0,
+                weight: 400
+            }
+        );
+        assert_eq!(text_style(TextKind::Body, true).weight, 600);
+        assert_eq!(
+            text_style(TextKind::Headline, false),
+            TextStyle {
+                size: 13.0,
+                line_height: 16.0,
+                weight: 700
+            }
+        );
+        assert_eq!(text_style(TextKind::Title2, false).size, 17.0);
+        assert_eq!(text_style(TextKind::Title2, false).line_height, 22.0);
+        assert_eq!(text_style(TextKind::Title2, true).weight, 600);
+        assert_eq!(text_style(TextKind::Title3, false).size, 15.0);
+        assert_eq!(text_style(TextKind::Callout, false).size, 12.0);
+        assert_eq!(text_style(TextKind::Subheadline, false).size, 11.0);
+        // Scale floor [HIG].
+        assert_eq!(text_style(TextKind::Footnote, false).size, 10.0);
+        assert_eq!(text_style(TextKind::Footnote, false).line_height, 13.0);
+    }
+
+    #[test]
+    fn semantic_roles_pin_spec_section_3() {
+        let d = Roles::for_theme(Theme::Dark);
+        assert_eq!(d.label, Color::WHITE);
+        assert_eq!(d.label_2, hex(0x9a, 0x9a, 0x9a));
+        assert_eq!(d.label_3, hex(0x56, 0x56, 0x56));
+        assert_eq!(d.fill_1, hex(0x35, 0x35, 0x35));
+        assert_eq!(d.fill_3, hex(0x29, 0x29, 0x29));
+        assert_eq!(d.separator, hex(0x35, 0x35, 0x35));
+        assert_eq!(d.window_bg, hex(0x1e, 0x1e, 0x1e));
+        assert_eq!(d.under_page, hex(0x18, 0x18, 0x18));
+        assert_eq!(d.accent, hex(0x4d, 0xb8, 0xb0));
+        assert_eq!(d.red, hex(0xff, 0x47, 0x47));
+        assert_eq!(d.green, hex(0x3b, 0xdb, 0x63));
+        assert_eq!(d.orange, hex(0xff, 0x9e, 0x33));
+        assert_eq!(d.page, Color::WHITE);
+
+        let l = Roles::for_theme(Theme::Light);
+        assert_eq!(l.label, hex(0x26, 0x26, 0x26));
+        assert_eq!(l.label_2, hex(0x80, 0x80, 0x80));
+        assert_eq!(l.label_3, hex(0xbf, 0xbf, 0xbf));
+        assert_eq!(l.fill_1, hex(0xe6, 0xe6, 0xe6));
+        assert_eq!(l.fill_3, hex(0xf2, 0xf2, 0xf2));
+        assert_eq!(l.separator, hex(0xc6, 0xc6, 0xc8));
+        assert_eq!(l.window_bg, Color::WHITE);
+        assert_eq!(l.under_page, hex(0xef, 0xef, 0xed));
+        assert_eq!(l.accent, hex(0x1f, 0x7d, 0x76));
+        assert_eq!(l.red, hex(0xff, 0x38, 0x3c));
+        assert_eq!(l.green, hex(0x34, 0xc7, 0x59));
+        assert_eq!(l.orange, hex(0xff, 0x8d, 0x28));
+        assert_eq!(l.page, Color::WHITE);
+
+        // Brand teal matches the legacy tokens, so the phase-2 cutover is a
+        // no-op for the accent.
+        assert_eq!(d.accent, Tokens::for_theme(Theme::Dark, Lang::Pt).accent);
+        assert_eq!(l.accent, Tokens::for_theme(Theme::Light, Lang::Pt).accent);
+    }
+
+    #[test]
+    fn spacing_grid_pins_spec_section_4() {
+        assert_eq!(
+            [
+                spacing(Spacing::S4),
+                spacing(Spacing::S8),
+                spacing(Spacing::S12),
+                spacing(Spacing::S16),
+                spacing(Spacing::S20),
+                spacing(Spacing::S24)
+            ],
+            [4.0, 8.0, 12.0, 16.0, 20.0, 24.0]
+        );
+    }
+
+    #[test]
+    fn control_heights_pin_spec_section_4() {
+        assert_eq!(control_height(ControlHeight::Mini), 20.0);
+        // Menu item height = regular [kit].
+        assert_eq!(control_height(ControlHeight::Regular), 24.0);
+        assert_eq!(control_height(ControlHeight::Alert), 28.0);
+        assert_eq!(control_height(ControlHeight::Large), 36.0);
+    }
+
+    #[test]
+    fn radius_scale_pins_spec_section_4() {
+        assert_eq!(radius(Radius::Mini), 4.0);
+        assert_eq!(radius(Radius::Button), 6.0);
+        assert_eq!(radius(Radius::Item), 8.0);
+        assert_eq!(radius(Radius::Tab), 9.0);
+        assert_eq!(radius(Radius::Menu), 12.0);
+        assert_eq!(radius(Radius::Window), 16.0);
+        assert_eq!(radius(Radius::Popover), 20.0);
+        assert_eq!(radius(Radius::Sheet), 26.0);
+        // Kit ∞, rendered with the 99 convention.
+        assert_eq!(radius(Radius::Pill), 99.0);
+    }
+
+    #[test]
+    fn elevation_presets_pin_spec_section_4() {
+        let ring = |w: f32| Some((w, Color::from_rgba(0.0, 0.0, 0.0, 0.2)));
+        let shadow = |dy: f32, blur: f32, alpha: f32| {
+            Some(Shadow {
+                color: Color::from_rgba(0.0, 0.0, 0.0, alpha),
+                offset: Vector::new(0.0, dy),
+                blur_radius: blur,
+            })
+        };
+        assert_eq!(
+            elevation(Elevation::Window),
+            ElevationSpec {
+                ring: ring(1.0),
+                shadows: [shadow(16.0, 33.0, 0.4), None],
+                scrim: None
+            }
+        );
+        assert_eq!(
+            elevation(Elevation::Menu),
+            ElevationSpec {
+                ring: ring(0.5),
+                shadows: [shadow(4.0, 24.0, 0.3), None],
+                scrim: None
+            }
+        );
+        assert_eq!(
+            elevation(Elevation::Popover),
+            ElevationSpec {
+                ring: ring(0.5),
+                shadows: [shadow(18.0, 46.0, 0.25), None],
+                scrim: None
+            }
+        );
+        assert_eq!(
+            elevation(Elevation::Tooltip),
+            ElevationSpec {
+                ring: None,
+                shadows: [shadow(0.0, 2.0, 0.4), shadow(2.0, 8.0, 0.2)],
+                scrim: None
+            }
+        );
+        assert_eq!(
+            elevation(Elevation::Scrim),
+            ElevationSpec {
+                ring: None,
+                shadows: [None, None],
+                scrim: Some(Color::from_rgba(0.0, 0.0, 0.0, 0.25))
+            }
+        );
     }
 }
