@@ -5712,6 +5712,9 @@ pub(crate) fn keyboard_message(
             Key::Character("o" | "O") => return Some(Message::PickFile),
             Key::Character("p" | "P") => return Some(Message::OpenPrintDialog),
             Key::Character("s" | "S") => return Some(Message::SaveCopyRequested),
+            // Cmd/Ctrl+E: export annotations. Cmd/Ctrl+,: Settings (macOS prefs convention).
+            Key::Character("e" | "E") => return Some(Message::ExportAnnotations),
+            Key::Character(",") => return Some(Message::ToggleSettings),
             _ => {}
         }
     }
@@ -5918,6 +5921,16 @@ pub(crate) fn shortcut_hint(msg: &Message) -> Option<&'static str> {
             "Cmd+S"
         } else {
             "Ctrl+S"
+        }),
+        Message::ExportAnnotations => Some(if cfg!(target_os = "macos") {
+            "Cmd+E"
+        } else {
+            "Ctrl+E"
+        }),
+        Message::ToggleSettings => Some(if cfg!(target_os = "macos") {
+            "Cmd+,"
+        } else {
+            "Ctrl+,"
         }),
         Message::DeleteSelectedAnnot => Some("Del"),
         Message::AnnotUndo => Some(if cfg!(target_os = "macos") {
@@ -9351,7 +9364,7 @@ mod tests {
             }
         }
         // Símbolos de zoom (#72) e teclas nomeadas.
-        for sym in ["+", "-", "="] {
+        for sym in ["+", "-", "=", ","] {
             for mods in combos {
                 probe(Key::Character(sym.into()), mods);
             }
@@ -9393,13 +9406,15 @@ mod tests {
             Message::CopySelection,
             Message::OpenPrintDialog,
             Message::SaveCopyRequested,
+            Message::ExportAnnotations,
+            Message::ToggleSettings,
             Message::DeleteSelectedAnnot,
             Message::AnnotUndo,
             Message::AnnotRedo,
             Message::HistoryBack,
             Message::HistoryForward,
         ];
-        assert_eq!(hinted.len(), 12);
+        assert_eq!(hinted.len(), 14);
         for msg in hinted {
             let hint = shortcut_hint(&msg).expect("com hint");
             assert!(hint.is_ascii(), "hint não-ASCII: {hint:?} ({msg:?})");
@@ -9434,6 +9449,30 @@ mod tests {
             keyboard_message(Key::Character("S".into()), cmd, Status::Ignored),
             Some(Message::SaveCopyRequested)
         ));
+        assert!(matches!(
+            keyboard_message(Key::Character("e".into()), cmd, Status::Ignored),
+            Some(Message::ExportAnnotations)
+        ));
+        assert!(matches!(
+            keyboard_message(Key::Character(",".into()), cmd, Status::Ignored),
+            Some(Message::ToggleSettings)
+        ));
+        assert_eq!(
+            shortcut_hint(&Message::ExportAnnotations),
+            Some(if cfg!(target_os = "macos") {
+                "Cmd+E"
+            } else {
+                "Ctrl+E"
+            })
+        );
+        assert_eq!(
+            shortcut_hint(&Message::ToggleSettings),
+            Some(if cfg!(target_os = "macos") {
+                "Cmd+,"
+            } else {
+                "Ctrl+,"
+            })
+        );
         // +/-/= com foco livre; com campo focado o iced captura antes.
         assert!(matches!(
             keyboard_message(
@@ -9466,6 +9505,8 @@ mod tests {
         )
         .is_none());
         assert!(keyboard_message(Key::Character("c".into()), cmd, Status::Captured).is_none());
+        assert!(keyboard_message(Key::Character("e".into()), cmd, Status::Captured).is_none());
+        assert!(keyboard_message(Key::Character(",".into()), cmd, Status::Captured).is_none());
     }
 
     #[test]

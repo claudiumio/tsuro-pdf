@@ -41,6 +41,7 @@ Rust edition 2021, stable toolchain (`rust-toolchain.toml`). Viewer: `iced 0.13`
 - `crates/tsuro/src/print.rs` — `pub(crate)` seleção + PDF de impressão (`PrintRange`, `PrintSelection`, `print_selection_pdf`)
 - `crates/tsuro/src/spool.rs` — `pub(crate)` fronteira com o crate `printers` (`PrinterInfo`, `list_printers`, `spool_pdf`)
 - `crates/tsuro/src/kiri.rs` — Kiri tokens + chrome styles (`Theme`, `Tokens`, `CheckSeverity`, `worst_check_color`); icons Ori in `assets/icons/ori/`
+- `crates/tsuro/assets/fonts/` — Inter Regular/Medium/SemiBold/Bold + OFL.txt
 - `docs/design/01-fundacao-visual.md` — escala tipográfica, papéis de cor, espaçamento, raios, sombras e spec de cada componente (base macOS, paridade Windows/Linux); fonte dos tokens do `kiri.rs`
 - `crates/tsuro/src/prefs.rs` — `theme=dark|light` prefs file (mirrors `recents_file()` pattern)
 - `crates/tsuro-sign/` — PDF + CMS signature engine (`SigError`, `CertificateInfo`)

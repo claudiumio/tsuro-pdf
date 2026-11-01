@@ -1,6 +1,6 @@
 # Fundação visual do Tsuro: base macOS, paridade Windows e Linux
 
-Estado: proposta para aprovação. Nenhum código foi alterado. Fontes: Apple macOS 27 UI Kit (Sketch, 4.683 símbolos, 110 variáveis de cor, 67 estilos de texto) e Human Interface Guidelines. Valores marcados `[kit]` saíram do inspector do kit; `[HIG]` da documentação da Apple; `[INF]` são inferência nossa.
+Estado: aprovada em 2026-11-01 — decisões D-1..D-6 ratificadas com os valores finais na seção 10. Fontes: Apple macOS 27 UI Kit (Sketch, 4.683 símbolos, 110 variáveis de cor, 67 estilos de texto) e Human Interface Guidelines. Valores marcados `[kit]` saíram do inspector do kit; `[HIG]` da documentação da Apple; `[INF]` são inferência nossa.
 
 ## 1. Princípios
 
@@ -182,14 +182,18 @@ Cada fase: `cargo test -p tsuro`, `cargo fmt --check`, clippy sem aviso novo, e 
 
 ## 10. Decisões para o Junior
 
-| # | Decisão | Recomendação | Alternativa |
-|---|---|---|---|
-| D-1 | Fonte | Inter embarcada em todas as plataformas | resolver SF no macOS e cair para Inter; duas aparências |
-| D-2 | Tema | `system` por padrão, com claro/escuro manuais | manter `dark` fixo (contra a HIG) |
-| D-3 | Barra de menu nativa | sim no macOS via `muda` | só atalhos, sem menu (menos nativo) |
-| D-4 | Acento | teal do Kiri | seguir o acento do sistema (mais nativo, perde a marca) |
-| D-5 | Densidade | regular (24/28) | compacta (20/24), cabe mais na tela |
-| D-6 | Sidebar | de ponta a ponta, sem cartão | manter o cartão atual |
+Ratificadas em 2026-11-01: D-1 a D-6 aprovadas com os valores finais abaixo.
+
+| # | Decisão | Recomendação | Alternativa | Valor final aprovado |
+|---|---|---|---|---|
+| D-1 | Fonte | Inter embarcada em todas as plataformas | resolver SF no macOS e cair para Inter; duas aparências | Inter embarcada em todas as plataformas |
+| D-2 | Tema | `system` por padrão, com claro/escuro manuais | manter `dark` fixo (contra a HIG) | `system` por padrão, com claro/escuro manuais |
+| D-3 | Barra de menu nativa | sim no macOS via `muda` | só atalhos, sem menu (menos nativo) | sim no macOS via `muda`, depois (fase 4); por enquanto só atalhos em `keyboard_message` |
+| D-4 | Acento | teal do Kiri | seguir o acento do sistema (mais nativo, perde a marca) | teal do Kiri fica — escuro #4db8b0 / claro #1f7d76 |
+| D-5 | Densidade | regular (24/28) | compacta (20/24), cabe mais na tela | regular (24/28) |
+| D-6 | Sidebar | de ponta a ponta, sem cartão | manter o cartão atual | painel flutuante fica: manter o cartão atual |
+
+**Estouro do menu ⋯ (ratificado com a fase 1):** altura máxima com rolagem interna (itens nunca ficam fora da tela), largura 300, e o rótulo longo de "Salvar cópia com marcações…" quebra em vez de ser cortado.
 
 ## 11. Referências
 
