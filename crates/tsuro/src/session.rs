@@ -56,7 +56,7 @@ pub(crate) const ANNOT_ROW: f32 = 62.0;
 const NEIGHBOR_CACHE_BUDGET: usize = 64 * 1024 * 1024;
 
 /// Larguras do chrome (espelham `view.rs`); base da geometria do contínuo.
-pub(crate) const PAGES_PANEL_W: f32 = 200.0;
+pub(crate) const PAGES_PANEL_W: f32 = 216.0;
 pub(crate) const SIG_PANEL_W: f32 = 220.0;
 const PANES_GAP: f32 = 12.0;
 const CHROME_PAD: f32 = 8.0;
@@ -327,6 +327,21 @@ fn quad_bbox(quad: Quad) -> (f32, f32, f32, f32) {
         xs.iter().fold(f32::NEG_INFINITY, |a, &b| a.max(b)),
         ys.iter().fold(f32::NEG_INFINITY, |a, &b| a.max(b)),
     )
+}
+
+/// Rolagem de um eixo que deixa `[start, start + len)` dentro de
+/// `[pos, pos + view)`: não mexe se já cabe; senão centraliza, ou alinha o
+/// início quando nem cabe inteiro. Limitada ao palco (`content`).
+fn reveal_axis(pos: f32, view: f32, start: f32, len: f32, content: f32) -> f32 {
+    let end = start + len;
+    let target = if start >= pos && end <= pos + view {
+        pos
+    } else if len >= view {
+        start
+    } else {
+        start + len / 2.0 - view / 2.0
+    };
+    target.clamp(0.0, (content - view).max(0.0))
 }
 
 /// Retângulo exibido `[x, y, w, h]` (px CSS, Y para baixo) de um quad da
@@ -1767,7 +1782,9 @@ pub struct Ready {
     /// Só o modal fecha; o estado zera ao escolher qualquer um dos botões.
     pub save_warning: bool,
     pub pages_scroll_y: f32,
-    /// Offset Y do painel do documento (só contínuo); deriva `visible`.
+    /// Offset X/Y do painel do documento; o Y deriva `visible` no contínuo.
+    /// O X só o salto de marcação lê (mostrar trecho numa folha ampliada).
+    pub doc_scroll_x: f32,
     pub doc_scroll_y: f32,
     recents: Vec<PathBuf>,
     /// DPR da janela: bitmap sai em px físicos (zoom CSS × isto).
@@ -2514,8 +2531,12 @@ pub enum Message {
     /// Histórico voltar/avançar (Alt+←/→; ⌘ no mac).
     HistoryBack,
     HistoryForward,
-    /// Rolagem do painel do documento (só contínuo); deriva `visible`.
-    DocScrolled(f32),
+    /// Rolagem do painel do documento (x, y). Só o Y deriva `visible`, e só no
+    /// contínuo.
+    DocScrolled {
+        x: f32,
+        y: f32,
+    },
     /// ⋯ → Modo de página: página única ou rolagem contínua.
     SetViewMode(ViewMode),
     BrowseTo(Option<PathBuf>),
@@ -3897,8 +3918,9 @@ impl Session {
                 }
                 Task::batch([self.schedule_work(), self.nav_follow_active()])
             }
-            Message::DocScrolled(y) => {
+            Message::DocScrolled { x, y } => {
                 if let Session::Ready(ready) = self {
+                    ready.doc_scroll_x = x;
                     ready.doc_scroll_y = y;
                     if ready.view_mode == ViewMode::Continuous {
                         let page = ready.page_at_offset(y);
@@ -4841,7 +4863,7 @@ impl Session {
         let Session::Ready(ready) = self else {
             return Task::none();
         };
-        if !ready.reveal_annotation(id) {
+        let Some([x, y]) = ready.reveal_annotation(id) else {
             ready.annot_cursor = None;
             ready.save_status = Some(
                 ready
@@ -4853,8 +4875,14 @@ impl Session {
                     .into(),
             );
             return Task::none();
-        }
-        Task::batch([self.schedule_work(), self.nav_follow_active()])
+        };
+        Task::batch([
+            self.schedule_work(),
+            scrollable::scroll_to(
+                crate::view::doc_scroll_id(),
+                scrollable::AbsoluteOffset { x, y },
+            ),
+        ])
     }
 
     /// Passo da busca (#43): anda o índice, salta para a página do hit atual
@@ -6343,18 +6371,23 @@ impl Ready {
         Some(target)
     }
 
-    /// Salta para a página da marcação e revela o trecho (seleção do texto).
-    /// `false` se a marcação não existe ou a página saiu do documento; nada
-    /// muda então. O salto deixa a origem no histórico, para o voltar.
-    fn reveal_annotation(&mut self, id: u64) -> bool {
-        let Some(annot) = self.annotations.iter().find(|a| a.id == id).cloned() else {
-            return false;
-        };
+    /// Salta para a página da marcação e mostra o trecho: seleciona o texto,
+    /// deixa a origem no histórico e devolve a rolagem que mostra o trecho
+    /// (nada se já está na vista). `None` se a marcação não existe ou a página
+    /// saiu do documento; nada muda então.
+    fn reveal_annotation(&mut self, id: u64) -> Option<[f32; 2]> {
+        let annot = self.annotations.iter().find(|a| a.id == id).cloned()?;
         if annot.page.index() >= self.pages.total {
-            return false;
+            return None;
         }
+        // Antes de trocar de página: a rolagem atual decide se o trecho cabe.
+        let scroll = self.annotation_scroll(&annot);
         self.history.visit(self.visible);
         self.navigate_to(annot.page);
+        // A continuidade põe a página no topo em `navigate_to`; o trecho
+        // substitui essa posição.
+        self.doc_scroll_x = scroll[0];
+        self.doc_scroll_y = scroll[1];
         self.annot_cursor = Some(id);
         if self.annot_excerpt(&annot).is_some() {
             self.selection = Some(Selection {
@@ -6362,7 +6395,70 @@ impl Ready {
                 range: annot.range,
             });
         }
-        true
+        Some(scroll)
+    }
+
+    /// Rolagem `[x, y]` que mostra o trecho da marcação no palco da vista.
+    /// Sem retângulos (trecho sem geometria) vai ao topo da página.
+    fn annotation_scroll(&self, annot: &Annotation) -> [f32; 2] {
+        let Some([x, y, w, h]) = self.annotation_stage_rect(annot) else {
+            let top = match self.view_mode {
+                ViewMode::Continuous => self.page_offset(annot.page),
+                ViewMode::Single => 0.0,
+            };
+            return [0.0, top];
+        };
+        let view = [
+            self.doc_content_width() + 2.0 * DOC_PAD_X,
+            self.doc_content_height(),
+        ];
+        let content = self.stage_size(annot.page);
+        [
+            reveal_axis(self.doc_scroll_x, view[0], x, w, content[0]),
+            reveal_axis(self.doc_scroll_y, view[1], y, h, content[1]),
+        ]
+    }
+
+    /// Retângulo `[x, y, w, h]` (px CSS) que a união dos quads do trecho ocupa
+    /// no palco rolável da página, do jeito que a vista posiciona a folha:
+    /// centralizada na horizontal e com `DOC_PAD_TOP` acima.
+    fn annotation_stage_rect(&self, annot: &Annotation) -> Option<[f32; 4]> {
+        if annot.quads.is_empty() {
+            return None;
+        }
+        let page = annot.page;
+        let [sw, sh] = self.sheet_size(page);
+        let media = self.media(page);
+        let (mut x0, mut y0, mut x1, mut y1) = (f32::MAX, f32::MAX, f32::MIN, f32::MIN);
+        for quad in &annot.quads {
+            let [x, y, w, h] = display_rect(*quad, media, self.view_rotation, sw, sh);
+            x0 = x0.min(x);
+            y0 = y0.min(y);
+            x1 = x1.max(x + w);
+            y1 = y1.max(y + h);
+        }
+        let stage = self.stage_size(page);
+        let left = (stage[0] - sw) / 2.0;
+        let top = match self.view_mode {
+            ViewMode::Continuous => self.page_offset(page),
+            ViewMode::Single => 0.0,
+        } + DOC_PAD_TOP;
+        Some([left + x0, top + y0, x1 - x0, y1 - y0])
+    }
+
+    /// Palco rolável da página (px CSS): a coluna inteira no contínuo, a
+    /// moldura com o respiro na página única. Mesmo conteúdo que `page_pane`.
+    fn stage_size(&self, page: PageNo) -> [f32; 2] {
+        match self.view_mode {
+            ViewMode::Continuous => [self.doc_stage_max_width(), self.doc_total_height()],
+            ViewMode::Single => {
+                let [_, sh] = self.sheet_size(page);
+                [
+                    self.doc_stage_width(page),
+                    sh + DOC_PAD_TOP + DOC_PAD_BOTTOM,
+                ]
+            }
+        }
     }
 
     pub(crate) fn annot_query(&self) -> &str {
@@ -6856,6 +6952,7 @@ impl Document {
             outline_load_issued: false,
             media_boxes_issued: false,
             pages_scroll_y: 0.0,
+            doc_scroll_x: 0.0,
             doc_scroll_y: 0.0,
             recents: Vec::new(),
             render_scale: 1.0,
@@ -7665,7 +7762,13 @@ mod tests {
         let mut session = Session::Ready(Tabs::single(ready));
         apply(&mut session, Message::SetViewMode(ViewMode::Continuous));
         // Rolar não muda nada em página única; aqui deve derivar a página 2.
-        apply(&mut session, Message::DocScrolled(2.0 * 1564.0 + 10.0));
+        apply(
+            &mut session,
+            Message::DocScrolled {
+                x: 0.0,
+                y: 2.0 * 1564.0 + 10.0,
+            },
+        );
         match &session {
             Session::Ready(ready) => {
                 assert_eq!(ready.visible.index(), 2.min(ready.page_count() - 1));
@@ -7682,7 +7785,7 @@ mod tests {
         };
         let mut session = Session::Ready(Tabs::single(ready));
         apply(&mut session, Message::SetViewMode(ViewMode::Continuous));
-        apply(&mut session, Message::DocScrolled(0.0));
+        apply(&mut session, Message::DocScrolled { x: 0.0, y: 0.0 });
         match &session {
             Session::Ready(ready) => {
                 let (start, end) = ready.doc_window();
@@ -7781,7 +7884,7 @@ mod tests {
                 Session::Ready(r) => r.page_offset(r.visible),
                 _ => unreachable!(),
             };
-            apply(&mut session, Message::DocScrolled(landed));
+            apply(&mut session, Message::DocScrolled { x: 0.0, y: landed });
             apply(&mut session, Message::HistoryBack);
             match &session {
                 Session::Ready(r) => {
@@ -10940,7 +11043,7 @@ mod tests {
             _ => unreachable!(),
         };
         // Rolar o documento sobe a folha: o post-it sobe junto (mesmo delta).
-        apply(&mut session, Message::DocScrolled(30.0));
+        apply(&mut session, Message::DocScrolled { x: 0.0, y: 30.0 });
         match &session {
             Session::Ready(ready) => {
                 assert_eq!(ready.postit_pos(POSTIT_SIZE_TEST)[1], before[1] - 30.0);
@@ -11721,6 +11824,159 @@ mod tests {
             );
             assert!(!ready.can_history_back());
         });
+    }
+
+    /// Todas as páginas em carta (612×792 pt): geometria previsível sem layout.
+    fn set_letter_media(ready: &mut Ready) {
+        for slot in ready.pages.media.iter_mut() {
+            *slot = Some(MediaBox {
+                width: 612.0,
+                height: 792.0,
+            });
+        }
+    }
+
+    fn mark_at(id: u64, page: u32, quad: Quad) -> Annotation {
+        Annotation {
+            id,
+            page: PageNo::from_index(page),
+            range: TextRange { start: 0, end: 4 },
+            quads: vec![quad],
+            kind: AnnotKind::Highlight,
+            text: String::new(),
+            marker: None,
+        }
+    }
+
+    /// Critério de geometria: o trecho colado na base da página entra na
+    /// janela de rolagem, nos dois modos; a conta confere com a folha desenhada
+    /// (topo em `DOC_PAD_TOP`, retângulo pela proporção da mídia).
+    #[test]
+    fn annotation_reveal_brings_bottom_of_page_mark_into_viewport() {
+        for mode in [ViewMode::Continuous, ViewMode::Single] {
+            let Some(mut ready) = annotated_ready() else {
+                return;
+            };
+            set_letter_media(&mut ready);
+            ready.view_mode = mode;
+            ready.viewport = Viewport {
+                width: 900.0,
+                height: 600.0,
+            };
+            // PDF: y pequeno é a base da página.
+            ready.annotations = vec![mark_at(40, 0, Quad::from_rect(72.0, 20.0, 200.0, 36.0))];
+            let mut session = Session::Ready(Tabs::single(ready));
+            with_temp_positions("annot-reveal-bottom", || {
+                apply(&mut session, Message::AnnotActivate(40));
+            });
+            let ready = active_ready(&session);
+            let sw = ready.sheet_width(PageNo::first());
+            let sh = sw * 792.0 / 612.0;
+            let top = DOC_PAD_TOP + (792.0 - 36.0) / 792.0 * sh;
+            let height = 16.0 / 792.0 * sh;
+            let left = (ready.doc_stage_max_width() - sw) / 2.0 + 72.0 / 612.0 * sw;
+            let width = 128.0 / 612.0 * sw;
+            let view_h = ready.doc_content_height();
+            let view_w = ready.doc_content_width() + 2.0 * DOC_PAD_X;
+            assert!(
+                ready.doc_scroll_y > 0.0,
+                "{mode:?}: o trecho está abaixo da dobra, a rolagem desce"
+            );
+            assert!(
+                top >= ready.doc_scroll_y && top + height <= ready.doc_scroll_y + view_h,
+                "{mode:?}: trecho dentro da janela na vertical"
+            );
+            assert!(
+                left >= ready.doc_scroll_x && left + width <= ready.doc_scroll_x + view_w,
+                "{mode:?}: trecho dentro da janela na horizontal"
+            );
+            assert_eq!(ready.visible, PageNo::first(), "{mode:?}: mesma página");
+        }
+    }
+
+    /// Marcação já na vista: ativar não rola (antes, o salto levava ao topo).
+    #[test]
+    fn annotation_reveal_leaves_visible_mark_where_it_is() {
+        let Some(mut ready) = annotated_ready() else {
+            return;
+        };
+        set_letter_media(&mut ready);
+        ready.view_mode = ViewMode::Continuous;
+        ready.viewport = Viewport {
+            width: 900.0,
+            height: 600.0,
+        };
+        ready.annotations = vec![mark_at(41, 0, Quad::from_rect(72.0, 740.0, 200.0, 756.0))];
+        ready.doc_scroll_y = 30.0;
+        let mut session = Session::Ready(Tabs::single(ready));
+        with_temp_positions("annot-reveal-visible", || {
+            apply(&mut session, Message::AnnotActivate(41));
+        });
+        let ready = active_ready(&session);
+        assert_eq!(ready.doc_scroll_y, 30.0, "já visível: a rolagem fica");
+        assert_eq!(ready.visible, PageNo::first());
+        assert!(!ready.can_history_back(), "mesma página: sem origem nova");
+    }
+
+    /// Folha mais larga que a janela (zoom 200%): o trecho à direita entra na
+    /// horizontal, e a rolagem horizontal fica registrada.
+    #[test]
+    fn annotation_reveal_scrolls_horizontally_for_wide_sheets() {
+        let Some(mut ready) = annotated_ready() else {
+            return;
+        };
+        set_letter_media(&mut ready);
+        ready.view_mode = ViewMode::Continuous;
+        ready.zoom = Zoom::Manual(ZoomFactor::new(2.0));
+        ready.viewport = Viewport {
+            width: 900.0,
+            height: 600.0,
+        };
+        ready.annotations = vec![mark_at(42, 0, Quad::from_rect(500.0, 500.0, 540.0, 520.0))];
+        let mut session = Session::Ready(Tabs::single(ready));
+        with_temp_positions("annot-reveal-wide", || {
+            apply(&mut session, Message::AnnotActivate(42));
+        });
+        let ready = active_ready(&session);
+        let sw = ready.sheet_width(PageNo::first());
+        let left = (ready.doc_stage_max_width() - sw) / 2.0 + 500.0 / 612.0 * sw;
+        let width = 40.0 / 612.0 * sw;
+        let view_w = ready.doc_content_width() + 2.0 * DOC_PAD_X;
+        assert!(
+            ready.doc_scroll_x > 0.0,
+            "o trecho está fora da largura inicial"
+        );
+        assert!(
+            left >= ready.doc_scroll_x && left + width <= ready.doc_scroll_x + view_w,
+            "trecho dentro da janela na horizontal"
+        );
+    }
+
+    /// Os dois eixos chegam ao estado: o X só o salto de marcação lê, e o Y
+    /// continua derivando `visible` no contínuo.
+    #[test]
+    fn doc_scroll_message_stores_both_axes() {
+        let Some(ready) = sample_ready() else {
+            return;
+        };
+        let mut session = Session::Ready(Tabs::single(ready));
+        apply(&mut session, Message::DocScrolled { x: 120.0, y: 40.0 });
+        let ready = active_ready(&session);
+        assert_eq!((ready.doc_scroll_x, ready.doc_scroll_y), (120.0, 40.0));
+    }
+
+    #[test]
+    fn reveal_axis_keeps_centers_or_aligns_within_the_stage() {
+        // Já cabe: não mexe.
+        assert_eq!(reveal_axis(100.0, 600.0, 200.0, 20.0, 5000.0), 100.0);
+        // Abaixo da dobra: centraliza na janela.
+        assert_eq!(reveal_axis(0.0, 600.0, 1000.0, 20.0, 5000.0), 710.0);
+        // Mais alto que a janela: alinha o início.
+        assert_eq!(reveal_axis(0.0, 600.0, 1000.0, 900.0, 5000.0), 1000.0);
+        // Perto da borda do palco: não passa do fim.
+        assert_eq!(reveal_axis(0.0, 600.0, 4990.0, 5.0, 5000.0), 4400.0);
+        // Palco menor que a janela: nada a rolar.
+        assert_eq!(reveal_axis(0.0, 600.0, 100.0, 20.0, 300.0), 0.0);
     }
 
     #[test]

@@ -2654,7 +2654,10 @@ fn pages_panel(ready: &Ready, t: Tokens) -> Element<'_, Message> {
 /// Controle segmentado do painel. Sumário só aparece com outline no PDF;
 /// Marcações existe sempre, inclusive sem sumário.
 fn panel_tabs(ready: &Ready, t: Tokens) -> Element<'_, Message> {
-    // Rótulo curto e sem quebra: no painel de 200px cada segmento tem ~1/3.
+    // Três abas em partes iguais cortavam "Marcações"/"Annotations" (~45px de
+    // texto por aba). Cada aba recebe partes pelo tamanho do rótulo: no painel
+    // de 216px sobram 200px úteis, ~8,7px por caractere (23 caracteres por
+    // conjunto de rótulos, PT e EN).
     let seg = |label: &'static str, active: bool, tab: Option<PanelTab>| {
         button(
             text(label)
@@ -2663,8 +2666,8 @@ fn panel_tabs(ready: &Ready, t: Tokens) -> Element<'_, Message> {
                 .width(Length::Fill)
                 .align_x(Alignment::Center),
         )
-        .width(Length::Fill)
-        .padding(Padding::from([5, 8]))
+        .width(Length::FillPortion(label.chars().count() as u16))
+        .padding(Padding::from([5, 4]))
         .style(kiri::panel_seg_style(t, active))
         .on_press(Message::SetPanelTab(tab))
     };
@@ -3015,7 +3018,13 @@ fn single_pane(ready: &Ready, t: Tokens) -> Element<'_, Message> {
     })
     // A rolagem do modo página também entra no estado: o post-it aberto segue
     // a folha (a âncora é janela, a rolagem é o delta).
-    .on_scroll(|viewport| Message::DocScrolled(viewport.absolute_offset().y))
+    .on_scroll(|viewport| {
+        let offset = viewport.absolute_offset();
+        Message::DocScrolled {
+            x: offset.x,
+            y: offset.y,
+        }
+    })
     .width(Length::Fill)
     .height(Length::Fill)
     .into()
@@ -3048,7 +3057,13 @@ fn continuous_pane(ready: &Ready, t: Tokens) -> Element<'_, Message> {
             vertical: scrollable::Scrollbar::default(),
             horizontal: scrollable::Scrollbar::default(),
         })
-        .on_scroll(|viewport| Message::DocScrolled(viewport.absolute_offset().y))
+        .on_scroll(|viewport| {
+            let offset = viewport.absolute_offset();
+            Message::DocScrolled {
+                x: offset.x,
+                y: offset.y,
+            }
+        })
         .width(Length::Fill)
         .height(Length::Fill)
         .into()
