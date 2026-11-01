@@ -1,12 +1,12 @@
 use iced::advanced::widget::operation::{Focusable, Operation};
 use iced::advanced::widget::{operate, Id as WidgetId};
+use iced::font;
 use iced::widget::canvas::event::{Event as CanvasEvent, Status as CanvasStatus};
 use iced::widget::canvas::{Frame, Geometry, LineDash, Path, Program, Stroke, Style};
 use iced::widget::{
     button, column, container, image, mouse_area, pick_list, row, scrollable, stack, text,
     text_editor, text_input, tooltip, Canvas, Space,
 };
-use iced::{font, Font};
 use iced::{mouse, Alignment, Background, Border, Color, Element, Length, Padding, Point, Task};
 use iced::{Rectangle, Size};
 use tsuro_sign::{SignatureInfo, SignatureStatus};
@@ -2577,10 +2577,7 @@ fn home_section(
         icon,
         text(label)
             .size(15)
-            .font(Font {
-                weight: font::Weight::Semibold,
-                ..Font::default()
-            })
+            .font(crate::font::inter(font::Weight::Semibold))
             .color(t.ink)
     ]
     .spacing(10)

@@ -17,6 +17,7 @@ fn main() -> iced::Result {
 fn run(session: Session) -> iced::Result {
     iced::application("TsuroPDF", Session::update, Session::view)
         .subscription(Session::subscription)
+        .default_font(tsuro::font::INTER)
         .exit_on_close_request(false)
         .run_with(move || boot(session))
 }
@@ -31,6 +32,7 @@ fn run(session: Session) -> iced::Result {
     let (session, task) = boot(session);
     let result = iced::application("TsuroPDF", Desktop::update, Desktop::view)
         .subscription(Desktop::subscription)
+        .default_font(tsuro::font::INTER)
         .exit_on_close_request(false)
         .run_with(move || {
             (
