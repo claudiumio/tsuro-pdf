@@ -30,6 +30,7 @@ use crate::print::{
     print_selection_pdf, write_and_open_print_pdf, PrintOrientation, PrintRange, PrintSelection,
     MAX_COPIES,
 };
+use crate::recovery::{self, Abandoned, Checkpoint, CheckpointJob, ContentId, Journal};
 use crate::search::Search;
 use crate::spool::{list_printers, spool_pdf, PrinterInfo};
 use crate::update::{self, release_version, UpdateError};
@@ -46,12 +47,17 @@ const THUMB_PREFETCH: u32 = 3;
 /// linha um pouco abaixo do topo (visível), superestimar a esconderia.
 pub(crate) const OUTLINE_ROW: f32 = 41.0;
 
+/// Altura fixa de uma linha da lista de marcações (3 linhas de texto 12 +
+/// padding + espaço entre linhas): a rolagem do cursor depende dela. A view
+/// põe cada linha nessa altura, senão o ↑/↓ erra a posição.
+pub(crate) const ANNOT_ROW: f32 = 62.0;
+
 /// RGBA byte budget for neighbor/speculative page surfaces (`visible ± 1`).
 /// The mandatory visible-page bitmap at its current scale is excluded.
 const NEIGHBOR_CACHE_BUDGET: usize = 64 * 1024 * 1024;
 
 /// Larguras do chrome (espelham `view.rs`); base da geometria do contínuo.
-pub(crate) const PAGES_PANEL_W: f32 = 156.0;
+pub(crate) const PAGES_PANEL_W: f32 = 216.0;
 pub(crate) const SIG_PANEL_W: f32 = 220.0;
 const PANES_GAP: f32 = 12.0;
 const CHROME_PAD: f32 = 8.0;
@@ -67,6 +73,9 @@ const LOADING_TICK: std::time::Duration = std::time::Duration::from_millis(90);
 
 /// Poll do auto-reload (issue #46): barato (`stat` por aba), sem watcher.
 const RELOAD_POLL: std::time::Duration = std::time::Duration::from_secs(2);
+
+/// Atraso entre a mudança nas marcações e o checkpoint do diário (#128, D-D).
+const CHECKPOINT_DELAY: std::time::Duration = std::time::Duration::from_millis(500);
 
 /// Quantos PDFs da pasta aberta ganham prévia no Início (os recentes, sempre).
 const HOME_LISTING_THUMBS: usize = 24;
@@ -322,6 +331,21 @@ fn quad_bbox(quad: Quad) -> (f32, f32, f32, f32) {
         xs.iter().fold(f32::NEG_INFINITY, |a, &b| a.max(b)),
         ys.iter().fold(f32::NEG_INFINITY, |a, &b| a.max(b)),
     )
+}
+
+/// Rolagem de um eixo que deixa `[start, start + len)` dentro de
+/// `[pos, pos + view)`: não mexe se já cabe; senão centraliza, ou alinha o
+/// início quando nem cabe inteiro. Limitada ao palco (`content`).
+fn reveal_axis(pos: f32, view: f32, start: f32, len: f32, content: f32) -> f32 {
+    let end = start + len;
+    let target = if start >= pos && end <= pos + view {
+        pos
+    } else if len >= view {
+        start
+    } else {
+        start + len / 2.0 - view / 2.0
+    };
+    target.clamp(0.0, (content - view).max(0.0))
 }
 
 /// Retângulo exibido `[x, y, w, h]` (px CSS, Y para baixo) de um quad da
@@ -611,10 +635,200 @@ impl Annotation {
     }
 }
 
+/// Uma linha da lista de marcações: dados semânticos, nunca Markdown. A
+/// página é 0-based; a vista soma 1 só na hora de mostrar.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct AnnotationRow {
+    pub id: u64,
+    pub page: PageNo,
+    pub kind: AnnotKind,
+    /// `None` = o texto da página não cobre o trecho (ou não chegou ainda).
+    pub excerpt: Option<String>,
+    pub note: Option<String>,
+}
+
 #[derive(Debug, Clone)]
 enum AnnotAction {
     Add(Annotation),
     Remove(Annotation),
+}
+
+/// Resultado de um checkpoint do diário (#128). Opaco: só a aba o desfaz.
+#[derive(Debug, Clone)]
+pub struct CheckpointDone(recovery::CheckpointDone);
+
+/// Cartão de recuperação desta aba (#128, spec 2.7). Falha de gravação não mora
+/// aqui: é `Ready.journal_failed`, para que uma falha não esconda uma oferta.
+#[derive(Debug, Clone, PartialEq)]
+pub(crate) enum RecoveryState {
+    Nenhum,
+    /// Diários sem dono com o mesmo conteúdo; o primeiro é o mais recente.
+    Disponivel(Vec<Abandoned>),
+    /// Restauração aceita: o diário antigo sai no primeiro checkpoint próprio.
+    Restaurando,
+    /// Diários do mesmo caminho com outro conteúdo: preservados, nada aplicado.
+    Incompativel(Vec<Abandoned>),
+}
+
+impl RecoveryState {
+    /// O que oferecer ao abrir. Conteúdo igual vence; mesmo caminho com conteúdo
+    /// diferente vira `Incompativel`. Diário sem marcações não tem o que restaurar.
+    pub(crate) fn found(found: &[Abandoned], content: ContentId, path: &std::path::Path) -> Self {
+        let marks = |a: &&Abandoned| !a.checkpoint.annotations.is_empty();
+        let same: Vec<Abandoned> = found
+            .iter()
+            .filter(marks)
+            .filter(|a| a.checkpoint.content == content)
+            .cloned()
+            .collect();
+        if !same.is_empty() {
+            return Self::Disponivel(same);
+        }
+        let other: Vec<Abandoned> = found
+            .iter()
+            .filter(marks)
+            .filter(|a| a.checkpoint.path.as_path() == path && a.checkpoint.content != content)
+            .cloned()
+            .collect();
+        if other.is_empty() {
+            Self::Nenhum
+        } else {
+            Self::Incompativel(other)
+        }
+    }
+}
+
+impl Ready {
+    /// As marcações divergem do último conjunto entregue ao diário.
+    fn checkpoint_due(&self) -> bool {
+        !self.checkpoint_inflight && !recovery::same_marks(&self.annotations, &self.journaled)
+    }
+
+    /// Trabalho do checkpoint do conjunto atual; `None` se o diário já o tem ou
+    /// se outro checkpoint está em voo.
+    fn begin_checkpoint(&mut self) -> Option<CheckpointJob> {
+        if !self.checkpoint_due() {
+            return None;
+        }
+        self.checkpoint_armed = false;
+        self.checkpoint_inflight = true;
+        self.journaled = self.annotations.clone();
+        let checkpoint = Checkpoint {
+            content: self.content,
+            path: self.source.path().to_path_buf(),
+            annotations: self.annotations.clone(),
+        };
+        Some(CheckpointJob::new(
+            recovery::recovery_dir(),
+            self.journal.clone(),
+            checkpoint,
+            self.adopt.clone(),
+        ))
+    }
+
+    /// Aplica o resultado de um checkpoint. Falha liga o aviso e mantém a
+    /// memória; a adoção pendente espera o próximo checkpoint.
+    fn finish_checkpoint(&mut self, done: recovery::CheckpointDone) {
+        self.checkpoint_inflight = false;
+        if done.journal.is_some() {
+            self.journal = done.journal;
+        }
+        self.adopt = done.adopt;
+        match done.result {
+            Err(_) => self.journal_failed = true,
+            Ok(()) => {
+                self.journal_failed = false;
+                if self.adopt.is_none() && self.recovery == RecoveryState::Restaurando {
+                    self.recovery = RecoveryState::Nenhum;
+                }
+            }
+        }
+    }
+
+    /// Restaurar: o diário mais recente vira o conjunto da aba, com IDs novos a
+    /// partir do maior. O diário antigo só sai depois do próprio checkpoint.
+    fn restore_recovery(&mut self) {
+        let RecoveryState::Disponivel(offers) = &self.recovery else {
+            return;
+        };
+        let Some(chosen) = offers.first().cloned() else {
+            return;
+        };
+        self.annotations = chosen.checkpoint.annotations.clone();
+        self.next_annot_id = self.annotations.iter().map(|a| a.id + 1).max().unwrap_or(0);
+        self.selected_annot = None;
+        self.note_draft = None;
+        self.note_drag = None;
+        self.annot_undo.clear();
+        self.annot_redo.clear();
+        self.adopt = Some(chosen);
+        self.recovery = RecoveryState::Restaurando;
+        self.discard_ask = false;
+    }
+
+    /// Descarte confirmado: apaga os diários oferecidos. Se o disco recusar, o
+    /// cartão volta, para o usuário ver que nada saiu.
+    fn discard_recovery(&mut self) {
+        self.discard_ask = false;
+        let offers = match &self.recovery {
+            RecoveryState::Disponivel(offers) | RecoveryState::Incompativel(offers) => {
+                offers.clone()
+            }
+            _ => return,
+        };
+        let removed = recovery::retire_ids(
+            &recovery::recovery_dir(),
+            offers.iter().map(|offer| &offer.id),
+        );
+        if removed.is_ok() {
+            self.recovery = RecoveryState::Nenhum;
+        }
+    }
+
+    /// Decidir depois: o cartão some e os diários ficam para a próxima abertura.
+    fn decide_later_recovery(&mut self) {
+        self.discard_ask = false;
+        if self.recovery_prompt() {
+            self.recovery = RecoveryState::Nenhum;
+        }
+    }
+
+    /// Forget que não apagou um diário deixa a oferta dele: só sai a oferta
+    /// cujo diário saiu do disco. Sem ofertas sobrando, o cartão fecha.
+    fn keep_offers_present(&mut self, present: &[recovery::InstanceId]) {
+        let remaining = match &mut self.recovery {
+            RecoveryState::Disponivel(offers) | RecoveryState::Incompativel(offers) => {
+                offers.retain(|offer| present.contains(&offer.id));
+                offers.len()
+            }
+            _ => return,
+        };
+        if remaining == 0 {
+            self.recovery = RecoveryState::Nenhum;
+            self.discard_ask = false;
+        }
+    }
+
+    /// Cartão de recuperação aberto (`Disponivel` ou `Incompativel`).
+    pub(crate) fn recovery_prompt(&self) -> bool {
+        matches!(
+            self.recovery,
+            RecoveryState::Disponivel(_) | RecoveryState::Incompativel(_)
+        )
+    }
+
+    /// Fim da aba (fechar limpo ou descartado): o diário próprio sai com ela, e
+    /// o diário antigo ainda pendente de adoção também, porque as marcações
+    /// restauradas foram descartadas. Falhar aqui deixa os arquivos no disco: a
+    /// próxima abertura os oferece.
+    fn retire_journal(&mut self) {
+        if let Some(journal) = self.journal.take() {
+            let _ = journal.retire();
+        }
+        if let Some(old) = self.adopt.take() {
+            let _ = recovery::retire_ids(&recovery::recovery_dir(), [&old.id]);
+        }
+    }
 }
 
 /// Rascunho de nota em edição (issue #30): ancorado a um trecho, com o
@@ -688,10 +902,19 @@ pub enum NavCmd {
     GoTo(PageNo),
 }
 
-/// Teclas da árvore do sumário: ↑/↓ movem o cursor, Enter salta para a página.
-/// Sem a aba Sumário aberta o handler ignora (como R/H/U/S sem seleção).
+/// Aba do painel de navegação. `Ready.panel == None` é Páginas (miniaturas).
+/// Marcações existe sempre; Sumário só com outline no PDF.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum OutlineKey {
+pub enum PanelTab {
+    Outline,
+    Annotations,
+}
+
+/// Teclas do painel de lista (sumário e marcações): ↑/↓ movem o cursor,
+/// Enter salta para a página. Sem a aba aberta o handler ignora (como
+/// R/H/U/S sem seleção).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum PanelKey {
     Prev,
     Next,
     Activate,
@@ -1293,6 +1516,9 @@ pub struct Tabs {
     home: Option<EmptyState>,
     /// HUD flutuante: visível ao mover o mouse, some parado.
     pub(crate) hud: HudState,
+    /// Maior geração de uma aba que já saiu da faixa. Guardada para que fechar a
+    /// aba de maior geração não faça a próxima reusá-la: respostas velhas casariam.
+    retired_gen: u64,
 }
 
 /// Fechamento que ainda precisa de confirmação.
@@ -1330,6 +1556,7 @@ impl Tabs {
             shift_held: false,
             home: None,
             hud: HudState::default(),
+            retired_gen: 0,
         }
     }
 
@@ -1451,11 +1678,15 @@ impl Tabs {
         self.docs.iter_mut().find(|doc| doc.open_gen == gen)
     }
 
-    /// Maior geração em uso; a próxima aba recebe `max + 1`. As gerações não se
-    /// repetem porque é por elas que as respostas assíncronas se acham.
+    /// Maior geração já usada: em uso, pendente ou de aba que já saiu da faixa.
+    /// As gerações não se repetem, porque é por elas que as respostas assíncronas
+    /// se acham; a de uma aba fechada não volta.
     fn max_gen(&self) -> u64 {
         let docs = self.docs.iter().map(|doc| doc.open_gen);
-        docs.chain(self.pending_gen()).max().unwrap_or(0)
+        docs.chain(self.pending_gen())
+            .chain([self.retired_gen])
+            .max()
+            .unwrap_or(0)
     }
 
     /// Toda aba vê a mesma janela (as inativas não recebem evento de resize).
@@ -1519,6 +1750,7 @@ impl Tabs {
     fn remove(&mut self, index: usize) -> Ready {
         let before = self.docs.len();
         let gone = self.docs.remove(index);
+        self.retired_gen = self.retired_gen.max(gone.open_gen);
         if index < self.active {
             self.active -= 1;
         }
@@ -1612,6 +1844,10 @@ pub struct SettingsPanel {
     pub update: UpdateState,
     #[cfg(target_os = "macos")]
     pub(crate) permissions: PermissionsState,
+    /// Configurações → Recuperação: "Esquecer diários" pede confirmação antes.
+    pub(crate) forget_ask: bool,
+    /// Resultado do último "Esquecer diários de recuperação".
+    pub(crate) forget_status: Option<String>,
 }
 
 impl SettingsPanel {
@@ -1702,8 +1938,13 @@ pub struct Ready {
     sheet_scroll: f32,
     pub signatures_open: bool,
     pub pages_open: bool,
-    /// Aba Sumário ativa no painel de Páginas (só existe se houver outline).
-    pub outline_open: bool,
+    /// Aba do painel de navegação; `None` = Páginas (miniaturas).
+    pub panel: Option<PanelTab>,
+    /// Busca da lista de marcações (trecho e nota); zera ao abrir.
+    annot_query: String,
+    /// Marcação sob o cursor do teclado na lista. Referência por ID: se a
+    /// marcação sumir, o Enter reporta indisponível em vez de saltar.
+    annot_cursor: Option<u64>,
     pub outline: Option<Outline>,
     /// Caminhos colapsados na árvore (`[0, 2]` = 3º filho do 1º item).
     pub outline_collapsed: HashSet<Vec<usize>>,
@@ -1736,7 +1977,9 @@ pub struct Ready {
     /// Só o modal fecha; o estado zera ao escolher qualquer um dos botões.
     pub save_warning: bool,
     pub pages_scroll_y: f32,
-    /// Offset Y do painel do documento (só contínuo); deriva `visible`.
+    /// Offset X/Y do painel do documento; o Y deriva `visible` no contínuo.
+    /// O X só o salto de marcação lê (mostrar trecho numa folha ampliada).
+    pub doc_scroll_x: f32,
     pub doc_scroll_y: f32,
     recents: Vec<PathBuf>,
     /// DPR da janela: bitmap sai em px físicos (zoom CSS × isto).
@@ -1760,6 +2003,22 @@ pub struct Ready {
     page_data_inflight: HashSet<u32>,
     page_data_failed: HashSet<u32>,
     viewport: Viewport,
+    /// Diário de recuperação (#128, spec 2.2/2.6): identidade do conteúdo,
+    /// diário criado no primeiro checkpoint e o último conjunto tentado.
+    content: ContentId,
+    journal: Option<Arc<Journal>>,
+    /// Último conjunto entregue ao diário (tentado, mesmo se a gravação falhou):
+    /// uma falha só é retentada na próxima mudança, não em loop.
+    journaled: Vec<Annotation>,
+    checkpoint_armed: bool,
+    checkpoint_inflight: bool,
+    /// Diário antigo esperando a adoção (só depois do primeiro checkpoint próprio).
+    adopt: Option<Abandoned>,
+    pub(crate) recovery: RecoveryState,
+    /// Confirmação do descarte no cartão de recuperação (`Descartar pede confirmação`).
+    pub(crate) discard_ask: bool,
+    /// Última gravação do diário falhou: linha de aviso, independente do cartão.
+    pub(crate) journal_failed: bool,
 }
 
 /// Modo de intervalo do diálogo (v1: sem lista livre tipo "1-3, 5").
@@ -2362,6 +2621,23 @@ pub enum Message {
     /// Botão vermelho do post-it (só em edição): remove a nota que está sendo
     /// editada e fecha o rascunho; Ctrl+Z desfaz como qualquer marcação.
     NoteDelete,
+    /// Diário (#128): o atraso do checkpoint de `doc_gen` terminou.
+    CheckpointDue {
+        doc_gen: u64,
+    },
+    /// Resultado do checkpoint de `doc_gen` (gravação feita fora da UI).
+    Checkpointed {
+        doc_gen: u64,
+        done: CheckpointDone,
+    },
+    /// Cartão de recuperação: restaurar, pedir/cancelar o descarte, confirmar, decidir depois.
+    RecoveryRestore,
+    RecoveryDiscardAsk(bool),
+    RecoveryDiscardConfirm,
+    RecoveryLater,
+    /// Configurações → Recuperação: esquecer diários sem dono (com confirmação).
+    ForgetRecoveryAsk(bool),
+    ForgetRecoveryConfirm,
     Rendered {
         page: PageNo,
         scale: Scale,
@@ -2398,8 +2674,9 @@ pub enum Message {
     /// Ajuda → leitor padrão: no Windows abre o painel de apps padrão; nas
     /// demais plataformas abre o Sobre com o passo a passo do SO.
     SetDefaultReader,
-    /// Aba Sumário no painel de Páginas (`true` = sumário, `false` = miniaturas).
-    OutlineTab(bool),
+    /// Aba do painel de navegação (`None` = Páginas). Sumário sem outline cai
+    /// em Páginas.
+    SetPanelTab(Option<PanelTab>),
     /// Expande/colapsa um nó da árvore (caminho de índices desde a raiz).
     OutlineFold(Vec<usize>),
     /// Resultado do carregamento preguiçoso do sumário (outline) após abrir
@@ -2411,8 +2688,13 @@ pub enum Message {
     },
     /// Clique em um item do sumário: navega (com clamp) para a página do item.
     OutlineJump(PageNo),
-    /// ↑/↓/Enter na árvore do sumário (ignorado sem a aba aberta).
-    OutlineKey(OutlineKey),
+    /// ↑/↓/Enter na lista da aba aberta (sumário ou marcações); sem aba de
+    /// lista a mensagem é ignorada.
+    PanelKey(PanelKey),
+    /// Busca da lista de marcações (trecho e nota).
+    AnnotQuery(String),
+    /// Clique numa linha da lista de marcações: cursor + salto + trecho.
+    AnnotActivate(u64),
     OpenPalette,
     PaletteQuery(String),
     PaletteMove(i32),
@@ -2477,8 +2759,12 @@ pub enum Message {
     /// Histórico voltar/avançar (Alt+←/→; ⌘ no mac).
     HistoryBack,
     HistoryForward,
-    /// Rolagem do painel do documento (só contínuo); deriva `visible`.
-    DocScrolled(f32),
+    /// Rolagem do painel do documento (x, y). Só o Y deriva `visible`, e só no
+    /// contínuo.
+    DocScrolled {
+        x: f32,
+        y: f32,
+    },
     /// ⋯ → Modo de página: página única ou rolagem contínua.
     SetViewMode(ViewMode),
     BrowseTo(Option<PathBuf>),
@@ -2549,10 +2835,10 @@ impl Session {
             Session::Loading { source, gen, .. } => {
                 let source = source.clone();
                 let gen = *gen;
-                Task::perform(open_ready(source), move |result| Message::Opened {
-                    gen,
-                    result,
-                })
+                Task::perform(
+                    open_ready(source, Some(recovery::recovery_dir())),
+                    move |result| Message::Opened { gen, result },
+                )
             }
             Session::Empty(_) => empty_tasks(self.lang()),
             _ => Task::none(),
@@ -2561,6 +2847,11 @@ impl Session {
     }
 
     pub fn update(&mut self, message: Message) -> Task<Message> {
+        let task = self.route(message);
+        Task::batch([task, self.arm_checkpoints()])
+    }
+
+    fn route(&mut self, message: Message) -> Task<Message> {
         if self.settings().open
             && (acts_on_active_document(&message)
                 || matches!(
@@ -2578,12 +2869,12 @@ impl Session {
         }
         // Paleta aberta come ↑/↓/Enter — também a do Início, onde as teclas
         // do documento ficam bloqueadas logo abaixo.
-        if let Message::OutlineKey(cmd) = &message {
+        if let Message::PanelKey(cmd) = &message {
             if self.shown_palette().is_some() {
                 return match cmd {
-                    OutlineKey::Prev => self.palette_move(-1),
-                    OutlineKey::Next => self.palette_move(1),
-                    OutlineKey::Activate => self.palette_confirm(),
+                    PanelKey::Prev => self.palette_move(-1),
+                    PanelKey::Next => self.palette_move(1),
+                    PanelKey::Activate => self.palette_confirm(),
                 };
             }
         }
@@ -2763,6 +3054,106 @@ impl Session {
                     }
                 }
                 self.schedule_work()
+            }
+            Message::CheckpointDue { doc_gen } => {
+                let Session::Ready(tabs) = self else {
+                    return Task::none();
+                };
+                let Some(doc) = tabs.by_gen(doc_gen) else {
+                    return Task::none();
+                };
+                doc.checkpoint_armed = false;
+                let Some(job) = doc.begin_checkpoint() else {
+                    return Task::none();
+                };
+                Task::perform(
+                    async move {
+                        // Pânico no checkpoint: o diário antigo fica e é oferecido de novo.
+                        tokio::task::spawn_blocking(move || job.run())
+                            .await
+                            .unwrap_or_else(|err| recovery::CheckpointDone {
+                                journal: None,
+                                result: Err(err.to_string()),
+                                adopt: None,
+                            })
+                    },
+                    move |done| Message::Checkpointed {
+                        doc_gen,
+                        done: CheckpointDone(done),
+                    },
+                )
+            }
+            Message::Checkpointed { doc_gen, done } => {
+                // Documento que saiu no meio do voo: `done` solta o lock aqui e os
+                // arquivos ficam para a próxima abertura.
+                if let Session::Ready(tabs) = self {
+                    if let Some(doc) = tabs.by_gen(doc_gen) {
+                        doc.finish_checkpoint(done.0);
+                    }
+                }
+                Task::none()
+            }
+            Message::RecoveryRestore => {
+                if let Session::Ready(tabs) = self {
+                    tabs.active_mut().restore_recovery();
+                }
+                Task::none()
+            }
+            Message::RecoveryDiscardAsk(ask) => {
+                if let Session::Ready(tabs) = self {
+                    tabs.active_mut().discard_ask = ask;
+                }
+                Task::none()
+            }
+            Message::RecoveryDiscardConfirm => {
+                let dir = recovery::recovery_dir();
+                if let Session::Ready(tabs) = self {
+                    tabs.active_mut().discard_recovery();
+                    // O mesmo diário pode estar em cache em outra aba: cada uma
+                    // solta só a oferta cujo arquivo saiu do disco.
+                    let present = recovery::instance_ids(&dir);
+                    for doc in tabs.docs_mut() {
+                        doc.keep_offers_present(&present);
+                    }
+                }
+                Task::none()
+            }
+            Message::RecoveryLater => {
+                if let Session::Ready(tabs) = self {
+                    tabs.active_mut().decide_later_recovery();
+                }
+                Task::none()
+            }
+            Message::ForgetRecoveryAsk(ask) => {
+                self.settings_mut().forget_ask = ask;
+                Task::none()
+            }
+            Message::ForgetRecoveryConfirm => {
+                let lang = self.lang();
+                let dir = recovery::recovery_dir();
+                let outcome = recovery::forget(&dir);
+                let present = recovery::instance_ids(&dir);
+                // Forget apaga diários de todas as abas: cada aba mantém só a
+                // oferta cujo diário ainda existe, e a falha vai para o status.
+                if let Session::Ready(tabs) = self {
+                    for doc in tabs.docs_mut() {
+                        doc.keep_offers_present(&present);
+                    }
+                }
+                let settings = self.settings_mut();
+                settings.forget_ask = false;
+                let forgotten = lang.pick("Diários esquecidos:", "Journals forgotten:");
+                settings.forget_status = Some(if outcome.failed == 0 {
+                    format!("{forgotten} {}", outcome.removed)
+                } else {
+                    format!(
+                        "{forgotten} {}. {} {}.",
+                        outcome.removed,
+                        lang.pick("Não foi possível apagar", "Could not delete"),
+                        outcome.failed
+                    )
+                });
+                Task::none()
             }
             Message::Close => self.close_document(),
             Message::GoHome => self.go_home(),
@@ -3383,10 +3774,13 @@ impl Session {
                 // nada mais é despachado e a folha trava em "Renderizando…".
                 self.schedule_work()
             }
-            Message::OutlineTab(show) => {
+            Message::SetPanelTab(tab) => {
                 if let Session::Ready(ready) = self {
-                    // Só existe aba quando há outline; sem outline, força miniaturas.
-                    ready.outline_open = show && ready.outline.is_some();
+                    // Sumário só existe com outline; sem ele, cai em Páginas.
+                    ready.panel = match tab {
+                        Some(PanelTab::Outline) if ready.outline.is_none() => None,
+                        other => other,
+                    };
                 }
                 Task::none()
             }
@@ -3407,36 +3801,16 @@ impl Session {
                 Task::none()
             }
             Message::OutlineJump(page) => self.outline_jump(page),
-            Message::OutlineKey(cmd) => {
-                let Session::Ready(ready) = self else {
-                    return Task::none();
-                };
-                if !ready.outline_open || ready.outline.is_none() {
-                    return Task::none();
+            Message::PanelKey(cmd) => self.panel_key(cmd),
+            Message::AnnotQuery(query) => {
+                if let Session::Ready(ready) = self {
+                    ready.annot_query = query;
+                    // Cursor de uma busca anterior não sobrevive à lista nova.
+                    ready.annot_cursor = None;
                 }
-                match cmd {
-                    OutlineKey::Prev | OutlineKey::Next => {
-                        let next = matches!(cmd, OutlineKey::Next);
-                        match ready.outline_step(next) {
-                            // Rola junto (senão o cursor sai da janela): +1
-                            // desconta o cabeçalho das abas, que ocupa uma
-                            // linha e está dentro do mesmo scrollable.
-                            Some(row) => scrollable::scroll_to(
-                                crate::view::pages_scroll_id(),
-                                scrollable::AbsoluteOffset {
-                                    x: 0.0,
-                                    y: (row as f32 + 1.0) * OUTLINE_ROW,
-                                },
-                            ),
-                            None => Task::none(),
-                        }
-                    }
-                    OutlineKey::Activate => match ready.outline_cursor_page() {
-                        Some(page) => self.outline_jump(page),
-                        None => Task::none(),
-                    },
-                }
+                Task::none()
             }
+            Message::AnnotActivate(id) => self.annot_activate(id),
             Message::OpenPalette => self.open_palette(),
             Message::PaletteQuery(query) => self.palette_query(query),
             Message::PaletteMove(step) => self.palette_move(step),
@@ -3877,8 +4251,9 @@ impl Session {
                 }
                 Task::batch([self.schedule_work(), self.nav_follow_active()])
             }
-            Message::DocScrolled(y) => {
+            Message::DocScrolled { x, y } => {
                 if let Session::Ready(ready) = self {
+                    ready.doc_scroll_x = x;
                     ready.doc_scroll_y = y;
                     if ready.view_mode == ViewMode::Continuous {
                         let page = ready.page_at_offset(y);
@@ -4030,10 +4405,10 @@ impl Session {
                 };
             }
         }
-        Task::perform(open_ready(source), move |result| Message::Opened {
-            gen,
-            result,
-        })
+        Task::perform(
+            open_ready(source, Some(recovery::recovery_dir())),
+            move |result| Message::Opened { gen, result },
+        )
     }
 
     pub fn finish_open(&mut self, result: Result<Ready, OpenError>) {
@@ -4074,7 +4449,7 @@ impl Session {
                 ready.disk_identity = file_identity(ready.source.path());
                 ready.signatures_open = false;
                 ready.pages_open = false;
-                ready.outline_open = false;
+                ready.panel = None;
                 ready.outline = None;
                 ready.outline_collapsed.clear();
                 ready.outline_cursor = None;
@@ -4240,6 +4615,8 @@ impl Session {
         let open_gen = self.open_gen();
         let render_scale = self.render_scale();
         let settings = self.settings().carried();
+        // Diários das abas que saem: fechar limpo ou descartado apaga o próprio.
+        self.retire_journals();
         // Toda aba solta o seu documento na worker (issue #40): sem isto o
         // parse de cada uma ficaria vivo até o processo acabar.
         if let Session::Ready(tabs) = self {
@@ -4284,7 +4661,9 @@ impl Session {
         if index >= tabs.len() {
             return Task::none();
         }
-        tabs.remove(index).close_engine();
+        let mut doc = tabs.remove(index);
+        doc.retire_journal();
+        doc.close_engine();
         Task::batch([self.schedule_work(), self.nav_follow_active()])
     }
 
@@ -4292,7 +4671,10 @@ impl Session {
         match target {
             CloseTarget::Document => self.finish_close_document(),
             CloseTarget::Tab(index) => self.finish_close_tab(index),
-            CloseTarget::Quit(id) => close_window(id),
+            CloseTarget::Quit(id) => {
+                self.retire_journals();
+                close_window(id)
+            }
         }
     }
 
@@ -4366,7 +4748,49 @@ impl Session {
             }
             return Task::none();
         }
+        self.retire_journals();
         close_window(id)
+    }
+
+    /// Um timer por aba com mudança pendente. O timer só marca o atraso: o
+    /// checkpoint sai da mensagem `CheckpointDue`. A flag `checkpoint_armed`
+    /// impede que mensagens seguidas (hover, arrasto) adiem o checkpoint para sempre.
+    fn arm_checkpoints(&mut self) -> Task<Message> {
+        Task::batch(self.start_checkpoint_timers().1)
+    }
+
+    /// Arma um timer por aba com mudança pendente e devolve quantos armou. Mensagens
+    /// seguidas não armam de novo: a flag `checkpoint_armed` segura o timer já em voo.
+    fn start_checkpoint_timers(&mut self) -> (usize, Vec<Task<Message>>) {
+        let Session::Ready(tabs) = self else {
+            return (0, Vec::new());
+        };
+        let mut timers = Vec::new();
+        for doc in tabs.docs_mut() {
+            if doc.checkpoint_armed || !doc.checkpoint_due() {
+                continue;
+            }
+            doc.checkpoint_armed = true;
+            let doc_gen = doc.open_gen;
+            timers.push(Task::perform(
+                async move {
+                    let _ =
+                        tokio::task::spawn_blocking(|| std::thread::sleep(CHECKPOINT_DELAY)).await;
+                    doc_gen
+                },
+                |doc_gen| Message::CheckpointDue { doc_gen },
+            ));
+        }
+        (timers.len(), timers)
+    }
+
+    /// Encerrar a janela (limpo ou descartado): cada diário das abas sai com ela.
+    fn retire_journals(&mut self) {
+        if let Session::Ready(tabs) = self {
+            for doc in tabs.docs_mut() {
+                doc.retire_journal();
+            }
+        }
     }
 
     fn any_unsaved(&self) -> bool {
@@ -4765,6 +5189,90 @@ impl Session {
         Task::batch([self.schedule_work(), self.nav_follow_active()])
     }
 
+    /// ↑/↓/Enter da lista da aba aberta. Sumário sem outline e Páginas ignoram.
+    fn panel_key(&mut self, cmd: PanelKey) -> Task<Message> {
+        let Session::Ready(ready) = self else {
+            return Task::none();
+        };
+        match ready.panel {
+            Some(PanelTab::Outline) if ready.outline.is_some() => match cmd {
+                PanelKey::Prev | PanelKey::Next => {
+                    match ready.outline_step(matches!(cmd, PanelKey::Next)) {
+                        // Rola junto (senão o cursor sai da janela): +1
+                        // desconta o cabeçalho das abas, que ocupa uma
+                        // linha e está dentro do mesmo scrollable.
+                        Some(row) => scrollable::scroll_to(
+                            crate::view::pages_scroll_id(),
+                            scrollable::AbsoluteOffset {
+                                x: 0.0,
+                                y: (row as f32 + 1.0) * OUTLINE_ROW,
+                            },
+                        ),
+                        None => Task::none(),
+                    }
+                }
+                PanelKey::Activate => match ready.outline_cursor_page() {
+                    Some(page) => self.outline_jump(page),
+                    None => Task::none(),
+                },
+            },
+            Some(PanelTab::Annotations) => match cmd {
+                PanelKey::Prev | PanelKey::Next => {
+                    match ready.annot_step(matches!(cmd, PanelKey::Next)) {
+                        Some(row) => scrollable::scroll_to(
+                            crate::view::annotations_scroll_id(),
+                            scrollable::AbsoluteOffset {
+                                x: 0.0,
+                                y: row as f32 * ANNOT_ROW,
+                            },
+                        ),
+                        None => Task::none(),
+                    }
+                }
+                PanelKey::Activate => {
+                    // Enter na busca sem cursor: a primeira linha filtrada.
+                    let id = ready
+                        .annot_cursor
+                        .or_else(|| ready.annotation_rows().first().map(|row| row.id));
+                    match id {
+                        Some(id) => self.annot_activate(id),
+                        None => Task::none(),
+                    }
+                }
+            },
+            Some(PanelTab::Outline) | None => Task::none(),
+        }
+    }
+
+    /// Enter ou clique numa marcação: salta para a página e revela o trecho.
+    /// Referência que não existe mais (ou página fora do documento) não salta:
+    /// a linha de status avisa, e o cursor solta a referência morta.
+    fn annot_activate(&mut self, id: u64) -> Task<Message> {
+        let Session::Ready(ready) = self else {
+            return Task::none();
+        };
+        let Some([x, y]) = ready.reveal_annotation(id) else {
+            ready.annot_cursor = None;
+            ready.save_status = Some(
+                ready
+                    .lang
+                    .pick(
+                        "Marcação indisponível: ela não existe mais neste documento.",
+                        "Annotation unavailable: it no longer exists in this document.",
+                    )
+                    .into(),
+            );
+            return Task::none();
+        };
+        Task::batch([
+            self.schedule_work(),
+            scrollable::scroll_to(
+                crate::view::doc_scroll_id(),
+                scrollable::AbsoluteOffset { x, y },
+            ),
+        ])
+    }
+
     /// Passo da busca (#43): anda o índice, salta para a página do hit atual
     /// e alinha a rolagem no contínuo. Sem hits é no-op.
     fn search_step(&mut self, delta: i32) -> Task<Message> {
@@ -4940,7 +5448,9 @@ fn acts_on_active_document(message: &Message) -> bool {
             | Message::AnnotRedo
             | Message::DeleteSelectedAnnot
             | Message::NoteSave
-            | Message::OutlineKey(_)
+            | Message::PanelKey(_)
+            | Message::AnnotQuery(_)
+            | Message::AnnotActivate(_)
             | Message::OpenPrintDialog
             | Message::SaveCopyRequested
             | Message::HistoryBack
@@ -5162,11 +5672,12 @@ pub(crate) fn keyboard_message(
         Key::Named(Named::Delete | Named::Backspace) => Some(Message::DeleteSelectedAnnot),
         // Sem diálogo aberto o handler ignora; com foco em campo, o iced captura antes.
         Key::Named(Named::Escape) => Some(Message::ClosePrintDialog),
-        // ↑/↓ e Enter andam/saltam na árvore do sumário; sem a aba aberta o
-        // handler ignora (setas horizontais continuam com o histórico e a nav).
-        Key::Named(Named::ArrowUp) => Some(Message::OutlineKey(OutlineKey::Prev)),
-        Key::Named(Named::ArrowDown) => Some(Message::OutlineKey(OutlineKey::Next)),
-        Key::Named(Named::Enter) => Some(Message::OutlineKey(OutlineKey::Activate)),
+        // ↑/↓ e Enter andam/saltam na lista da aba aberta (sumário ou
+        // marcações); sem lista aberta o handler ignora (setas horizontais
+        // continuam com o histórico e a nav).
+        Key::Named(Named::ArrowUp) => Some(Message::PanelKey(PanelKey::Prev)),
+        Key::Named(Named::ArrowDown) => Some(Message::PanelKey(PanelKey::Next)),
+        Key::Named(Named::Enter) => Some(Message::PanelKey(PanelKey::Activate)),
         _ => None,
     }
 }
@@ -6183,6 +6694,177 @@ impl Ready {
             .map(|(_, _, _, page, _)| page)
     }
 
+    /// Linhas da lista de marcações, em ordem de leitura e filtradas pela
+    /// busca. Derivadas de `annotations` a cada vista: edição e remoção
+    /// aparecem sem sincronizar nada.
+    pub(crate) fn annotation_rows(&self) -> Vec<AnnotationRow> {
+        let mut sorted: Vec<&Annotation> = self.annotations.iter().collect();
+        sorted.sort_by_key(|annot| (annot.page.index(), annot.range.start));
+        let query = self.annot_query.trim().to_lowercase();
+        sorted
+            .into_iter()
+            .filter_map(|annot| {
+                let excerpt = self.annot_excerpt(annot);
+                let note = (!annot.text.trim().is_empty()).then(|| annot.text.trim().to_string());
+                let hit = query.is_empty()
+                    || excerpt
+                        .as_deref()
+                        .is_some_and(|text| text.to_lowercase().contains(&query))
+                    || note
+                        .as_deref()
+                        .is_some_and(|text| text.to_lowercase().contains(&query));
+                hit.then_some(AnnotationRow {
+                    id: annot.id,
+                    page: annot.page,
+                    kind: annot.kind,
+                    excerpt,
+                    note,
+                })
+            })
+            .collect()
+    }
+
+    /// Trecho marcado em uma linha. `None` quando a camada de texto não cobre
+    /// o intervalo (mesmo critério do Markdown).
+    fn annot_excerpt(&self, annot: &Annotation) -> Option<String> {
+        let layer = self.pages.text.get(annot.page.index() as usize)?.as_ref()?;
+        if annot.range.end > layer.plain.len() {
+            return None;
+        }
+        let text = layer
+            .slice(annot.range)
+            .split_whitespace()
+            .collect::<Vec<_>>()
+            .join(" ");
+        (!text.is_empty()).then_some(text)
+    }
+
+    /// Anda uma linha (↑/↓) e devolve o índice da nova linha, para a rolagem.
+    /// Sem cursor válido, ↓ entra pela primeira linha e ↑ pela última.
+    fn annot_step(&mut self, next: bool) -> Option<usize> {
+        let rows = self.annotation_rows();
+        if rows.is_empty() {
+            return None;
+        }
+        let index = self
+            .annot_cursor
+            .and_then(|id| rows.iter().position(|row| row.id == id));
+        let target = match (index, next) {
+            (Some(i), true) => (i + 1).min(rows.len() - 1),
+            (Some(i), false) => i.saturating_sub(1),
+            (None, true) => 0,
+            (None, false) => rows.len() - 1,
+        };
+        self.annot_cursor = Some(rows[target].id);
+        Some(target)
+    }
+
+    /// Salta para a página da marcação e mostra o trecho: seleciona o texto,
+    /// deixa a origem no histórico e devolve a rolagem que mostra o trecho
+    /// (nada se já está na vista). `None` se a marcação não existe ou a página
+    /// saiu do documento; nada muda então.
+    fn reveal_annotation(&mut self, id: u64) -> Option<[f32; 2]> {
+        let annot = self.annotations.iter().find(|a| a.id == id).cloned()?;
+        if annot.page.index() >= self.pages.total {
+            return None;
+        }
+        // Antes de trocar de página: a rolagem atual decide se o trecho cabe.
+        let scroll = self.annotation_scroll(&annot);
+        self.history.visit(self.visible);
+        self.navigate_to(annot.page);
+        // A continuidade põe a página no topo em `navigate_to`; o trecho
+        // substitui essa posição.
+        self.doc_scroll_x = scroll[0];
+        self.doc_scroll_y = scroll[1];
+        self.annot_cursor = Some(id);
+        if self.annot_excerpt(&annot).is_some() {
+            self.selection = Some(Selection {
+                page: annot.page,
+                range: annot.range,
+            });
+        }
+        Some(scroll)
+    }
+
+    /// Rolagem `[x, y]` que mostra o trecho da marcação no palco da vista.
+    /// Sem retângulos (trecho sem geometria) vai ao topo da página.
+    fn annotation_scroll(&self, annot: &Annotation) -> [f32; 2] {
+        let Some([x, y, w, h]) = self.annotation_stage_rect(annot) else {
+            let top = match self.view_mode {
+                ViewMode::Continuous => self.page_offset(annot.page),
+                ViewMode::Single => 0.0,
+            };
+            return [0.0, top];
+        };
+        let view = [
+            self.doc_content_width() + 2.0 * DOC_PAD_X,
+            self.doc_content_height(),
+        ];
+        let content = self.stage_size(annot.page);
+        let mut top = reveal_axis(self.doc_scroll_y, view[1], y, h, content[1]);
+        if self.view_mode == ViewMode::Continuous {
+            // Centrar um trecho perto do topo da página sobe além dela. A
+            // rolagem volta do iced como DocScrolled, e `page_at_offset` leria
+            // a página anterior: `visible` e a origem do voltar saem errados.
+            top = top.max(self.page_offset(annot.page));
+        }
+        [
+            reveal_axis(self.doc_scroll_x, view[0], x, w, content[0]),
+            top,
+        ]
+    }
+
+    /// Retângulo `[x, y, w, h]` (px CSS) que a união dos quads do trecho ocupa
+    /// no palco rolável da página, do jeito que a vista posiciona a folha:
+    /// centralizada na horizontal e com `DOC_PAD_TOP` acima.
+    fn annotation_stage_rect(&self, annot: &Annotation) -> Option<[f32; 4]> {
+        if annot.quads.is_empty() {
+            return None;
+        }
+        let page = annot.page;
+        let [sw, sh] = self.sheet_size(page);
+        let media = self.media(page);
+        let (mut x0, mut y0, mut x1, mut y1) = (f32::MAX, f32::MAX, f32::MIN, f32::MIN);
+        for quad in &annot.quads {
+            let [x, y, w, h] = display_rect(*quad, media, self.view_rotation, sw, sh);
+            x0 = x0.min(x);
+            y0 = y0.min(y);
+            x1 = x1.max(x + w);
+            y1 = y1.max(y + h);
+        }
+        let stage = self.stage_size(page);
+        let left = (stage[0] - sw) / 2.0;
+        let top = match self.view_mode {
+            ViewMode::Continuous => self.page_offset(page),
+            ViewMode::Single => 0.0,
+        } + DOC_PAD_TOP;
+        Some([left + x0, top + y0, x1 - x0, y1 - y0])
+    }
+
+    /// Palco rolável da página (px CSS): a coluna inteira no contínuo, a
+    /// moldura com o respiro na página única. Mesmo conteúdo que `page_pane`.
+    fn stage_size(&self, page: PageNo) -> [f32; 2] {
+        match self.view_mode {
+            ViewMode::Continuous => [self.doc_stage_max_width(), self.doc_total_height()],
+            ViewMode::Single => {
+                let [_, sh] = self.sheet_size(page);
+                [
+                    self.doc_stage_width(page),
+                    sh + DOC_PAD_TOP + DOC_PAD_BOTTOM,
+                ]
+            }
+        }
+    }
+
+    pub(crate) fn annot_query(&self) -> &str {
+        &self.annot_query
+    }
+
+    /// Marcação sob o cursor do teclado (`None` = nenhuma na lista).
+    pub(crate) fn annot_focus(&self) -> Option<u64> {
+        self.annot_cursor
+    }
+
     pub(crate) fn thumb_page_window(&self) -> Vec<PageNo> {
         let first = (self.pages_scroll_y / THUMB_ROW).floor().max(0.0) as u32;
         let start = first.saturating_sub(THUMB_PREFETCH);
@@ -6631,6 +7313,11 @@ impl Document {
             PdfiumEngine::open(bytes.clone()).map_err(|e| OpenError::Engine(e.to_string()))?;
         let pages = PageCatalog::extract_first(&engine)?;
         let signatures = analyze_pdf(bytes.as_ref()).map_err(|e| OpenError::Sign(e.to_string()))?;
+        let content = ContentId {
+            hash: recovery::content_hash(&bytes),
+            len: bytes.len() as u64,
+            pages: engine.page_count(),
+        };
         let mut ready = Ready {
             source,
             engine,
@@ -6656,13 +7343,16 @@ impl Document {
             sheet_scroll: 0.0,
             signatures_open: false,
             pages_open: false,
-            outline_open: false,
+            panel: None,
+            annot_query: String::new(),
+            annot_cursor: None,
             outline: None,
             outline_collapsed: HashSet::new(),
             outline_cursor: None,
             outline_load_issued: false,
             media_boxes_issued: false,
             pages_scroll_y: 0.0,
+            doc_scroll_x: 0.0,
             doc_scroll_y: 0.0,
             recents: Vec::new(),
             render_scale: 1.0,
@@ -6689,6 +7379,15 @@ impl Document {
             failed: HashSet::new(),
             page_data_inflight: HashSet::new(),
             page_data_failed: HashSet::new(),
+            content,
+            journal: None,
+            journaled: Vec::new(),
+            checkpoint_armed: false,
+            checkpoint_inflight: false,
+            adopt: None,
+            recovery: RecoveryState::Nenhum,
+            discard_ask: false,
+            journal_failed: false,
             viewport: Viewport {
                 width: 960.0,
                 height: 720.0,
@@ -6714,23 +7413,35 @@ fn schedule_reload(doc: &mut Ready, current: Option<(u64, u64)>) -> Task<Message
     doc.reload_inflight = true;
     let doc_gen = doc.open_gen;
     let source = doc.source.clone();
-    Task::perform(open_ready(source), move |result| Message::Reloaded {
+    Task::perform(open_ready(source, None), move |result| Message::Reloaded {
         doc_gen,
         result,
         identity: current,
     })
 }
 
-async fn open_ready(source: OpenSource) -> Result<Ready, OpenError> {
+/// Abre o arquivo fora do executor. `scan` (só na abertura; a recarga não
+/// procura) lista os diários sem dono do mesmo conteúdo na pasta dada.
+async fn open_ready(source: OpenSource, scan: Option<PathBuf>) -> Result<Ready, OpenError> {
     let bytes = tokio::fs::read(source.path())
         .await
         .map_err(|e| OpenError::Io(e.to_string()))?;
     let bytes = Arc::<[u8]>::from(bytes);
-    // Parse Pdfium + assinaturas fora do executor async: nada aqui pode
-    // bloquear a janela.
-    tokio::task::spawn_blocking(move || Document::from_bytes(source, bytes))
-        .await
-        .map_err(|e| OpenError::Engine(e.to_string()))?
+    // Parse Pdfium, assinaturas, hash do conteúdo e leitura dos diários fora do
+    // executor async: nada aqui pode bloquear a janela.
+    tokio::task::spawn_blocking(move || -> Result<Ready, OpenError> {
+        let mut ready = Document::from_bytes(source, bytes)?;
+        if let Some(dir) = scan {
+            ready.recovery = RecoveryState::found(
+                &recovery::abandoned(&dir),
+                ready.content,
+                ready.source.path(),
+            );
+        }
+        Ok(ready)
+    })
+    .await
+    .map_err(|e| OpenError::Engine(e.to_string()))?
 }
 
 impl PageCatalog {
@@ -7472,7 +8183,13 @@ mod tests {
         let mut session = Session::Ready(Tabs::single(ready));
         apply(&mut session, Message::SetViewMode(ViewMode::Continuous));
         // Rolar não muda nada em página única; aqui deve derivar a página 2.
-        apply(&mut session, Message::DocScrolled(2.0 * 1564.0 + 10.0));
+        apply(
+            &mut session,
+            Message::DocScrolled {
+                x: 0.0,
+                y: 2.0 * 1564.0 + 10.0,
+            },
+        );
         match &session {
             Session::Ready(ready) => {
                 assert_eq!(ready.visible.index(), 2.min(ready.page_count() - 1));
@@ -7489,7 +8206,7 @@ mod tests {
         };
         let mut session = Session::Ready(Tabs::single(ready));
         apply(&mut session, Message::SetViewMode(ViewMode::Continuous));
-        apply(&mut session, Message::DocScrolled(0.0));
+        apply(&mut session, Message::DocScrolled { x: 0.0, y: 0.0 });
         match &session {
             Session::Ready(ready) => {
                 let (start, end) = ready.doc_window();
@@ -7588,7 +8305,7 @@ mod tests {
                 Session::Ready(r) => r.page_offset(r.visible),
                 _ => unreachable!(),
             };
-            apply(&mut session, Message::DocScrolled(landed));
+            apply(&mut session, Message::DocScrolled { x: 0.0, y: landed });
             apply(&mut session, Message::HistoryBack);
             match &session {
                 Session::Ready(r) => {
@@ -8068,7 +8785,7 @@ mod tests {
         );
         apply(&mut session, Message::PaletteQuery(String::new()));
         // ↑/↓ andam na lista; Esc fecha só a paleta.
-        apply(&mut session, Message::OutlineKey(OutlineKey::Next));
+        apply(&mut session, Message::PanelKey(PanelKey::Next));
         assert_eq!(home_palette(&session).unwrap().selected(), Some(1));
         apply(&mut session, Message::ClosePrintDialog);
         assert!(home_palette(&session).is_none());
@@ -8485,7 +9202,7 @@ mod tests {
                 msg,
                 Message::Nav(_)
                     | Message::Annotate(_)
-                    | Message::OutlineKey(_)
+                    | Message::PanelKey(_)
                     | Message::CycleTab(_)
                     | Message::CloseTabActive
                     | Message::NoteSave
@@ -10747,7 +11464,7 @@ mod tests {
             _ => unreachable!(),
         };
         // Rolar o documento sobe a folha: o post-it sobe junto (mesmo delta).
-        apply(&mut session, Message::DocScrolled(30.0));
+        apply(&mut session, Message::DocScrolled { x: 0.0, y: 30.0 });
         match &session {
             Session::Ready(ready) => {
                 assert_eq!(ready.postit_pos(POSTIT_SIZE_TEST)[1], before[1] - 30.0);
@@ -11071,8 +11788,8 @@ mod tests {
             },
         );
         // Sem a aba aberta as teclas não andam nem saltam.
-        apply(&mut session, Message::OutlineKey(OutlineKey::Next));
-        apply(&mut session, Message::OutlineKey(OutlineKey::Activate));
+        apply(&mut session, Message::PanelKey(PanelKey::Next));
+        apply(&mut session, Message::PanelKey(PanelKey::Activate));
         match &session {
             Session::Ready(r) => {
                 assert!(r.outline_cursor.is_none());
@@ -11080,14 +11797,14 @@ mod tests {
             }
             _ => unreachable!(),
         }
-        apply(&mut session, Message::OutlineTab(true));
+        apply(&mut session, Message::SetPanelTab(Some(PanelTab::Outline)));
         // O cursor parte da entrada ativa (página 1 → primeiro item).
         match &session {
             Session::Ready(r) => assert_eq!(r.outline_focus(), Some(vec![0])),
             _ => unreachable!(),
         }
         // ↓ anda pela árvore sem navegar: quem salta é o Enter.
-        apply(&mut session, Message::OutlineKey(OutlineKey::Next));
+        apply(&mut session, Message::PanelKey(PanelKey::Next));
         match &session {
             Session::Ready(r) => {
                 assert_eq!(r.outline_focus(), Some(vec![0, 0]));
@@ -11100,7 +11817,7 @@ mod tests {
             Session::Ready(r) => r.history.len(),
             _ => unreachable!(),
         };
-        apply(&mut session, Message::OutlineKey(OutlineKey::Activate));
+        apply(&mut session, Message::PanelKey(PanelKey::Activate));
         match &session {
             Session::Ready(r) => {
                 // Alvo é a página do cursor, com o mesmo clamp do SetPage
@@ -11113,21 +11830,21 @@ mod tests {
         }
         // ↑/↓ não passam das pontas da lista.
         for _ in 0..4 {
-            apply(&mut session, Message::OutlineKey(OutlineKey::Next));
+            apply(&mut session, Message::PanelKey(PanelKey::Next));
         }
         match &session {
             Session::Ready(r) => assert_eq!(r.outline_focus(), Some(vec![1])),
             _ => unreachable!(),
         }
         for _ in 0..4 {
-            apply(&mut session, Message::OutlineKey(OutlineKey::Prev));
+            apply(&mut session, Message::PanelKey(PanelKey::Prev));
         }
         match &session {
             Session::Ready(r) => assert_eq!(r.outline_focus(), Some(vec![0])),
             _ => unreachable!(),
         }
         // Colapsar o nó esconde os filhos: o cursor volta para a ativa.
-        apply(&mut session, Message::OutlineKey(OutlineKey::Next));
+        apply(&mut session, Message::PanelKey(PanelKey::Next));
         apply(&mut session, Message::OutlineFold(vec![0]));
         match &session {
             Session::Ready(r) => {
@@ -11139,21 +11856,21 @@ mod tests {
     }
 
     #[test]
-    fn outline_keys_map_to_outline_messages() {
+    fn panel_keys_map_to_panel_messages() {
         use iced::event::Status;
         use iced::keyboard::Modifiers;
         let plain = Modifiers::empty();
         assert!(matches!(
             keyboard_message(Key::Named(Named::ArrowUp), plain, Status::Ignored),
-            Some(Message::OutlineKey(OutlineKey::Prev))
+            Some(Message::PanelKey(PanelKey::Prev))
         ));
         assert!(matches!(
             keyboard_message(Key::Named(Named::ArrowDown), plain, Status::Ignored),
-            Some(Message::OutlineKey(OutlineKey::Next))
+            Some(Message::PanelKey(PanelKey::Next))
         ));
         assert!(matches!(
             keyboard_message(Key::Named(Named::Enter), plain, Status::Ignored),
-            Some(Message::OutlineKey(OutlineKey::Activate))
+            Some(Message::PanelKey(PanelKey::Activate))
         ));
         // Com modificador a tecla sai do mapa (⌘/Alt+setas seguem no histórico)
         // e com foco em campo o evento chega capturado: nada é despachado.
@@ -11174,9 +11891,9 @@ mod tests {
         let last = ready.page_count().saturating_sub(1);
         let mut session = Session::Ready(Tabs::single(ready));
         // Sem outline, a aba não abre.
-        apply(&mut session, Message::OutlineTab(true));
+        apply(&mut session, Message::SetPanelTab(Some(PanelTab::Outline)));
         match &session {
-            Session::Ready(r) => assert!(!r.outline_open),
+            Session::Ready(r) => assert_eq!(r.panel, None),
             _ => unreachable!(),
         }
         // Com outline, abre; jump com clamp; fold alterna.
@@ -11188,11 +11905,11 @@ mod tests {
                 outline: Some(outline_tree()),
             },
         );
-        apply(&mut session, Message::OutlineTab(true));
+        apply(&mut session, Message::SetPanelTab(Some(PanelTab::Outline)));
         apply(&mut session, Message::OutlineJump(PageNo::from_index(9999)));
         match &session {
             Session::Ready(r) => {
-                assert!(r.outline_open);
+                assert_eq!(r.panel, Some(PanelTab::Outline));
                 assert_eq!(r.visible.index(), last);
                 let expected = r
                     .outline_rows()
@@ -11217,6 +11934,540 @@ mod tests {
             Session::Ready(r) => assert!(r.outline_collapsed.is_empty()),
             _ => unreachable!(),
         }
+    }
+
+    const LIST_PAGE_A: &str = "alfa beta gama delta epsilon zeta eta teta iota kappa lambda mu";
+    const LIST_PAGE_B: &str = "nu xi omicron pi rho sigma tau upsilon phi chi psi omega";
+
+    fn list_word(plain: &str, word: &str) -> TextRange {
+        let start = plain.find(word).expect("palavra no texto sintético");
+        TextRange {
+            start,
+            end: start + word.len(),
+        }
+    }
+
+    fn list_annot(id: u64, page: u32, range: TextRange, kind: AnnotKind, text: &str) -> Annotation {
+        Annotation {
+            id,
+            page: PageNo::from_index(page),
+            range,
+            quads: Vec::new(),
+            kind,
+            text: text.into(),
+            marker: None,
+        }
+    }
+
+    /// Documento de duas páginas com texto sintético e 12 marcações (6 por
+    /// página). Ids 1..=12; as notas são as ids ímpares múltiplas de 3 + 1.
+    /// Inserção em ordem inversa: a lista precisa sair em ordem de leitura.
+    fn annotated_ready() -> Option<Ready> {
+        let mut ready = sample_ready()?;
+        assert!(ready.page_count() >= 2, "fixture de duas páginas");
+        for (page, plain) in [(0u32, LIST_PAGE_A), (1, LIST_PAGE_B)] {
+            ready.pages.text[page as usize] = Some(TextLayer {
+                page: PageNo::from_index(page),
+                plain: plain.into(),
+                glyphs: Vec::new(),
+            });
+        }
+        let mut annots = Vec::new();
+        for i in 0..12u64 {
+            let (page, plain) = if i % 2 == 0 {
+                (0, LIST_PAGE_A)
+            } else {
+                (1, LIST_PAGE_B)
+            };
+            let word = plain.split(' ').nth((i / 2) as usize).expect("palavra");
+            let (kind, text) = if i % 3 == 0 {
+                (AnnotKind::Note, format!("nota {i}"))
+            } else {
+                (AnnotKind::Highlight, String::new())
+            };
+            annots.push(list_annot(i + 1, page, list_word(plain, word), kind, &text));
+        }
+        annots.reverse();
+        ready.annotations = annots;
+        Some(ready)
+    }
+
+    fn with_temp_positions<R>(name: &str, f: impl FnOnce() -> R) -> R {
+        let file = std::env::temp_dir().join(format!(
+            "tsuro-positions-unit-{}-{name}",
+            std::process::id()
+        ));
+        let _ = std::fs::remove_file(&file);
+        crate::positions::with_positions_path(file, f)
+    }
+
+    /// Critério 1: cada marcação da sessão vira uma linha com página, tipo,
+    /// trecho e nota (quando houver), em ordem de leitura.
+    #[test]
+    fn annotation_list_has_a_row_per_session_annotation() {
+        let Some(ready) = annotated_ready() else {
+            return;
+        };
+        let h = AnnotKind::Highlight;
+        let n = AnnotKind::Note;
+        let expected = [
+            (1, n, 0, "alfa", Some("nota 0")),
+            (3, h, 0, "beta", None),
+            (5, h, 0, "gama", None),
+            (7, n, 0, "delta", Some("nota 6")),
+            (9, h, 0, "epsilon", None),
+            (11, h, 0, "zeta", None),
+            (2, h, 1, "nu", None),
+            (4, n, 1, "xi", Some("nota 3")),
+            (6, h, 1, "omicron", None),
+            (8, h, 1, "pi", None),
+            (10, n, 1, "rho", Some("nota 9")),
+            (12, h, 1, "sigma", None),
+        ];
+        type Row = (u64, AnnotKind, u32, Option<String>, Option<String>);
+        let got: Vec<Row> = ready
+            .annotation_rows()
+            .into_iter()
+            .map(|row| (row.id, row.kind, row.page.index(), row.excerpt, row.note))
+            .collect();
+        let want: Vec<Row> = expected
+            .iter()
+            .map(|(id, kind, page, excerpt, note)| {
+                (
+                    *id,
+                    *kind,
+                    *page,
+                    Some(excerpt.to_string()),
+                    note.map(str::to_string),
+                )
+            })
+            .collect();
+        assert_eq!(got, want);
+    }
+
+    /// Critério 2: a busca casa trecho e nota, sem diferenciar caixa; sem
+    /// hit a lista fica vazia enquanto a sessão tem marcações (estado vazio
+    /// da busca, não o da sessão).
+    #[test]
+    fn annotation_search_matches_note_and_excerpt_and_reports_empty_result() {
+        let Some(ready) = annotated_ready() else {
+            return;
+        };
+        let mut session = Session::Ready(Tabs::single(ready));
+        let ids = |session: &Session| -> Vec<u64> {
+            active_ready(session)
+                .annotation_rows()
+                .iter()
+                .map(|row| row.id)
+                .collect()
+        };
+        apply(&mut session, Message::AnnotQuery("NOTA 6".into()));
+        assert_eq!(ids(&session), [7], "palavra só na nota");
+        apply(&mut session, Message::AnnotQuery("gama".into()));
+        assert_eq!(ids(&session), [5], "palavra só no trecho");
+        apply(&mut session, Message::AnnotQuery("zzz".into()));
+        assert!(ids(&session).is_empty(), "sem hit, lista vazia");
+        assert_eq!(
+            active_ready(&session).annotations.len(),
+            12,
+            "a busca não apaga marcações"
+        );
+        apply(&mut session, Message::AnnotQuery(String::new()));
+        assert_eq!(ids(&session).len(), 12, "busca vazia mostra tudo");
+    }
+
+    /// Critério 3: Enter na lista (cursor andado com ↓) salta para a página da
+    /// marcação, revela o trecho e deixa a origem no histórico.
+    #[test]
+    fn annotation_enter_reveals_excerpt_and_records_jump_origin() {
+        let Some(ready) = annotated_ready() else {
+            return;
+        };
+        let mut session = Session::Ready(Tabs::single(ready));
+        with_temp_positions("annot-enter", || {
+            apply(
+                &mut session,
+                Message::SetPanelTab(Some(PanelTab::Annotations)),
+            );
+            // Sete ↓: a linha 7 da lista é a primeira da página 2 ("nu", id 2).
+            for _ in 0..7 {
+                apply(&mut session, Message::PanelKey(PanelKey::Next));
+            }
+            assert_eq!(active_ready(&session).annot_focus(), Some(2));
+            assert_eq!(active_ready(&session).visible, PageNo::first());
+            apply(&mut session, Message::PanelKey(PanelKey::Activate));
+            let ready = active_ready(&session);
+            assert_eq!(ready.visible, PageNo::from_index(1));
+            assert_eq!(
+                ready.selection,
+                Some(Selection {
+                    page: PageNo::from_index(1),
+                    range: list_word(LIST_PAGE_B, "nu"),
+                }),
+                "o trecho aparece selecionado"
+            );
+            assert!(ready.can_history_back(), "origem entra no histórico");
+            apply(&mut session, Message::HistoryBack);
+            assert_eq!(active_ready(&session).visible, PageNo::first());
+            // Origem que chegou só por rolagem (fora da pilha) também volta.
+            if let Session::Ready(tabs) = &mut session {
+                tabs.active_mut().visible = PageNo::from_index(1);
+            }
+            apply(&mut session, Message::PanelKey(PanelKey::Prev));
+            apply(&mut session, Message::PanelKey(PanelKey::Activate));
+            assert_eq!(active_ready(&session).visible, PageNo::first());
+            apply(&mut session, Message::HistoryBack);
+            assert_eq!(
+                active_ready(&session).visible,
+                PageNo::from_index(1),
+                "o voltar devolve à página de origem rolada"
+            );
+        });
+    }
+
+    /// Critério 4: a aba existe sem sumário e a sessão vazia não tem linhas.
+    /// Sumário sem outline continua caindo em Páginas.
+    #[test]
+    fn annotation_tab_opens_without_outline_and_empty_session_has_no_rows() {
+        let Some(ready) = sample_ready() else {
+            return;
+        };
+        let mut session = Session::Ready(Tabs::single(ready));
+        apply(
+            &mut session,
+            Message::SetPanelTab(Some(PanelTab::Annotations)),
+        );
+        let ready = active_ready(&session);
+        assert!(ready.outline.is_none());
+        assert_eq!(ready.panel, Some(PanelTab::Annotations));
+        assert!(ready.annotations.is_empty());
+        assert!(ready.annotation_rows().is_empty());
+        apply(&mut session, Message::SetPanelTab(Some(PanelTab::Outline)));
+        assert_eq!(active_ready(&session).panel, None);
+    }
+
+    /// Critério 5: nota editada, marcação removida e desfeita aparecem na
+    /// lista sem texto antigo nem item removido.
+    #[test]
+    fn annotation_rows_follow_note_edit_remove_and_undo() {
+        let Some(mut ready) = annotated_ready() else {
+            return;
+        };
+        let annot = ready
+            .annotations
+            .iter()
+            .find(|a| a.id == 4)
+            .cloned()
+            .expect("nota 3 (id 4)");
+        ready.note_draft = Some(NoteDraft {
+            page: annot.page,
+            range: annot.range,
+            quads: annot.quads.clone(),
+            content: text_editor::Content::with_text("revisada"),
+            editing: Some(4),
+            anchor: [0.0, 0.0],
+            anchor_scroll: 0.0,
+        });
+        assert!(ready.save_note_draft());
+        let row = ready
+            .annotation_rows()
+            .into_iter()
+            .find(|row| row.id == 4)
+            .expect("a nota editada continua na lista");
+        assert_eq!(row.note.as_deref(), Some("revisada"));
+        ready.annot_query = "nota 3".into();
+        assert!(
+            ready.annotation_rows().is_empty(),
+            "o texto antigo não casa mais"
+        );
+        ready.annot_query.clear();
+        assert!(ready.remove_annotation(4));
+        assert_eq!(ready.annotation_rows().len(), 11);
+        assert!(ready.annotation_rows().iter().all(|row| row.id != 4));
+        assert!(ready.annot_undo_once());
+        assert_eq!(
+            ready.annotation_rows().len(),
+            12,
+            "desfazer devolve a linha"
+        );
+    }
+
+    /// Critério 6: referência para marcação que sumiu (removida ou fora do
+    /// documento) não salta para página nenhuma: avisa e solta a referência.
+    #[test]
+    fn annotation_stale_reference_reports_unavailable_without_jump() {
+        let Some(ready) = annotated_ready() else {
+            return;
+        };
+        let mut session = Session::Ready(Tabs::single(ready));
+        with_temp_positions("annot-stale", || {
+            apply(
+                &mut session,
+                Message::SetPanelTab(Some(PanelTab::Annotations)),
+            );
+            for _ in 0..7 {
+                apply(&mut session, Message::PanelKey(PanelKey::Next));
+            }
+            assert_eq!(active_ready(&session).annot_focus(), Some(2));
+            // Some do documento (remoção fora da lista) com o cursor ainda nela.
+            if let Session::Ready(tabs) = &mut session {
+                assert!(tabs.active_mut().remove_annotation(2));
+            }
+            apply(&mut session, Message::PanelKey(PanelKey::Activate));
+            let ready = active_ready(&session);
+            assert_eq!(ready.visible, PageNo::first(), "não saltou");
+            assert!(!ready.can_history_back(), "nada entrou no histórico");
+            assert!(ready.annot_focus().is_none(), "referência solta");
+            assert!(
+                ready
+                    .save_status
+                    .as_deref()
+                    .is_some_and(|status| status.contains("indisponível")),
+                "avisa pela linha de status"
+            );
+            // Página fora do documento (documento trocado): nada de clamp para
+            // a última página, que seria o salto errado.
+            if let Session::Ready(tabs) = &mut session {
+                tabs.active_mut().annotations.push(list_annot(
+                    99,
+                    9999,
+                    TextRange { start: 0, end: 2 },
+                    AnnotKind::Highlight,
+                    "",
+                ));
+            }
+            apply(&mut session, Message::AnnotActivate(99));
+            let ready = active_ready(&session);
+            assert_eq!(
+                ready.visible,
+                PageNo::first(),
+                "sem salto para página errada"
+            );
+            assert!(!ready.can_history_back());
+        });
+    }
+
+    /// Todas as páginas em carta (612×792 pt): geometria previsível sem layout.
+    fn set_letter_media(ready: &mut Ready) {
+        for slot in ready.pages.media.iter_mut() {
+            *slot = Some(MediaBox {
+                width: 612.0,
+                height: 792.0,
+            });
+        }
+    }
+
+    fn mark_at(id: u64, page: u32, quad: Quad) -> Annotation {
+        Annotation {
+            id,
+            page: PageNo::from_index(page),
+            range: TextRange { start: 0, end: 4 },
+            quads: vec![quad],
+            kind: AnnotKind::Highlight,
+            text: String::new(),
+            marker: None,
+        }
+    }
+
+    /// Critério de geometria: o trecho colado na base da página entra na
+    /// janela de rolagem, nos dois modos; a conta confere com a folha desenhada
+    /// (topo em `DOC_PAD_TOP`, retângulo pela proporção da mídia).
+    #[test]
+    fn annotation_reveal_brings_bottom_of_page_mark_into_viewport() {
+        for mode in [ViewMode::Continuous, ViewMode::Single] {
+            let Some(mut ready) = annotated_ready() else {
+                return;
+            };
+            set_letter_media(&mut ready);
+            ready.view_mode = mode;
+            ready.viewport = Viewport {
+                width: 900.0,
+                height: 600.0,
+            };
+            // PDF: y pequeno é a base da página.
+            ready.annotations = vec![mark_at(40, 0, Quad::from_rect(72.0, 20.0, 200.0, 36.0))];
+            let mut session = Session::Ready(Tabs::single(ready));
+            with_temp_positions("annot-reveal-bottom", || {
+                apply(&mut session, Message::AnnotActivate(40));
+            });
+            let ready = active_ready(&session);
+            let sw = ready.sheet_width(PageNo::first());
+            let sh = sw * 792.0 / 612.0;
+            let top = DOC_PAD_TOP + (792.0 - 36.0) / 792.0 * sh;
+            let height = 16.0 / 792.0 * sh;
+            let left = (ready.doc_stage_max_width() - sw) / 2.0 + 72.0 / 612.0 * sw;
+            let width = 128.0 / 612.0 * sw;
+            let view_h = ready.doc_content_height();
+            let view_w = ready.doc_content_width() + 2.0 * DOC_PAD_X;
+            assert!(
+                ready.doc_scroll_y > 0.0,
+                "{mode:?}: o trecho está abaixo da dobra, a rolagem desce"
+            );
+            assert!(
+                top >= ready.doc_scroll_y && top + height <= ready.doc_scroll_y + view_h,
+                "{mode:?}: trecho dentro da janela na vertical"
+            );
+            assert!(
+                left >= ready.doc_scroll_x && left + width <= ready.doc_scroll_x + view_w,
+                "{mode:?}: trecho dentro da janela na horizontal"
+            );
+            assert_eq!(ready.visible, PageNo::first(), "{mode:?}: mesma página");
+        }
+    }
+
+    /// Marcação já na vista: ativar não rola (antes, o salto levava ao topo).
+    #[test]
+    fn annotation_reveal_leaves_visible_mark_where_it_is() {
+        let Some(mut ready) = annotated_ready() else {
+            return;
+        };
+        set_letter_media(&mut ready);
+        ready.view_mode = ViewMode::Continuous;
+        ready.viewport = Viewport {
+            width: 900.0,
+            height: 600.0,
+        };
+        ready.annotations = vec![mark_at(41, 0, Quad::from_rect(72.0, 740.0, 200.0, 756.0))];
+        ready.doc_scroll_y = 30.0;
+        let mut session = Session::Ready(Tabs::single(ready));
+        with_temp_positions("annot-reveal-visible", || {
+            apply(&mut session, Message::AnnotActivate(41));
+        });
+        let ready = active_ready(&session);
+        assert_eq!(ready.doc_scroll_y, 30.0, "já visível: a rolagem fica");
+        assert_eq!(ready.visible, PageNo::first());
+        assert!(!ready.can_history_back(), "mesma página: sem origem nova");
+    }
+
+    /// Folha mais larga que a janela (zoom 200%): o trecho à direita entra na
+    /// horizontal, e a rolagem horizontal fica registrada.
+    #[test]
+    fn annotation_reveal_scrolls_horizontally_for_wide_sheets() {
+        let Some(mut ready) = annotated_ready() else {
+            return;
+        };
+        set_letter_media(&mut ready);
+        ready.view_mode = ViewMode::Continuous;
+        ready.zoom = Zoom::Manual(ZoomFactor::new(2.0));
+        ready.viewport = Viewport {
+            width: 900.0,
+            height: 600.0,
+        };
+        ready.annotations = vec![mark_at(42, 0, Quad::from_rect(500.0, 500.0, 540.0, 520.0))];
+        let mut session = Session::Ready(Tabs::single(ready));
+        with_temp_positions("annot-reveal-wide", || {
+            apply(&mut session, Message::AnnotActivate(42));
+        });
+        let ready = active_ready(&session);
+        let sw = ready.sheet_width(PageNo::first());
+        let left = (ready.doc_stage_max_width() - sw) / 2.0 + 500.0 / 612.0 * sw;
+        let width = 40.0 / 612.0 * sw;
+        let view_w = ready.doc_content_width() + 2.0 * DOC_PAD_X;
+        assert!(
+            ready.doc_scroll_x > 0.0,
+            "o trecho está fora da largura inicial"
+        );
+        assert!(
+            left >= ready.doc_scroll_x && left + width <= ready.doc_scroll_x + view_w,
+            "trecho dentro da janela na horizontal"
+        );
+    }
+
+    /// Os dois eixos chegam ao estado: o X só o salto de marcação lê, e o Y
+    /// continua derivando `visible` no contínuo.
+    #[test]
+    fn doc_scroll_message_stores_both_axes() {
+        let Some(ready) = sample_ready() else {
+            return;
+        };
+        let mut session = Session::Ready(Tabs::single(ready));
+        apply(&mut session, Message::DocScrolled { x: 120.0, y: 40.0 });
+        let ready = active_ready(&session);
+        assert_eq!((ready.doc_scroll_x, ready.doc_scroll_y), (120.0, 40.0));
+    }
+
+    #[test]
+    fn reveal_axis_keeps_centers_or_aligns_within_the_stage() {
+        // Já cabe: não mexe.
+        assert_eq!(reveal_axis(100.0, 600.0, 200.0, 20.0, 5000.0), 100.0);
+        // Abaixo da dobra: centraliza na janela.
+        assert_eq!(reveal_axis(0.0, 600.0, 1000.0, 20.0, 5000.0), 710.0);
+        // Mais alto que a janela: alinha o início.
+        assert_eq!(reveal_axis(0.0, 600.0, 1000.0, 900.0, 5000.0), 1000.0);
+        // Perto da borda do palco: não passa do fim.
+        assert_eq!(reveal_axis(0.0, 600.0, 4990.0, 5.0, 5000.0), 4400.0);
+        // Palco menor que a janela: nada a rolar.
+        assert_eq!(reveal_axis(0.0, 600.0, 100.0, 20.0, 300.0), 0.0);
+    }
+
+    /// Trecho perto do topo da página 2: centrar na janela sobe além do topo
+    /// dela. A rolagem que o iced reporta de volta tem de manter a página do
+    /// trecho, e o voltar tem de levar à origem (sem página intermediária).
+    #[test]
+    fn annotation_reveal_near_page_top_keeps_page_and_back_returns_to_origin() {
+        let Some(mut ready) = annotated_ready() else {
+            return;
+        };
+        set_letter_media(&mut ready);
+        ready.view_mode = ViewMode::Continuous;
+        ready.viewport = Viewport {
+            width: 900.0,
+            height: 600.0,
+        };
+        // PDF: y perto do topo (792 pt) da página de índice 1.
+        ready.annotations = vec![mark_at(43, 1, Quad::from_rect(72.0, 760.0, 200.0, 776.0))];
+        let mut session = Session::Ready(Tabs::single(ready));
+        with_temp_positions("annot-reveal-top", || {
+            apply(&mut session, Message::AnnotActivate(43));
+            let (x, y) = {
+                let ready = active_ready(&session);
+                (ready.doc_scroll_x, ready.doc_scroll_y)
+            };
+            // O iced reporta de volta a rolagem que foi pedida.
+            apply(&mut session, Message::DocScrolled { x, y });
+            assert_eq!(
+                active_ready(&session).visible,
+                PageNo::from_index(1),
+                "a rolagem reportada mantém a página do trecho"
+            );
+            apply(&mut session, Message::HistoryBack);
+            assert_eq!(
+                active_ready(&session).visible,
+                PageNo::first(),
+                "o voltar leva à origem"
+            );
+        });
+    }
+
+    /// Enter na busca (sem cursor na lista) salta para a primeira linha
+    /// filtrada, não para a primeira da lista inteira; sem linha filtrada,
+    /// não faz nada.
+    #[test]
+    fn annotation_activate_without_cursor_picks_first_filtered_row() {
+        let Some(ready) = annotated_ready() else {
+            return;
+        };
+        let mut session = Session::Ready(Tabs::single(ready));
+        with_temp_positions("annot-enter-search", || {
+            apply(
+                &mut session,
+                Message::SetPanelTab(Some(PanelTab::Annotations)),
+            );
+            apply(&mut session, Message::AnnotQuery("nota 9".into()));
+            assert_eq!(active_ready(&session).annot_focus(), None);
+            apply(&mut session, Message::PanelKey(PanelKey::Activate));
+            let ready = active_ready(&session);
+            assert_eq!(ready.annot_focus(), Some(10), "única linha com 'nota 9'");
+            assert_eq!(ready.visible, PageNo::from_index(1), "página da linha 10");
+            apply(&mut session, Message::AnnotQuery("zzz".into()));
+            apply(&mut session, Message::HistoryBack);
+            apply(&mut session, Message::PanelKey(PanelKey::Activate));
+            assert_eq!(
+                active_ready(&session).visible,
+                PageNo::first(),
+                "sem linha filtrada, Enter não salta"
+            );
+        });
     }
 
     #[test]
@@ -13774,13 +15025,13 @@ mod tests {
                 outline: Some(outline_tree()),
             },
         );
-        apply(&mut session, Message::OutlineTab(true));
+        apply(&mut session, Message::SetPanelTab(Some(PanelTab::Outline)));
         match &session {
             Session::Ready(r) => assert_eq!(r.outline_focus(), Some(vec![0])),
             _ => unreachable!(),
         }
         apply(&mut session, Message::OpenPalette);
-        apply(&mut session, Message::OutlineKey(OutlineKey::Next));
+        apply(&mut session, Message::PanelKey(PanelKey::Next));
         match &session {
             Session::Ready(tabs) => {
                 assert!(tabs.palette_open());
@@ -13789,7 +15040,7 @@ mod tests {
             other => panic!("esperava Ready, veio {other:?}"),
         }
         apply(&mut session, Message::PaletteClose);
-        apply(&mut session, Message::OutlineKey(OutlineKey::Next));
+        apply(&mut session, Message::PanelKey(PanelKey::Next));
         match &session {
             Session::Ready(tabs) => {
                 assert!(!tabs.palette_open());
@@ -14773,5 +16024,638 @@ mod tests {
             }
             other => panic!("esperava Ready, veio {other:?}"),
         }
+    }
+
+    /// Pasta só deste teste: o PDF é uma cópia do fixture e o diário fica ao
+    /// lado, nunca no diretório real do usuário nem sobre o fixture.
+    fn recovery_case<R>(name: &str, f: impl FnOnce(&std::path::Path, &std::path::Path) -> R) -> R {
+        let root = std::env::temp_dir().join(format!(
+            "tsuro-session-recovery-{}-{name}",
+            std::process::id()
+        ));
+        let _ = std::fs::remove_dir_all(&root);
+        std::fs::create_dir_all(&root).unwrap();
+        let doc = root.join("guia-folio.pdf");
+        std::fs::copy(sample_pdf(), &doc).unwrap();
+        let journals = root.join("recovery");
+        // `apply_open` grava recentes e lê posições: nada disso toca o usuário.
+        let result = crate::browse::with_recents_path(root.join("recents.txt"), || {
+            crate::positions::with_positions_path(root.join("positions.txt"), || {
+                recovery::with_recovery_dir(journals.clone(), || f(&doc, &journals))
+            })
+        });
+        let _ = std::fs::remove_dir_all(&root);
+        result
+    }
+
+    /// Abre uma aba como a janela: `begin_open` reserva a geração e `Opened` a
+    /// entrega. Devolve a geração da aba.
+    fn open_tab(session: &mut Session, path: &std::path::Path) -> u64 {
+        let _ = session.begin_open(OpenSource::Path(path.to_path_buf()));
+        let gen = match session {
+            Session::Loading { gen, .. } => *gen,
+            Session::Ready(tabs) => tabs.pending_gen().expect("aba pendente"),
+            other => panic!("esperava abertura em curso, veio {other:?}"),
+        };
+        apply(
+            session,
+            Message::Opened {
+                gen,
+                result: Ok(open_like_window(path)),
+            },
+        );
+        gen
+    }
+
+    #[test]
+    fn closed_tab_generation_is_never_reused_by_a_new_tab() {
+        recovery_case("gen-reuse", |doc, _| {
+            let mut session = Session::Empty(EmptyState::default());
+            let first = open_tab(&mut session, doc);
+            let second = open_tab(&mut session, doc);
+            assert!(second > first);
+            let b = ready_mut(&mut session);
+            b.annotations = vec![recovery_mark(0, "b")];
+            // O checkpoint da aba B roda na worker; a resposta chega depois de fechá-la.
+            let late = CheckpointDone(b.begin_checkpoint().expect("há o que gravar").run());
+            apply(&mut session, Message::CloseTab(1));
+            apply(&mut session, Message::CloseDiscard);
+            let third = open_tab(&mut session, doc);
+            assert!(third > second, "a geração da aba fechada não volta");
+            apply(
+                &mut session,
+                Message::Checkpointed {
+                    doc_gen: second,
+                    done: late,
+                },
+            );
+            assert!(
+                active_ready(&session).journal.is_none(),
+                "resposta velha não entra na aba nova"
+            );
+        });
+    }
+
+    #[test]
+    fn discarding_restored_marks_before_the_first_checkpoint_removes_the_old_journal() {
+        recovery_case("discard-before-checkpoint", |doc, journals| {
+            let mut first = open_like_window(doc);
+            first.annotations = vec![recovery_mark(0, "a")];
+            assert!(checkpoint_now(&mut first));
+            drop(first);
+            let mut session = Session::Ready(Tabs::single(open_like_window(doc)));
+            apply(&mut session, Message::RecoveryRestore);
+            assert!(
+                ready_mut(&mut session).journal.is_none(),
+                "restaurado, sem checkpoint próprio ainda"
+            );
+            apply(&mut session, Message::Close);
+            apply(&mut session, Message::CloseDiscard);
+            assert!(matches!(session, Session::Empty(_)));
+            assert_eq!(
+                entries(journals),
+                0,
+                "descartar antes do primeiro checkpoint não deixa o diário antigo"
+            );
+        });
+    }
+
+    #[test]
+    fn forgetting_journals_clears_the_offers_cached_in_every_tab() {
+        recovery_case("forget-tabs", |doc, journals| {
+            let mut first = open_like_window(doc);
+            first.annotations = vec![recovery_mark(0, "a")];
+            assert!(checkpoint_now(&mut first));
+            drop(first);
+            let mut session = Session::Empty(EmptyState::default());
+            open_tab(&mut session, doc);
+            open_tab(&mut session, doc);
+            let Session::Ready(tabs) = &session else {
+                panic!("esperava abas")
+            };
+            assert!(
+                tabs.docs().iter().all(|doc| doc.recovery_prompt()),
+                "as duas abas oferecem o diário"
+            );
+            apply(&mut session, Message::ForgetRecoveryAsk(true));
+            apply(&mut session, Message::ForgetRecoveryConfirm);
+            assert_eq!(entries(journals), 0);
+            let Session::Ready(tabs) = &session else {
+                panic!("esperava abas")
+            };
+            assert!(
+                tabs.docs()
+                    .iter()
+                    .all(|doc| doc.recovery == RecoveryState::Nenhum),
+                "nenhuma aba guarda oferta de diário apagado"
+            );
+            apply(&mut session, Message::SelectTab(0));
+            apply(&mut session, Message::RecoveryRestore);
+            assert!(
+                active_ready(&session).annotations.is_empty(),
+                "restaurar não traz de volta marcações esquecidas"
+            );
+        });
+    }
+
+    #[test]
+    fn recovery_failure_is_shown_even_when_the_disk_copy_is_stale() {
+        let Some(mut ready) = sample_ready() else {
+            return;
+        };
+        ready.disk_stale = true;
+        ready.journal_failed = true;
+        assert_eq!(
+            crate::view::doc_warnings(&ready),
+            [
+                crate::view::DocWarning::DiskStale,
+                crate::view::DocWarning::RecoveryFailed
+            ],
+            "os dois avisos aparecem"
+        );
+    }
+
+    /// Abre como a janela: o caminho assíncrono de `Opened`, com a varredura de
+    /// diários na pasta de recuperação.
+    fn open_like_window(path: &std::path::Path) -> Ready {
+        tokio::runtime::Builder::new_current_thread()
+            .build()
+            .unwrap()
+            .block_on(open_ready(
+                OpenSource::Path(path.to_path_buf()),
+                Some(recovery::recovery_dir()),
+            ))
+            .expect("o fixture abre")
+    }
+
+    fn recovery_mark(id: u64, text: &str) -> Annotation {
+        Annotation {
+            id,
+            page: PageNo::first(),
+            range: TextRange { start: 0, end: 4 },
+            quads: vec![Quad::from_rect(10.0, 20.0, 110.0, 32.5)],
+            kind: AnnotKind::Highlight,
+            text: text.to_string(),
+            marker: None,
+        }
+    }
+
+    /// Roda o checkpoint que a sessão agendaria; a tarefa de fundo faz o mesmo.
+    /// `false` se não havia nada a gravar.
+    fn checkpoint_now(ready: &mut Ready) -> bool {
+        let Some(job) = ready.begin_checkpoint() else {
+            return false;
+        };
+        ready.finish_checkpoint(job.run());
+        true
+    }
+
+    fn offered(ready: &Ready) -> &[Abandoned] {
+        match &ready.recovery {
+            RecoveryState::Disponivel(offers) => offers,
+            other => panic!("esperava oferta de restauração, veio {other:?}"),
+        }
+    }
+
+    fn entries(dir: &std::path::Path) -> usize {
+        std::fs::read_dir(dir).map_or(0, |dir| dir.count())
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn forget_that_fails_keeps_the_offer_it_could_not_remove() {
+        use std::os::unix::fs::PermissionsExt;
+        recovery_case("forget-partial", |doc, journals| {
+            for text in ["um", "dois"] {
+                let mut ready = open_like_window(doc);
+                ready.annotations = vec![recovery_mark(0, text)];
+                assert!(checkpoint_now(&mut ready));
+            }
+            let mut session = Session::Ready(Tabs::single(open_like_window(doc)));
+            assert_eq!(
+                offered(active_ready(&session)).len(),
+                2,
+                "as duas marcações são oferecidas"
+            );
+            // Um diário que não sai do disco: o lock sem permissão impede apagá-lo.
+            let stuck = std::fs::read_dir(journals)
+                .unwrap()
+                .map(|entry| entry.unwrap().path())
+                .find(|path| path.extension().is_some_and(|ext| ext == "lock"))
+                .expect("há um lock");
+            std::fs::set_permissions(&stuck, std::fs::Permissions::from_mode(0o000)).unwrap();
+            apply(&mut session, Message::ForgetRecoveryAsk(true));
+            apply(&mut session, Message::ForgetRecoveryConfirm);
+            std::fs::set_permissions(&stuck, std::fs::Permissions::from_mode(0o600)).unwrap();
+            let remaining = offered(active_ready(&session)).to_vec();
+            assert_eq!(remaining.len(), 1, "só o diário que saiu some da oferta");
+            assert_eq!(
+                session_settings(&session).forget_status.as_deref(),
+                Some("Diários esquecidos: 1. Não foi possível apagar 1."),
+                "a falha aparece no status de Configurações"
+            );
+            apply(&mut session, Message::RecoveryRestore);
+            assert_eq!(
+                active_ready(&session).annotations,
+                remaining[0].checkpoint.annotations,
+                "restaurar o diário que ficou ainda funciona"
+            );
+        });
+    }
+
+    fn session_settings(session: &Session) -> &SettingsPanel {
+        match session {
+            Session::Ready(tabs) => &tabs.settings,
+            other => panic!("esperava Ready, veio {other:?}"),
+        }
+    }
+
+    #[test]
+    fn three_marks_survive_a_crash_and_restore_offers_exactly_them() {
+        recovery_case("crash", |doc, _| {
+            let before = std::fs::read(doc).unwrap();
+            let mut ready = open_like_window(doc);
+            assert_eq!(ready.recovery, RecoveryState::Nenhum, "primeira abertura");
+            ready.annotations = vec![
+                recovery_mark(0, "primeira"),
+                recovery_mark(1, "segunda"),
+                recovery_mark(2, "terceira"),
+            ];
+            assert!(checkpoint_now(&mut ready));
+            let written = ready.annotations.clone();
+            // O processo morre: a aba some sem fechar. O lock solta; os arquivos ficam.
+            drop(ready);
+            let mut session = Session::Ready(Tabs::single(open_like_window(doc)));
+            assert_eq!(offered(active_ready(&session)).len(), 1);
+            assert_eq!(
+                offered(active_ready(&session))[0].checkpoint.annotations,
+                written
+            );
+            apply(&mut session, Message::RecoveryRestore);
+            assert_eq!(
+                active_ready(&session).annotations,
+                written,
+                "as três, nem mais nem menos"
+            );
+            assert_eq!(std::fs::read(doc).unwrap(), before, "PDF original intocado");
+        });
+    }
+
+    #[test]
+    fn restoring_twice_gives_the_same_set_without_duplicates() {
+        recovery_case("twice", |doc, journals| {
+            let mut first = open_like_window(doc);
+            first.annotations = vec![
+                recovery_mark(0, "a"),
+                recovery_mark(1, "b"),
+                recovery_mark(2, "c"),
+            ];
+            assert!(checkpoint_now(&mut first));
+            drop(first);
+
+            let mut session = Session::Ready(Tabs::single(open_like_window(doc)));
+            apply(&mut session, Message::RecoveryRestore);
+            let restored = active_ready(&session).annotations.clone();
+            assert_eq!(restored.len(), 3);
+            assert_eq!(
+                active_ready(&session).next_annot_id,
+                3,
+                "próximo ID = máximo + 1"
+            );
+            assert_eq!(
+                entries(journals),
+                2,
+                "o diário antigo ainda existe até o próprio checkpoint"
+            );
+            checkpoint_now(ready_mut(&mut session));
+            assert_eq!(entries(journals), 2, "adotado: só o diário novo sobra");
+            drop(session);
+
+            let mut again = Session::Ready(Tabs::single(open_like_window(doc)));
+            assert_eq!(
+                offered(active_ready(&again)).len(),
+                1,
+                "uma oferta só, sem duplicata"
+            );
+            apply(&mut again, Message::RecoveryRestore);
+            assert_eq!(
+                active_ready(&again).annotations,
+                restored,
+                "mesmo conjunto de novo"
+            );
+        });
+    }
+
+    #[test]
+    fn changed_pdf_is_incompatible_and_keeps_the_journal() {
+        recovery_case("changed", |doc, journals| {
+            let mut first = open_like_window(doc);
+            first.annotations = vec![recovery_mark(0, "a")];
+            assert!(checkpoint_now(&mut first));
+            drop(first);
+            // Um byte a mais no fim: conteúdo diferente, PDF continua válido.
+            let mut bytes = std::fs::read(doc).unwrap();
+            bytes.push(b'\n');
+            std::fs::write(doc, &bytes).unwrap();
+
+            let mut session = Session::Ready(Tabs::single(open_like_window(doc)));
+            assert!(
+                matches!(&active_ready(&session).recovery, RecoveryState::Incompativel(offers) if offers.len() == 1),
+                "mesmo caminho, conteúdo diferente: incompatível"
+            );
+            apply(&mut session, Message::RecoveryRestore);
+            assert!(
+                active_ready(&session).annotations.is_empty(),
+                "nada aplicado"
+            );
+            assert_eq!(entries(journals), 2, "diário preservado");
+        });
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn failed_write_keeps_memory_warns_and_retries_on_the_next_change() {
+        use std::os::unix::fs::PermissionsExt;
+        recovery_case("disk-full", |doc, journals| {
+            std::fs::create_dir_all(journals).unwrap();
+            let set_mode = |mode: u32| {
+                std::fs::set_permissions(journals, std::fs::Permissions::from_mode(mode)).unwrap();
+            };
+            set_mode(0o500);
+            let mut ready = open_like_window(doc);
+            ready.annotations = vec![
+                recovery_mark(0, "a"),
+                recovery_mark(1, "b"),
+                recovery_mark(2, "c"),
+            ];
+            assert!(checkpoint_now(&mut ready));
+            assert!(ready.journal_failed, "gravação recusada");
+            assert_eq!(ready.annotations.len(), 3, "memória intacta");
+            assert!(
+                !ready.checkpoint_due(),
+                "sem mudança nova, sem nova tentativa"
+            );
+
+            set_mode(0o700);
+            ready.annotations.push(recovery_mark(3, "d"));
+            assert!(ready.checkpoint_due(), "a próxima mudança retenta");
+            assert!(checkpoint_now(&mut ready));
+            assert!(!ready.journal_failed, "aviso sai quando grava");
+            drop(ready);
+            let reopened = open_like_window(doc);
+            assert_eq!(offered(&reopened)[0].checkpoint.annotations.len(), 4);
+        });
+    }
+
+    #[test]
+    fn saving_a_copy_keeps_the_original_journal_and_the_copy_offers_nothing() {
+        recovery_case("copy", |doc, journals| {
+            let mut ready = open_like_window(doc);
+            ready.annotations = vec![
+                recovery_mark(0, "a"),
+                recovery_mark(1, "b"),
+                recovery_mark(2, "c"),
+            ];
+            assert!(checkpoint_now(&mut ready));
+            let mut session = Session::Ready(Tabs::single(ready));
+            let copy = doc.with_file_name("guia-anotado.pdf");
+            let mut bytes = std::fs::read(doc).unwrap();
+            bytes.extend_from_slice(b"\n% copia anotada\n");
+            std::fs::write(&copy, &bytes).unwrap();
+            let open_gen = active_ready(&session).open_gen;
+            let saved = active_ready(&session).annotations.clone();
+            apply(
+                &mut session,
+                Message::SaveCopyDone {
+                    doc_gen: open_gen,
+                    path: copy.clone(),
+                    saved,
+                    result: Ok(()),
+                },
+            );
+            assert_eq!(entries(journals), 2, "salvar a cópia não apaga o diário");
+            drop(session);
+
+            let copied = open_like_window(&copy);
+            assert_eq!(
+                copied.recovery,
+                RecoveryState::Nenhum,
+                "a cópia não recebe oferta"
+            );
+            let original = open_like_window(doc);
+            assert_eq!(offered(&original)[0].checkpoint.annotations.len(), 3);
+        });
+    }
+
+    #[test]
+    fn same_content_at_another_path_is_offered_with_its_origin() {
+        recovery_case("moved", |doc, _| {
+            let mut first = open_like_window(doc);
+            first.annotations = vec![recovery_mark(0, "a")];
+            assert!(checkpoint_now(&mut first));
+            drop(first);
+            let elsewhere = doc.with_file_name("copia-identica.pdf");
+            std::fs::copy(doc, &elsewhere).unwrap();
+            let ready = open_like_window(&elsewhere);
+            assert_eq!(offered(&ready)[0].checkpoint.path, doc.to_path_buf());
+        });
+    }
+
+    #[test]
+    fn journal_appears_only_with_the_first_checkpoint() {
+        recovery_case("lazy", |doc, journals| {
+            let mut ready = open_like_window(doc);
+            assert!(!ready.checkpoint_due(), "sem marcações não há o que gravar");
+            assert!(ready.begin_checkpoint().is_none());
+            assert!(!journals.exists(), "nenhum arquivo sem marcação");
+            ready.annotations = vec![recovery_mark(0, "a")];
+            assert!(checkpoint_now(&mut ready));
+            assert_eq!(entries(journals), 2, "lock e diário na primeira gravação");
+        });
+    }
+
+    #[test]
+    fn removing_every_mark_leaves_nothing_to_offer() {
+        recovery_case("emptied", |doc, _| {
+            let mut ready = open_like_window(doc);
+            ready.annotations = vec![recovery_mark(0, "a")];
+            assert!(checkpoint_now(&mut ready));
+            ready.annotations.clear();
+            assert!(
+                checkpoint_now(&mut ready),
+                "apagar tudo também é um checkpoint"
+            );
+            drop(ready);
+            let reopened = open_like_window(doc);
+            assert_eq!(reopened.recovery, RecoveryState::Nenhum, "nada a restaurar");
+        });
+    }
+
+    #[test]
+    fn discard_asks_for_confirmation_and_only_then_deletes() {
+        recovery_case("discard", |doc, journals| {
+            let mut first = open_like_window(doc);
+            first.annotations = vec![recovery_mark(0, "a")];
+            assert!(checkpoint_now(&mut first));
+            drop(first);
+            let mut session = Session::Ready(Tabs::single(open_like_window(doc)));
+            apply(&mut session, Message::RecoveryDiscardAsk(true));
+            assert!(active_ready(&session).discard_ask);
+            assert_eq!(entries(journals), 2, "pedir não apaga");
+            apply(&mut session, Message::RecoveryDiscardAsk(false));
+            assert!(
+                !active_ready(&session).discard_ask,
+                "cancelar volta ao cartão"
+            );
+            apply(&mut session, Message::RecoveryDiscardAsk(true));
+            apply(&mut session, Message::RecoveryDiscardConfirm);
+            assert_eq!(active_ready(&session).recovery, RecoveryState::Nenhum);
+            assert_eq!(entries(journals), 0, "confirmado: apagado");
+        });
+    }
+
+    #[test]
+    fn decide_later_keeps_the_journal_for_the_next_open() {
+        recovery_case("later", |doc, journals| {
+            let mut first = open_like_window(doc);
+            first.annotations = vec![recovery_mark(0, "a")];
+            assert!(checkpoint_now(&mut first));
+            drop(first);
+            let mut session = Session::Ready(Tabs::single(open_like_window(doc)));
+            apply(&mut session, Message::RecoveryLater);
+            assert_eq!(active_ready(&session).recovery, RecoveryState::Nenhum);
+            assert_eq!(entries(journals), 2);
+        });
+    }
+
+    #[test]
+    fn closing_after_a_saved_copy_retires_the_journal() {
+        recovery_case("clean-close", |doc, journals| {
+            let mut ready = open_like_window(doc);
+            ready.annotations = vec![recovery_mark(0, "a")];
+            assert!(checkpoint_now(&mut ready));
+            ready.saved_marks = ready.annotations.clone();
+            let mut session = Session::Ready(Tabs::single(ready));
+            apply(&mut session, Message::Close);
+            assert!(matches!(session, Session::Empty(_)), "fechou sem perguntar");
+            assert_eq!(entries(journals), 0, "fechar limpo apaga o diário");
+        });
+    }
+
+    #[test]
+    fn discarding_on_close_deletes_the_journal() {
+        recovery_case("discard-close", |doc, journals| {
+            let mut ready = open_like_window(doc);
+            ready.annotations = vec![recovery_mark(0, "a")];
+            assert!(checkpoint_now(&mut ready));
+            let mut session = Session::Ready(Tabs::single(ready));
+            apply(&mut session, Message::Close);
+            assert!(
+                matches!(&session, Session::Ready(tabs) if tabs.close_prompt()),
+                "marcações não salvas pedem confirmação"
+            );
+            apply(&mut session, Message::CloseDiscard);
+            assert!(matches!(session, Session::Empty(_)));
+            assert_eq!(entries(journals), 0);
+        });
+    }
+
+    #[test]
+    fn reload_from_disk_keeps_the_journal_on_disk() {
+        recovery_case("reload", |doc, journals| {
+            let mut ready = open_like_window(doc);
+            ready.annotations = vec![recovery_mark(0, "a")];
+            assert!(checkpoint_now(&mut ready));
+            let mut session = Session::Ready(Tabs::single(ready));
+            let open_gen = active_ready(&session).open_gen;
+            let fresh = open_like_window(doc);
+            apply(
+                &mut session,
+                Message::Reloaded {
+                    doc_gen: open_gen,
+                    result: Ok(fresh),
+                    identity: None,
+                },
+            );
+            assert!(
+                active_ready(&session).annotations.is_empty(),
+                "recarga descarta a memória"
+            );
+            assert_eq!(
+                entries(journals),
+                2,
+                "o diário sai da memória e fica no disco"
+            );
+        });
+    }
+
+    #[test]
+    fn forget_removes_unowned_journals_from_settings() {
+        recovery_case("forget", |doc, journals| {
+            let mut first = open_like_window(doc);
+            first.annotations = vec![recovery_mark(0, "a")];
+            assert!(checkpoint_now(&mut first));
+            drop(first);
+            let mut session = Session::Ready(Tabs::single(open_like_window(doc)));
+            apply(&mut session, Message::ForgetRecoveryAsk(true));
+            assert!(session_settings(&session).forget_ask);
+            apply(&mut session, Message::ForgetRecoveryConfirm);
+            assert_eq!(entries(journals), 0);
+            assert!(
+                session_settings(&session)
+                    .forget_status
+                    .as_deref()
+                    .is_some_and(|status| status.ends_with('1')),
+                "um diário esquecido"
+            );
+        });
+    }
+
+    #[test]
+    fn discard_in_one_tab_drops_the_same_offer_cached_in_another() {
+        recovery_case("discard-tabs", |doc, journals| {
+            let mut first = open_like_window(doc);
+            first.annotations = vec![recovery_mark(0, "descartada")];
+            assert!(checkpoint_now(&mut first));
+            drop(first);
+            let mut session = Session::Empty(EmptyState::default());
+            open_tab(&mut session, doc);
+            open_tab(&mut session, doc);
+            let Session::Ready(tabs) = &session else {
+                panic!("esperava abas")
+            };
+            assert!(
+                tabs.docs().iter().all(|doc| doc.recovery_prompt()),
+                "as duas abas oferecem o mesmo diário"
+            );
+            // Descarte confirmado na aba ativa (a segunda).
+            apply(&mut session, Message::RecoveryDiscardAsk(true));
+            apply(&mut session, Message::RecoveryDiscardConfirm);
+            assert_eq!(entries(journals), 0, "o diário saiu do disco");
+            apply(&mut session, Message::SelectTab(0));
+            assert_eq!(
+                active_ready(&session).recovery,
+                RecoveryState::Nenhum,
+                "a outra aba não oferece mais o diário descartado"
+            );
+            apply(&mut session, Message::RecoveryRestore);
+            assert!(
+                active_ready(&session).annotations.is_empty(),
+                "restaurar na outra aba não traz de volta marcações descartadas"
+            );
+        });
+    }
+
+    #[test]
+    fn hud_wake_arms_one_checkpoint_timer_per_pending_change() {
+        recovery_case("armed", |doc, _| {
+            let mut ready = open_like_window(doc);
+            ready.annotations = vec![recovery_mark(0, "a")];
+            let mut session = Session::Ready(Tabs::single(ready));
+            let first = session.start_checkpoint_timers().0;
+            assert_eq!(first, 1, "mudança pendente arma um timer");
+            let second = session.start_checkpoint_timers().0;
+            assert_eq!(second, 0, "mensagens seguidas não rearmam");
+        });
     }
 }

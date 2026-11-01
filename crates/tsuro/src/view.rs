@@ -20,10 +20,11 @@ use crate::search::Search;
 #[cfg(target_os = "macos")]
 use crate::session::PermissionsState;
 use crate::session::{
-    display_pt, display_rect, marker_side, page_pt_at, AnnotKind, Message, NavCmd, NoteDraft,
-    OpenSource, PaletteItem, PaletteState, PrintDialog, RangeMode, Ready, Session, SettingsPanel,
-    Tabs, UpdateState, ViewMode, Zoom, ZoomFactor, DOC_GAP, DOC_PAD_BOTTOM, DOC_PAD_TOP, DOC_PAD_X,
-    PAGES_PANEL_W, SIG_PANEL_W, THUMB_ROW,
+    display_pt, display_rect, marker_side, page_pt_at, AnnotKind, AnnotationRow, Message, NavCmd,
+    NoteDraft, OpenSource, PaletteItem, PaletteState, PanelKey, PanelTab, PrintDialog, RangeMode,
+    Ready, RecoveryState, Session, SettingsPanel, Tabs, UpdateState, ViewMode, Zoom, ZoomFactor,
+    ANNOT_ROW, DOC_GAP, DOC_PAD_BOTTOM, DOC_PAD_TOP, DOC_PAD_X, PAGES_PANEL_W, SIG_PANEL_W,
+    THUMB_ROW,
 };
 
 /// Altura do chrome Kiri: toolbar 36px + progresso 2px + respiro.
@@ -48,6 +49,10 @@ const POSTIT_EDITOR_H: f32 = 112.0;
 
 pub fn pages_scroll_id() -> scrollable::Id {
     scrollable::Id::new("tsuro-pages")
+}
+
+pub fn annotations_scroll_id() -> scrollable::Id {
+    scrollable::Id::new("tsuro-annotations")
 }
 
 pub fn doc_scroll_id() -> scrollable::Id {
@@ -150,6 +155,9 @@ pub fn chrome(session: &Session, theme: Theme, lang: Lang) -> Element<'_, Messag
     let overlay = if tabs.close_prompt() {
         // Fechar com marcações sujas fica por cima dos outros modais.
         close_prompt_layer(t)
+    } else if tabs.home().is_none() && tabs.recovery_prompt() {
+        // Cartão de recuperação (#128): aparece na abertura, antes da paleta.
+        recovery_layer(tabs.active(), t)
     } else if let Some(palette) = palette {
         palette_layer(palette, t)
     } else if let Some(dialog) = tabs.print_dialog.as_ref() {
@@ -1652,6 +1660,196 @@ fn sticky_editor_style(_theme: &iced::Theme, _status: text_editor::Status) -> te
     }
 }
 
+/// Cartão de recuperação (#128, `funcoes/01-marcacoes.md`): aviso modal como o
+/// de assinatura. O fundo equivale a "Decidir depois": não apaga nada.
+fn recovery_layer(ready: &Ready, t: Tokens) -> Element<'static, Message> {
+    let dim = container(Space::with_width(Length::Fill))
+        .width(Length::Fill)
+        .height(Length::Fill)
+        .style(|_| container::Style {
+            background: Some(Background::Color(Color::from_rgba(0.0, 0.0, 0.0, 0.25))),
+            ..container::Style::default()
+        });
+    let card = container(mouse_area(recovery_card(ready, t)).on_press(Message::PrintNop))
+        .width(Length::Fill)
+        .height(Length::Fill)
+        .align_x(Alignment::Center)
+        .align_y(Alignment::Center);
+    stack![mouse_area(dim).on_press(Message::RecoveryLater), card,].into()
+}
+
+fn recovery_card(ready: &Ready, t: Tokens) -> Element<'static, Message> {
+    let lang = t.lang;
+    let (title, detail, restorable) = match &ready.recovery {
+        RecoveryState::Disponivel(offers) => {
+            let count = offers
+                .first()
+                .map_or(0, |offer| offer.checkpoint.annotations.len());
+            let noun = if count == 1 {
+                lang.pick(
+                    "marcação de uma sessão anterior.",
+                    "mark from an earlier session.",
+                )
+            } else {
+                lang.pick(
+                    "marcações de uma sessão anterior.",
+                    "marks from an earlier session.",
+                )
+            };
+            (
+                lang.pick(
+                    "Marcações recuperáveis encontradas.",
+                    "Recoverable annotations found.",
+                ),
+                format!("{count} {noun}"),
+                true,
+            )
+        }
+        RecoveryState::Incompativel(_) => (
+            lang.pick(
+                "Marcações de uma versão anterior.",
+                "Marks from an earlier version.",
+            ),
+            lang.pick(
+                "O arquivo mudou desde essas marcações. Nada foi aplicado.",
+                "The file changed since those marks. Nothing was applied.",
+            )
+            .to_string(),
+            false,
+        ),
+        _ => return Space::new(Length::Shrink, Length::Shrink).into(),
+    };
+    // Diário de outro caminho com o mesmo conteúdo: mostra de onde veio.
+    let origin = match &ready.recovery {
+        RecoveryState::Disponivel(offers) | RecoveryState::Incompativel(offers) => offers
+            .first()
+            .filter(|offer| offer.checkpoint.path.as_path() != ready.source.path())
+            .map(|offer| {
+                format!(
+                    "{} {}",
+                    lang.pick("Origem:", "From:"),
+                    offer.checkpoint.path.display()
+                )
+            }),
+        _ => None,
+    };
+    let mut body = column![text(title).size(16), text(detail).size(13)].spacing(12);
+    if let Some(origin) = origin {
+        body = body.push(text(origin).size(12).color(t.muted));
+    }
+    if ready.discard_ask {
+        body = body.push(
+            text(lang.pick(
+                "Descartar essas marcações? Não dá para desfazer.",
+                "Discard these marks? This cannot be undone.",
+            ))
+            .size(13),
+        );
+    }
+    let mut buttons = row![Space::with_width(Length::Fill)]
+        .spacing(8)
+        .align_y(Alignment::Center);
+    if ready.discard_ask {
+        buttons = buttons
+            .push(
+                button(text(lang.pick("Cancelar", "Cancel")).size(13))
+                    .padding(Padding::from([8, 12]))
+                    .style(kiri::hud_ghost_style(t))
+                    .on_press(Message::RecoveryDiscardAsk(false)),
+            )
+            .push(
+                button(text(lang.pick("Descartar", "Discard")).size(13))
+                    .padding(Padding::from([8, 12]))
+                    .style(kiri::hud_primary_style(t))
+                    .on_press(Message::RecoveryDiscardConfirm),
+            );
+    } else {
+        buttons = buttons.push(
+            button(text(lang.pick("Decidir depois", "Decide later")).size(13))
+                .padding(Padding::from([8, 12]))
+                .style(kiri::hud_ghost_style(t))
+                .on_press(Message::RecoveryLater),
+        );
+        buttons = buttons.push(
+            button(text(lang.pick("Descartar", "Discard")).size(13))
+                .padding(Padding::from([8, 12]))
+                .style(kiri::hud_ghost_style(t))
+                .on_press(Message::RecoveryDiscardAsk(true)),
+        );
+        if restorable {
+            buttons = buttons.push(
+                button(text(lang.pick("Restaurar", "Restore")).size(13))
+                    .padding(Padding::from([8, 12]))
+                    .style(kiri::hud_primary_style(t))
+                    .on_press(Message::RecoveryRestore),
+            );
+        }
+    }
+    container(body.push(buttons))
+        .width(Length::Fixed(440.0))
+        .padding(16)
+        .style(kiri::menu_style(t))
+        .into()
+}
+
+/// Falha de gravação do diário: aviso na faixa do documento, memória intacta.
+fn recovery_failed_row(t: Tokens) -> Element<'static, Message> {
+    text(t.lang.pick(
+        "Não foi possível guardar a recuperação.",
+        "Recovery could not be saved.",
+    ))
+    .size(13)
+    .color(t.danger)
+    .into()
+}
+
+/// Configurações → Recuperação: esquecer diários sem dono. Pede confirmação,
+/// porque apaga marcações não salvas que ainda não voltaram.
+fn forget_recovery_block(settings: &SettingsPanel, t: Tokens) -> Element<'static, Message> {
+    let mut block = column![].spacing(8);
+    if settings.forget_ask {
+        block = block
+            .push(
+                text(t.lang.pick(
+                    "Apaga os diários sem sessão aberta. As marcações não salvas neles somem.",
+                    "Deletes journals with no open session. Their unsaved marks are lost.",
+                ))
+                .size(12)
+                .color(t.muted),
+            )
+            .push(
+                row![
+                    button(text(t.lang.pick("Cancelar", "Cancel")).size(13))
+                        .padding(Padding::from([8, 12]))
+                        .style(kiri::hud_ghost_style(t))
+                        .on_press(Message::ForgetRecoveryAsk(false)),
+                    button(text(t.lang.pick("Esquecer", "Forget")).size(13))
+                        .padding(Padding::from([8, 12]))
+                        .style(kiri::hud_primary_style(t))
+                        .on_press(Message::ForgetRecoveryConfirm),
+                ]
+                .spacing(8),
+            );
+    } else {
+        block = block.push(
+            button(
+                text(t.lang.pick(
+                    "Esquecer diários de recuperação…",
+                    "Forget recovery journals…",
+                ))
+                .size(13),
+            )
+            .padding(Padding::from([8, 12]))
+            .style(kiri::hud_ghost_style(t))
+            .on_press(Message::ForgetRecoveryAsk(true)),
+        );
+    }
+    if let Some(status) = &settings.forget_status {
+        block = block.push(text(status.clone()).size(12).color(t.muted));
+    }
+    block.into()
+}
+
 /// Aviso de documento assinado antes de salvar a cópia (⋯ → Salvar cópia):
 /// mesmo padrão do popover de nota — fundo escurece e cancela no clique,
 /// cartão engole o clique (`PrintNop` é no-op).
@@ -1811,6 +2009,8 @@ fn settings_card(settings: &SettingsPanel, t: Tokens) -> Element<'static, Messag
         }
     }
     body = body
+        .push(section_title(t.lang.pick("Recuperação", "Recovery"), t))
+        .push(forget_recovery_block(settings, t))
         .push(section_title(t.lang.pick("Idioma", "Language"), t))
         .push(
             row![
@@ -2529,24 +2729,51 @@ fn ready_body(tabs: &Tabs, t: Tokens) -> Element<'_, Message> {
     }
     // Status pós-ação ("Enviado para …", "Cópia salva em …", falha ao abrir
     // outra aba): 1 linha no topo. O aviso de disco é outra linha, com ação.
+    let restored = matches!(ready.recovery, RecoveryState::Restaurando).then(|| {
+        t.lang
+            .pick("Marcações restauradas.", "Annotations restored.")
+    });
     let status = ready
         .save_status
         .as_deref()
         .or(ready.print_status.as_deref())
-        .or(tabs.open_error());
-    let warn = ready.disk_stale().then(|| disk_stale_row(ready, t));
-    match (warn, status) {
-        (None, None) => panes.into(),
-        (Some(warn), None) => column![warn, panes].spacing(8).height(Length::Fill).into(),
-        (None, Some(status)) => column![text(status).size(13).color(t.muted), panes]
-            .spacing(8)
-            .height(Length::Fill)
-            .into(),
-        (Some(warn), Some(status)) => column![warn, text(status).size(13).color(t.muted), panes]
-            .spacing(8)
-            .height(Length::Fill)
-            .into(),
+        .or(tabs.open_error())
+        .or(restored);
+    let mut rows: Vec<Element<'_, Message>> = doc_warnings(ready)
+        .into_iter()
+        .map(|warning| match warning {
+            DocWarning::DiskStale => disk_stale_row(ready, t),
+            DocWarning::RecoveryFailed => recovery_failed_row(t),
+        })
+        .collect();
+    if let Some(status) = status {
+        rows.push(text(status).size(13).color(t.muted).into());
     }
+    if rows.is_empty() {
+        return panes.into();
+    }
+    rows.push(panes.into());
+    column(rows).spacing(8).height(Length::Fill).into()
+}
+
+/// Avisos da faixa do documento, na ordem em que aparecem.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum DocWarning {
+    DiskStale,
+    RecoveryFailed,
+}
+
+/// Avisos do documento. Disco e recuperação são independentes: cada um aparece
+/// sozinho ou junto.
+pub(crate) fn doc_warnings(ready: &Ready) -> Vec<DocWarning> {
+    let mut warnings = Vec::new();
+    if ready.disk_stale() {
+        warnings.push(DocWarning::DiskStale);
+    }
+    if ready.journal_failed {
+        warnings.push(DocWarning::RecoveryFailed);
+    }
+    warnings
 }
 
 fn disk_stale_row(ready: &Ready, t: Tokens) -> Element<'static, Message> {
@@ -2633,21 +2860,19 @@ fn short_name(path: &std::path::Path) -> String {
     middle_truncate(&name, 24)
 }
 
-/// Painel de navegação (Stitch sidebar): cabeçalho `Navegação`, abas segmentadas
-/// Miniaturas | Sumário e lista virtualizada (miniaturas ou sumário).
+/// Painel de navegação (Stitch sidebar): cabeçalho `Navegação`, controle
+/// segmentado Páginas | Sumário | Marcações e a lista da aba escolhida.
 fn pages_panel(ready: &Ready, t: Tokens) -> Element<'_, Message> {
     let mut col = column![text(t.lang.pick("Navegação", "Navigation"))
         .size(13)
         .color(t.ink)]
     .spacing(8);
-    if ready.outline.is_some() {
-        col = col.push(panel_tabs(ready, t));
-    }
-    if ready.outline.is_some() && ready.outline_open {
-        col = col.push(outline_tab(ready, t));
-    } else {
-        col = col.push(thumbs_tab(ready, t));
-    }
+    col = col.push(panel_tabs(ready, t));
+    col = match ready.panel {
+        Some(PanelTab::Outline) if ready.outline.is_some() => col.push(outline_tab(ready, t)),
+        Some(PanelTab::Annotations) => col.push(annotations_tab(ready, t)),
+        _ => col.push(thumbs_tab(ready, t)),
+    };
     container(col.width(Length::Fill).height(Length::Fill))
         .width(Length::Fixed(PAGES_PANEL_W))
         .height(Length::Fill)
@@ -2656,11 +2881,14 @@ fn pages_panel(ready: &Ready, t: Tokens) -> Element<'_, Message> {
         .into()
 }
 
-/// Controle segmentado Páginas | Sumário (só quando o PDF tem outline).
+/// Controle segmentado do painel. Sumário só aparece com outline no PDF;
+/// Marcações existe sempre, inclusive sem sumário.
 fn panel_tabs(ready: &Ready, t: Tokens) -> Element<'_, Message> {
-    // Rótulo curto e sem quebra: no painel de 156px "Miniaturas" partia em
-    // duas linhas. "Páginas" é o mesmo nome do botão que abre o painel.
-    let seg = |label: &'static str, active: bool, msg: Message| {
+    // Três abas em partes iguais cortavam "Marcações"/"Annotations" (~45px de
+    // texto por aba). Cada aba recebe partes pelo tamanho do rótulo: no painel
+    // de 216px sobram 200px úteis, ~8,7px por caractere (23 caracteres por
+    // conjunto de rótulos, PT e EN).
+    let seg = |label: &'static str, active: bool, tab: Option<PanelTab>| {
         button(
             text(label)
                 .size(12)
@@ -2668,27 +2896,34 @@ fn panel_tabs(ready: &Ready, t: Tokens) -> Element<'_, Message> {
                 .width(Length::Fill)
                 .align_x(Alignment::Center),
         )
-        .width(Length::Fill)
-        .padding(Padding::from([5, 8]))
+        .width(Length::FillPortion(label.chars().count() as u16))
+        .padding(Padding::from([5, 4]))
         .style(kiri::panel_seg_style(t, active))
-        .on_press(msg)
+        .on_press(Message::SetPanelTab(tab))
     };
-    container(row![
-        seg(
-            t.lang.pick("Páginas", "Pages"),
-            !ready.outline_open,
-            Message::OutlineTab(false)
-        ),
-        seg(
+    let mut tabs = row![seg(
+        t.lang.pick("Páginas", "Pages"),
+        ready.panel.is_none(),
+        None
+    )];
+    if ready.outline.is_some() {
+        tabs = tabs.push(seg(
             t.lang.pick("Sumário", "Outline"),
-            ready.outline_open,
-            Message::OutlineTab(true)
-        ),
-    ])
-    .padding(Padding::from(2))
-    .style(kiri::panel_seg_track_style(t))
-    .into()
+            ready.panel == Some(PanelTab::Outline),
+            Some(PanelTab::Outline),
+        ));
+    }
+    tabs = tabs.push(seg(
+        t.lang.pick("Marcações", "Annotations"),
+        ready.panel == Some(PanelTab::Annotations),
+        Some(PanelTab::Annotations),
+    ));
+    container(tabs)
+        .padding(Padding::from(2))
+        .style(kiri::panel_seg_track_style(t))
+        .into()
 }
+
 /// Aba Sumário: árvore clicável com expandir/colapsar (body-md + indent) e
 /// destaque da ativa.
 fn outline_tab(ready: &Ready, t: Tokens) -> Element<'_, Message> {
@@ -2755,6 +2990,134 @@ fn outline_title(title: &str) -> String {
         format!("{}…", &one_line[..end])
     } else {
         one_line
+    }
+}
+
+/// Largura útil de uma linha da lista de marcações, em caracteres (painel de
+/// 200px, texto 12). Linha de altura fixa: texto que quebra estouraria o
+/// cálculo de rolagem do cursor.
+const ANNOT_ROW_CHARS: usize = 30;
+
+/// Aba Marcações: as marcações desta sessão como linhas (página, tipo, trecho,
+/// nota), com busca por trecho e nota. Sem marcações, diz como criar uma; não
+/// promete anotações externas, que a v1 não importa.
+fn annotations_tab(ready: &Ready, t: Tokens) -> Element<'_, Message> {
+    let search = text_input(
+        t.lang
+            .pick("Buscar em trechos e notas", "Search excerpts and notes"),
+        ready.annot_query(),
+    )
+    .on_input(Message::AnnotQuery)
+    // iced captura o Enter num text_input focado: sem isto, ↓ + Enter não salta.
+    .on_submit(Message::PanelKey(PanelKey::Activate))
+    .style(kiri::bar_input_style(t))
+    .padding([6, 8])
+    .size(12)
+    .width(Length::Fill);
+    let mut col = column![
+        text(
+            t.lang
+                .pick("Marcações desta sessão", "Marks from this session")
+        )
+        .size(11)
+        .color(t.muted),
+        search,
+    ]
+    .spacing(8);
+    if ready.annotations.is_empty() {
+        col = col.push(
+            text(t.lang.pick(
+                "Nenhuma marcação nesta sessão. Selecione um texto e use H, U, S ou N.",
+                "No marks in this session. Select text and press H, U, S or N.",
+            ))
+            .size(12)
+            .color(t.muted),
+        );
+    } else {
+        let rows = ready.annotation_rows();
+        if rows.is_empty() {
+            col = col.push(
+                text(t.lang.pick(
+                    "Nenhum resultado para a busca.",
+                    "No results for this search.",
+                ))
+                .size(12)
+                .color(t.muted),
+            );
+        } else {
+            let focus = ready.annot_focus();
+            let mut list = column![].spacing(2);
+            for row in &rows {
+                list = list.push(annotation_row(t, row, focus == Some(row.id)));
+            }
+            col = col.push(
+                scrollable(list)
+                    .id(annotations_scroll_id())
+                    .width(Length::Fill)
+                    .height(Length::Fill),
+            );
+        }
+    }
+    col.width(Length::Fill).height(Length::Fill).into()
+}
+
+/// Uma linha da lista: página e tipo, trecho e nota, cada um numa linha de
+/// texto. Altura fixa (`ANNOT_ROW`), que a rolagem do cursor conta.
+fn annotation_row(t: Tokens, row: &AnnotationRow, focus: bool) -> Element<'static, Message> {
+    let excerpt: String = match &row.excerpt {
+        Some(excerpt) => clip_one_line(excerpt, ANNOT_ROW_CHARS),
+        None => t
+            .lang
+            .pick("trecho indisponível", "excerpt unavailable")
+            .into(),
+    };
+    let mut lines = column![
+        text(format!(
+            "{} · {}",
+            annot_kind_label(row.kind, t.lang),
+            row.page.index() + 1
+        ))
+        .size(12)
+        .color(if focus { t.accent } else { t.muted })
+        .wrapping(text::Wrapping::None),
+        text(excerpt)
+            .size(12)
+            .color(t.ink)
+            .wrapping(text::Wrapping::None),
+    ]
+    .width(Length::Fill);
+    if let Some(note) = &row.note {
+        lines = lines.push(
+            text(clip_one_line(note, ANNOT_ROW_CHARS))
+                .size(12)
+                .color(t.muted)
+                .wrapping(text::Wrapping::None),
+        );
+    }
+    button(lines)
+        .width(Length::Fill)
+        .height(Length::Fixed(ANNOT_ROW - 2.0))
+        .padding(Padding::from([4, 6]))
+        .style(kiri::panel_toc_item_style(t, focus))
+        .on_press(Message::AnnotActivate(row.id))
+        .into()
+}
+
+fn annot_kind_label(kind: AnnotKind, lang: Lang) -> &'static str {
+    match kind {
+        AnnotKind::Highlight => lang.pick("Destaque", "Highlight"),
+        AnnotKind::Underline => lang.pick("Sublinhado", "Underline"),
+        AnnotKind::Strikeout => lang.pick("Riscado", "Strikeout"),
+        AnnotKind::Note => lang.pick("Nota", "Note"),
+    }
+}
+
+/// Uma linha, no máximo `max` caracteres, com "…" quando corta.
+fn clip_one_line(text: &str, max: usize) -> String {
+    let one_line = text.split_whitespace().collect::<Vec<_>>().join(" ");
+    match one_line.char_indices().nth(max) {
+        Some((end, _)) => format!("{}…", &one_line[..end]),
+        None => one_line,
     }
 }
 fn thumbs_tab(ready: &Ready, t: Tokens) -> Element<'_, Message> {
@@ -2887,7 +3250,13 @@ fn single_pane(ready: &Ready, t: Tokens) -> Element<'_, Message> {
     })
     // A rolagem do modo página também entra no estado: o post-it aberto segue
     // a folha (a âncora é janela, a rolagem é o delta).
-    .on_scroll(|viewport| Message::DocScrolled(viewport.absolute_offset().y))
+    .on_scroll(|viewport| {
+        let offset = viewport.absolute_offset();
+        Message::DocScrolled {
+            x: offset.x,
+            y: offset.y,
+        }
+    })
     .width(Length::Fill)
     .height(Length::Fill)
     .into()
@@ -2920,7 +3289,13 @@ fn continuous_pane(ready: &Ready, t: Tokens) -> Element<'_, Message> {
             vertical: scrollable::Scrollbar::default(),
             horizontal: scrollable::Scrollbar::default(),
         })
-        .on_scroll(|viewport| Message::DocScrolled(viewport.absolute_offset().y))
+        .on_scroll(|viewport| {
+            let offset = viewport.absolute_offset();
+            Message::DocScrolled {
+                x: offset.x,
+                y: offset.y,
+            }
+        })
         .width(Length::Fill)
         .height(Length::Fill)
         .into()
