@@ -29,14 +29,20 @@ use crate::session::{
 };
 
 /// Altura da faixa de ferramentas (spec §5, caso expandido): título nativo
-/// da plataforma acima e a nossa faixa de 44 abaixo.
-pub const BAR_HEIGHT: f32 = 44.0;
+/// da plataforma acima e a nossa faixa abaixo do controle (44 no macOS).
+pub fn bar_height() -> f32 {
+    kiri::Metrics::current().bar_height()
+}
 
-/// Altura do chrome Kiri: toolbar 44px + progresso 2px + respiro 8px.
-pub const CHROME_HEIGHT: f32 = BAR_HEIGHT + 10.0;
+/// Altura do chrome Kiri: toolbar + progresso + respiro de 4 em cima e embaixo.
+pub fn chrome_height() -> f32 {
+    bar_height() + kiri::PROGRESS_HEIGHT + 8.0
+}
 
 /// Altura da faixa de abas (issue #40), reservada só com 2+ documentos.
-pub const TAB_STRIP_HEIGHT: f32 = 26.0;
+pub fn tab_strip_height() -> f32 {
+    kiri::Metrics::current().tab_strip_height()
+}
 
 /// Papel do post-it (issue #30): amarelo fixo, como o marcador nota do
 /// canvas — papel não segue o tema e a tinta escura lê nos dois.
@@ -323,11 +329,11 @@ fn control_active(
         .style(control_style(t, active))
 }
 
-/// Ícone dos botões da barra: 16px + padding 6 = os 28px do alvo (spec §5).
-const BAR_ICON: f32 = 16.0;
-/// Ícone dos segmentos (◀▶, −/+, marcar, HUD): 16px + padding 4 = 24px, a
-/// altura de conteúdo do controle segmentado (spec §5).
-const SEG_ICON: f32 = 16.0;
+/// Ícone dos botões da barra: o alvo do botão menos 12 de padding (16 no
+/// macOS). Os segmentos usam o mesmo tamanho: 24 de conteúdo, 16 de ícone.
+fn bar_icon() -> f32 {
+    kiri::Metrics::current().icon()
+}
 
 /// Botão-ícone 28×28 da barra (casa, abrir, painéis, ⋯).
 fn bar_button(
@@ -335,22 +341,23 @@ fn bar_button(
     file: &str,
     active: bool,
 ) -> iced::widget::button::Button<'static, Message> {
-    button(kiri::ori_icon(file, BAR_ICON))
+    button(kiri::ori_icon(file, bar_icon()))
         .padding(6)
         .style(kiri::bar_btn_style(t, active))
 }
 
 fn seg_icon(file: &str) -> Element<'static, Message> {
-    kiri::ori_icon(file, SEG_ICON)
+    kiri::ori_icon(file, bar_icon())
 }
 
-/// Botão-ícone 24px de altura para dentro de segmentos (`kiri::seg_style` +
-/// padding 2 = 28px, a mesma altura dos botões da barra).
+/// Botão-ícone dentro de segmentos: o conteúdo do controle (24 no macOS)
+/// menos o que o ícone já ocupa, metade de cada lado.
 fn control_seg(
     t: Tokens,
     btn: iced::widget::button::Button<'_, Message>,
 ) -> iced::widget::button::Button<'_, Message> {
-    btn.padding(Padding::from([4, 4]))
+    let pad = (kiri::Metrics::current().control - bar_icon()) / 2.0;
+    btn.padding(Padding::from([pad, pad]))
         .style(kiri::bar_btn_style(t, false))
 }
 
@@ -462,11 +469,11 @@ fn settings_button(t: Tokens, open: bool) -> Element<'static, Message> {
     )
 }
 
-/// Moldura da toolbar Kiri: `BAR_HEIGHT`, fundo `chrome`, respiro horizontal 8px.
+/// Moldura da toolbar Kiri: `bar_height()`, fundo `chrome`, respiro horizontal 8px.
 fn toolbar_frame(t: Tokens, content: Element<'_, Message>) -> Element<'_, Message> {
     container(content)
         .width(Length::Fill)
-        .height(Length::Fixed(BAR_HEIGHT))
+        .height(Length::Fixed(bar_height()))
         .padding(Padding::from([0, 8]))
         .style(move |_| container::Style {
             background: Some(Background::Color(t.chrome)),
@@ -896,12 +903,11 @@ fn overflow_layer(tabs: &Tabs, t: Tokens) -> Element<'_, Message> {
             background: Some(Background::Color(kiri::scrim())),
             ..container::Style::default()
         });
-    // Com 2+ abas a faixa soma TAB_STRIP_HEIGHT à topbar
-    // (`CHROME_HEIGHT` menos o progresso e o respiro).
+    // Abaixo da barra e do progresso, com a faixa de abas somada quando existe.
     let top = if tabs.len() > 1 {
-        CHROME_HEIGHT - 2.0 + TAB_STRIP_HEIGHT
+        chrome_height() - 4.0 + tab_strip_height()
     } else {
-        CHROME_HEIGHT - 2.0
+        chrome_height() - 4.0
     };
     let card = container(overflow_menu(tabs, tabs.settings.theme_pref, t))
         .width(Length::Fill)
@@ -2379,7 +2385,7 @@ fn menu_lang_button(
     .into()
 }
 
-/// Progresso Kiri: 6px, fill `accent` proporcional à página visível.
+/// Progresso Kiri: `PROGRESS_HEIGHT`, fill `accent` proporcional à página visível.
 fn progress(ready: &Ready, t: Tokens) -> Element<'static, Message> {
     let n = ready.page_count().max(1);
     let done = (ready.visible.index() + 1).min(n);
@@ -2387,7 +2393,7 @@ fn progress(ready: &Ready, t: Tokens) -> Element<'static, Message> {
     let filled = ((done * 1000) / n).clamp(1, 1000) as u16;
     let mut bar = row![container(Space::with_width(Length::Fill))
         .width(Length::FillPortion(filled))
-        .height(Length::Fixed(6.0))
+        .height(Length::Fixed(kiri::PROGRESS_HEIGHT))
         .style(move |_| container::Style {
             background: Some(Background::Color(t.accent)),
             ..container::Style::default()
@@ -2401,7 +2407,7 @@ fn progress(ready: &Ready, t: Tokens) -> Element<'static, Message> {
     }
     container(bar)
         .width(Length::Fill)
-        .height(Length::Fixed(6.0))
+        .height(Length::Fixed(kiri::PROGRESS_HEIGHT))
         .style(move |_| container::Style {
             background: Some(Background::Color(t.surface)),
             ..container::Style::default()
@@ -2893,7 +2899,7 @@ fn tab_strip(tabs: &Tabs, t: Tokens) -> Element<'_, Message> {
     }
     container(strip)
         .width(Length::Fill)
-        .height(Length::Fixed(TAB_STRIP_HEIGHT))
+        .height(Length::Fixed(tab_strip_height()))
         .padding(Padding::from([0, 8]))
         .style(move |_| container::Style {
             background: Some(Background::Color(t.chrome)),

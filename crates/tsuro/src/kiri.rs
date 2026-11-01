@@ -396,6 +396,85 @@ macro_rules! ori_small {
     };
 }
 
+/// Plataforma do build (spec §8). A estrutura (zonas, hierarquia, escala
+/// relativa) é uma só; mudam a altura dos controles. A fonte não entra: Inter
+/// vale nas três (decisão D-1).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Platform {
+    MacOs,
+    Windows,
+    Linux,
+}
+
+/// Plataforma deste build.
+pub const fn platform() -> Platform {
+    if cfg!(target_os = "macos") {
+        Platform::MacOs
+    } else if cfg!(target_os = "windows") {
+        Platform::Windows
+    } else {
+        Platform::Linux
+    }
+}
+
+/// Alturas do chrome por plataforma (spec §8). Os raios por plataforma ficam
+/// no `radius` global: a tabela do spec é `[INF]` e o desvio é de 2 px. O
+/// modificador dos atalhos não entra aqui: `session::shortcut_hint` já escolhe
+/// Cmd/Ctrl e permanece texto ASCII — o render do iced 0.13 deturpa ⌘ e ⇧.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct Metrics {
+    pub platform: Platform,
+    /// Conteúdo de um controle (segmento, linha de aba): 24/32/34.
+    pub control: f32,
+    /// Alvo clicável do botão de barra: 28/32/34.
+    pub button: f32,
+}
+
+impl Metrics {
+    pub const fn for_platform(platform: Platform) -> Self {
+        match platform {
+            Platform::MacOs => Self {
+                platform,
+                control: 24.0,
+                button: 28.0,
+            },
+            Platform::Windows => Self {
+                platform,
+                control: 32.0,
+                button: 32.0,
+            },
+            Platform::Linux => Self {
+                platform,
+                control: 34.0,
+                button: 34.0,
+            },
+        }
+    }
+
+    /// Métricas da plataforma em que este binário roda.
+    pub fn current() -> Self {
+        Self::for_platform(platform())
+    }
+
+    /// Faixa de ferramentas: o botão mais 16 de respiro (28 → 44 no macOS).
+    pub fn bar_height(self) -> f32 {
+        self.button + 16.0
+    }
+
+    /// Faixa de abas: o controle mais 2 (24 → 26 no macOS).
+    pub fn tab_strip_height(self) -> f32 {
+        self.control + 2.0
+    }
+
+    /// Ícone de barra ou segmento: o alvo menos 12 (28 → 16 no macOS).
+    pub fn icon(self) -> f32 {
+        self.button - 12.0
+    }
+}
+
+/// Altura da barra de progresso entre a toolbar e o conteúdo.
+pub const PROGRESS_HEIGHT: f32 = 6.0;
+
 #[allow(unused_imports)]
 pub(crate) use ori;
 #[allow(unused_imports)]
@@ -1132,6 +1211,39 @@ pub fn panel_card_style(tokens: Tokens) -> impl Fn(&iced::Theme) -> container::S
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn platform_metrics_follow_the_spec_table() {
+        let mac = Metrics::for_platform(Platform::MacOs);
+        assert_eq!((mac.control, mac.button), (24.0, 28.0));
+        assert_eq!((mac.bar_height(), mac.tab_strip_height()), (44.0, 26.0));
+        assert_eq!(mac.icon(), 16.0);
+
+        let win = Metrics::for_platform(Platform::Windows);
+        assert_eq!((win.control, win.button), (32.0, 32.0));
+        assert_eq!((win.bar_height(), win.tab_strip_height()), (48.0, 34.0));
+
+        let linux = Metrics::for_platform(Platform::Linux);
+        assert_eq!((linux.control, linux.button), (34.0, 34.0));
+        assert_eq!((linux.bar_height(), linux.tab_strip_height()), (50.0, 36.0));
+    }
+
+    /// O controle nunca é menor que o ícone: o padding do segmento sai da
+    /// diferença, e um valor negativo derrubaria o layout.
+    #[test]
+    fn every_platform_fits_its_icon() {
+        for platform in [Platform::MacOs, Platform::Windows, Platform::Linux] {
+            let m = Metrics::for_platform(platform);
+            assert!(m.icon() >= 16.0, "{platform:?} icon {}", m.icon());
+            assert!(m.control >= m.icon(), "{platform:?}");
+            assert!(m.button >= m.control, "{platform:?}");
+        }
+    }
+
+    #[test]
+    fn current_metrics_match_the_build_platform() {
+        assert_eq!(Metrics::current().platform, platform());
+    }
 
     #[test]
     fn dark_is_default_and_page_is_white() {

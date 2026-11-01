@@ -1538,7 +1538,7 @@ enum CloseTarget {
 /// hoje fica idêntica) e `view::TAB_STRIP_HEIGHT` com duas ou mais.
 fn strip_height(count: usize) -> f32 {
     if count > 1 {
-        crate::view::TAB_STRIP_HEIGHT
+        crate::view::tab_strip_height()
     } else {
         0.0
     }
@@ -5502,7 +5502,7 @@ fn window_event(event: Event, status: event::Status, id: window::Id) -> Option<M
             width: size.width,
             // A faixa de abas encolhe o painel; quem desconta é
             // `WindowMetrics` (a altura da faixa é estado, não evento).
-            height: (size.height - crate::view::CHROME_HEIGHT).max(1.0),
+            height: (size.height - crate::view::chrome_height()).max(1.0),
             id,
         }),
         Event::Keyboard(keyboard::Event::KeyPressed { key, modifiers, .. }) => {
