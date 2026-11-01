@@ -1,16 +1,27 @@
-//! Preferências do Tsuro (`theme=dark|light`, `lang=pt|en`).
+//! Preferências do Tsuro (`theme=system|dark|light`, `lang=pt|en`).
 //!
 //! Mesmo padrão de `recents_file()` em `browse.rs`: `TSURO_PREFS` vence,
 //! depois macOS `~/Library/Application Support/Tsuro/prefs`, `$XDG_DATA_HOME`,
 //! `~/.local/share`, por fim o temp dir. Leitura cega: qualquer erro → padrão.
 //! Arquivo antigo só com `theme=` continua válido (`lang` cai para PT).
+//! `theme` ausente ou inválido cai em `system` (o padrão), não mais em `dark`.
 
 #[cfg(test)]
 use std::cell::RefCell;
 use std::path::PathBuf;
 
 use crate::i18n::Lang;
-use crate::kiri::Theme;
+
+/// Preferência de tema da janela: `System` segue a aparência do SO (padrão);
+/// `Dark`/`Light` fixam. O `kiri::Theme` renderizado sai da resolução desta
+/// preferência (`session::resolve_theme`).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum ThemePref {
+    #[default]
+    System,
+    Dark,
+    Light,
+}
 
 #[cfg(test)]
 thread_local! {
@@ -52,20 +63,21 @@ pub fn prefs_file() -> PathBuf {
     std::env::temp_dir().join("tsuro-prefs")
 }
 
-pub fn read_theme() -> Theme {
+pub fn read_theme_pref() -> ThemePref {
     pairs()
         .into_iter()
         .find(|(k, _)| k == "theme")
         .map(|(_, v)| v)
         .map(|v| match v.as_str() {
-            "light" => Theme::Light,
-            _ => Theme::default(),
+            "dark" => ThemePref::Dark,
+            "light" => ThemePref::Light,
+            _ => ThemePref::System,
         })
         .unwrap_or_default()
 }
 
-pub fn save_theme(theme: Theme) -> std::io::Result<()> {
-    write_prefs(theme, read_lang())
+pub fn save_theme_pref(pref: ThemePref) -> std::io::Result<()> {
+    write_prefs(pref, read_lang())
 }
 
 pub fn read_lang() -> Lang {
@@ -81,7 +93,7 @@ pub fn read_lang() -> Lang {
 }
 
 pub fn save_lang(lang: Lang) -> std::io::Result<()> {
-    write_prefs(read_theme(), lang)
+    write_prefs(read_theme_pref(), lang)
 }
 
 fn pairs() -> Vec<(String, String)> {
@@ -96,14 +108,15 @@ fn pairs() -> Vec<(String, String)> {
         .collect()
 }
 
-fn write_prefs(theme: Theme, lang: Lang) -> std::io::Result<()> {
+fn write_prefs(pref: ThemePref, lang: Lang) -> std::io::Result<()> {
     let file = prefs_file();
     if let Some(parent) = file.parent() {
         std::fs::create_dir_all(parent)?;
     }
-    let theme = match theme {
-        Theme::Dark => "dark",
-        Theme::Light => "light",
+    let theme = match pref {
+        ThemePref::System => "system",
+        ThemePref::Dark => "dark",
+        ThemePref::Light => "light",
     };
     let lang = match lang {
         Lang::Pt => "pt",
@@ -128,41 +141,41 @@ mod tests {
     }
 
     #[test]
-    fn missing_or_garbage_prefs_read_dark() {
+    fn missing_or_garbage_prefs_read_system() {
         let path = temp_prefs("missing");
         let _ = std::fs::remove_file(&path);
         with_prefs_path(path.clone(), || {
-            assert_eq!(read_theme(), Theme::Dark);
+            assert_eq!(read_theme_pref(), ThemePref::System);
             std::fs::write(&path, "theme=banana\n").unwrap();
-            assert_eq!(read_theme(), Theme::Dark);
+            assert_eq!(read_theme_pref(), ThemePref::System);
         });
         let _ = std::fs::remove_file(&path);
     }
 
     #[test]
-    fn theme_roundtrips_through_file() {
-        let path = temp_prefs("roundtrip");
-        with_prefs_path(path.clone(), || {
-            save_theme(Theme::Light).unwrap();
-            assert_eq!(read_theme(), Theme::Light);
-            save_theme(Theme::Dark).unwrap();
-            assert_eq!(read_theme(), Theme::Dark);
-        });
-        let _ = std::fs::remove_file(&path);
+    fn theme_pref_roundtrips_through_file() {
+        for pref in [ThemePref::System, ThemePref::Dark, ThemePref::Light] {
+            let path = temp_prefs("roundtrip");
+            with_prefs_path(path.clone(), || {
+                save_theme_pref(pref).unwrap();
+                assert_eq!(read_theme_pref(), pref);
+            });
+            let _ = std::fs::remove_file(&path);
+        }
     }
 
     #[test]
-    fn lang_roundtrips_and_preserves_theme() {
+    fn lang_roundtrips_and_preserves_theme_pref() {
         let path = temp_prefs("lang");
         with_prefs_path(path.clone(), || {
             assert_eq!(read_lang(), Lang::Pt);
-            save_theme(Theme::Light).unwrap();
+            save_theme_pref(ThemePref::Light).unwrap();
             save_lang(Lang::En).unwrap();
             assert_eq!(read_lang(), Lang::En);
-            assert_eq!(read_theme(), Theme::Light);
-            save_theme(Theme::Dark).unwrap();
+            assert_eq!(read_theme_pref(), ThemePref::Light);
+            save_theme_pref(ThemePref::Dark).unwrap();
             assert_eq!(read_lang(), Lang::En);
-            assert_eq!(read_theme(), Theme::Dark);
+            assert_eq!(read_theme_pref(), ThemePref::Dark);
         });
         let _ = std::fs::remove_file(&path);
     }
@@ -172,7 +185,7 @@ mod tests {
         let path = temp_prefs("legacy");
         with_prefs_path(path.clone(), || {
             std::fs::write(&path, "theme=light\n").unwrap();
-            assert_eq!(read_theme(), Theme::Light);
+            assert_eq!(read_theme_pref(), ThemePref::Light);
             assert_eq!(read_lang(), Lang::Pt);
         });
         let _ = std::fs::remove_file(&path);

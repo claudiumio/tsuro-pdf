@@ -1,6 +1,6 @@
 use std::collections::{HashMap, HashSet};
 use std::path::PathBuf;
-use std::sync::Arc;
+use std::sync::{Arc, LazyLock};
 
 use iced::clipboard;
 use iced::event::{self, Event};
@@ -17,7 +17,7 @@ use crate::browse::{
 };
 use crate::engine::PdfiumEngine;
 use crate::i18n::Lang;
-use crate::kiri::Theme;
+use crate::kiri::{Theme, Tokens};
 use crate::page::{
     Bitmap, EngineError, Glyph, MediaBox, Outline, OutlineItem, PageEngine, PageNo, PageSurface,
     Quad, Scale, TextLayer, Viewport,
@@ -25,7 +25,7 @@ use crate::page::{
 use crate::positions::{
     file_identity, find_position, read_positions, record_position, save_positions, DocPosition,
 };
-use crate::prefs::{read_lang, read_theme, save_lang, save_theme};
+use crate::prefs::{read_lang, read_theme_pref, save_lang, save_theme_pref, ThemePref};
 use crate::print::{
     print_selection_pdf, write_and_open_print_pdf, PrintOrientation, PrintRange, PrintSelection,
     MAX_COPIES,
@@ -1844,6 +1844,9 @@ pub struct SettingsPanel {
     pub update: UpdateState,
     #[cfg(target_os = "macos")]
     pub(crate) permissions: PermissionsState,
+    /// Theme preference (System/Dark/Light) chosen in Settings; the `theme`
+    /// fields across the session states carry its resolution.
+    pub(crate) theme_pref: ThemePref,
     /// Configurações → Recuperação: "Esquecer diários" pede confirmação antes.
     pub(crate) forget_ask: bool,
     /// Resultado do último "Esquecer diários de recuperação".
@@ -2745,7 +2748,9 @@ pub enum Message {
         saved: Vec<Annotation>,
         result: Result<(), String>,
     },
-    SetTheme(Theme),
+    /// Theme preference (System follows the OS appearance, Dark/Light pin it);
+    /// resolved to the rendered `kiri::Theme` by `resolve_theme`.
+    SetTheme(ThemePref),
     SetLang(Lang),
     /// Janela informou tamanho + identidade: ajusta viewport e reconsulta o DPR.
     WindowMetrics {
@@ -2806,24 +2811,33 @@ impl OpenError {
 
 impl Session {
     pub fn empty() -> Self {
+        let (pref, theme) = boot_theme();
         Session::Empty(EmptyState {
-            theme: read_theme(),
+            theme,
             lang: read_lang(),
             render_scale: 1.0,
+            settings: SettingsPanel {
+                theme_pref: pref,
+                ..SettingsPanel::default()
+            },
             ..EmptyState::default()
         })
     }
 
     pub fn open_path(path: PathBuf) -> Self {
+        let (pref, theme) = boot_theme();
         Session::Loading {
             source: OpenSource::Path(path),
             recents: read_recents(),
             gen: 1,
-            theme: read_theme(),
+            theme,
             lang: read_lang(),
             render_scale: 1.0,
             phase: 0,
-            settings: SettingsPanel::default(),
+            settings: SettingsPanel {
+                theme_pref: pref,
+                ..SettingsPanel::default()
+            },
         }
     }
 
@@ -4214,10 +4228,16 @@ impl Session {
                     Task::none()
                 }
             }
-            Message::SetTheme(theme) => {
-                self.set_theme(theme);
+            Message::SetTheme(pref) => {
+                self.settings_mut().theme_pref = pref;
+                let os_dark = if pref == ThemePref::System {
+                    query_os_dark()
+                } else {
+                    None
+                };
+                self.set_theme(resolve_theme(pref, os_dark));
                 self.close_overflow();
-                let _ = save_theme(theme);
+                let _ = save_theme_pref(pref);
                 Task::none()
             }
             Message::SetLang(lang) => {
@@ -5387,6 +5407,76 @@ impl Session {
         }
         Task::none()
     }
+}
+
+/// OS appearance, queried once per process: the boot path and every test
+/// binary pay for a single spawn (`LazyLock`, as in `engine.rs`).
+static OS_DARK: LazyLock<Option<bool>> = LazyLock::new(query_os_dark);
+
+/// Boot theme read: the preference from prefs (missing/invalid → System) and
+/// the resolved `kiri::Theme`. `System` consults the OS appearance once and
+/// caches it for the process lifetime.
+fn boot_theme() -> (ThemePref, Theme) {
+    let pref = read_theme_pref();
+    (pref, resolve_theme(pref, *OS_DARK))
+}
+
+/// Preference → rendered theme. `os_dark: None` (query unavailable or
+/// unsupported platform) falls back to Dark, the pre-System default.
+fn resolve_theme(pref: ThemePref, os_dark: Option<bool>) -> Theme {
+    match pref {
+        ThemePref::System => match os_dark {
+            Some(false) => Theme::Light,
+            _ => Theme::Dark,
+        },
+        ThemePref::Dark => Theme::Dark,
+        ThemePref::Light => Theme::Light,
+    }
+}
+
+/// GAP: iced 0.13 does not expose the OS theme. winit fires
+/// `WindowEvent::ThemeChanged`, but iced_winit's conversion drops it
+/// (`_ => None`) and iced has no query command, so `System` resolves at boot
+/// and on explicit selection; an OS appearance change while the app runs
+/// only takes effect after a restart. Surfacing the winit event through
+/// iced (or an AppKit appearance observer on macOS) would close it.
+#[cfg(target_os = "macos")]
+fn query_os_dark() -> Option<bool> {
+    // `AppleInterfaceStyle` exists only in dark mode; a non-zero exit (key
+    // unset) means light.
+    let out = std::process::Command::new("/usr/bin/defaults")
+        .args(["read", "-g", "AppleInterfaceStyle"])
+        .output()
+        .ok()?;
+    Some(out.status.success() && String::from_utf8_lossy(&out.stdout).trim() == "Dark")
+}
+
+/// `AppsUseLightTheme`: 0 = dark, 1 = light.
+#[cfg(target_os = "windows")]
+fn query_os_dark() -> Option<bool> {
+    let out = std::process::Command::new("reg")
+        .args([
+            "query",
+            r"HKCU\Software\Microsoft\Windows\CurrentVersion\Themes\Personalize",
+            "/v",
+            "AppsUseLightTheme",
+        ])
+        .output()
+        .ok()?;
+    let line = String::from_utf8_lossy(&out.stdout)
+        .lines()
+        .find(|line| line.contains("AppsUseLightTheme"))?;
+    match line.split_whitespace().last()? {
+        "0x0" => Some(true),
+        "0x1" => Some(false),
+        _ => None,
+    }
+}
+
+/// Platforms without a query (Linux today): `None` → Dark.
+#[cfg(not(any(target_os = "macos", target_os = "windows")))]
+fn query_os_dark() -> Option<bool> {
+    None
 }
 
 /// Eventos da janela e do teclado que viram mensagem (sem mouse).
@@ -9918,7 +10008,7 @@ mod tests {
             let ready = sample_ready().expect("settings regression requires fixture and Pdfium");
             let mut session = Session::Ready(Tabs::single(ready));
             apply(&mut session, Message::ToggleSettings);
-            apply(&mut session, Message::SetTheme(Theme::Light));
+            apply(&mut session, Message::SetTheme(ThemePref::Light));
             assert_eq!(active_ready(&session).theme, Theme::Light);
             assert!(session.settings().open);
             apply(&mut session, Message::RotateView);
@@ -13188,21 +13278,55 @@ mod tests {
     }
 
     #[test]
-    fn set_theme_updates_state_and_persists() {
+    fn set_theme_pref_updates_state_and_persists() {
         let prefs =
             std::env::temp_dir().join(format!("tsuro-prefs-unit-{}-theme", std::process::id()));
         crate::prefs::with_prefs_path(prefs.clone(), || {
             let _ = std::fs::remove_file(&prefs);
             let mut session = Session::empty();
-            assert_eq!(session.theme(), Theme::Dark);
-            apply(&mut session, Message::SetTheme(Theme::Light));
+            assert_eq!(session.settings().theme_pref, ThemePref::System);
+            apply(&mut session, Message::SetTheme(ThemePref::Light));
             assert_eq!(session.theme(), Theme::Light);
-            assert_eq!(crate::prefs::read_theme(), Theme::Light);
+            assert_eq!(session.settings().theme_pref, ThemePref::Light);
+            assert_eq!(crate::prefs::read_theme_pref(), ThemePref::Light);
             assert_eq!(Session::empty().theme(), Theme::Light);
-            apply(&mut session, Message::SetTheme(Theme::Dark));
-            assert_eq!(crate::prefs::read_theme(), Theme::Dark);
+            apply(&mut session, Message::SetTheme(ThemePref::Dark));
+            assert_eq!(session.theme(), Theme::Dark);
+            assert_eq!(crate::prefs::read_theme_pref(), ThemePref::Dark);
         });
         let _ = std::fs::remove_file(&prefs);
+    }
+
+    #[test]
+    fn missing_or_invalid_pref_boots_system() {
+        let prefs =
+            std::env::temp_dir().join(format!("tsuro-prefs-unit-{}-boot", std::process::id()));
+        crate::prefs::with_prefs_path(prefs.clone(), || {
+            let _ = std::fs::remove_file(&prefs);
+            let session = Session::empty();
+            assert_eq!(session.settings().theme_pref, ThemePref::System);
+            std::fs::write(&prefs, "theme=banana\n").unwrap();
+            let session = Session::empty();
+            assert_eq!(session.settings().theme_pref, ThemePref::System);
+            std::fs::write(&prefs, "theme=dark\n").unwrap();
+            let session = Session::empty();
+            assert_eq!(session.settings().theme_pref, ThemePref::Dark);
+            assert_eq!(session.theme(), Theme::Dark);
+        });
+        let _ = std::fs::remove_file(&prefs);
+    }
+
+    #[test]
+    fn resolved_theme_drives_tokens() {
+        assert_eq!(resolve_theme(ThemePref::System, Some(true)), Theme::Dark);
+        assert_eq!(resolve_theme(ThemePref::System, Some(false)), Theme::Light);
+        assert_eq!(resolve_theme(ThemePref::System, None), Theme::Dark);
+        assert_eq!(resolve_theme(ThemePref::Dark, Some(false)), Theme::Dark);
+        assert_eq!(resolve_theme(ThemePref::Light, Some(true)), Theme::Light);
+        let dark = Tokens::for_theme(resolve_theme(ThemePref::System, Some(true)), Lang::Pt);
+        let light = Tokens::for_theme(resolve_theme(ThemePref::System, Some(false)), Lang::Pt);
+        assert!(dark.is_dark && !light.is_dark);
+        assert_ne!(dark.bg, light.bg);
     }
 
     #[test]
