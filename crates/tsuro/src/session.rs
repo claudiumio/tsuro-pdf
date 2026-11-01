@@ -761,6 +761,22 @@ impl Ready {
         }
     }
 
+    /// Forget que não apagou um diário deixa a oferta dele: só sai a oferta
+    /// cujo diário saiu do disco. Sem ofertas sobrando, o cartão fecha.
+    fn keep_offers_present(&mut self, present: &[recovery::InstanceId]) {
+        let remaining = match &mut self.recovery {
+            RecoveryState::Disponivel(offers) | RecoveryState::Incompativel(offers) => {
+                offers.retain(|offer| present.contains(&offer.id));
+                offers.len()
+            }
+            _ => return,
+        };
+        if remaining == 0 {
+            self.recovery = RecoveryState::Nenhum;
+            self.discard_ask = false;
+        }
+    }
+
     /// Cartão de recuperação aberto (`Disponivel` ou `Incompativel`).
     pub(crate) fn recovery_prompt(&self) -> bool {
         matches!(
@@ -3049,28 +3065,28 @@ impl Session {
             }
             Message::ForgetRecoveryConfirm => {
                 let lang = self.lang();
-                let result = recovery::forget(&recovery::recovery_dir());
-                // Forget apaga os diários: cartões em cache em outras abas também
-                // saem, senão uma restauração ainda traria marcações apagadas.
+                let dir = recovery::recovery_dir();
+                let outcome = recovery::forget(&dir);
+                let present = recovery::instance_ids(&dir);
+                // Forget apaga diários de todas as abas: cada aba mantém só a
+                // oferta cujo diário ainda existe, e a falha vai para o status.
                 if let Session::Ready(tabs) = self {
                     for doc in tabs.docs_mut() {
-                        if doc.recovery_prompt() {
-                            doc.recovery = RecoveryState::Nenhum;
-                            doc.discard_ask = false;
-                        }
+                        doc.keep_offers_present(&present);
                     }
                 }
                 let settings = self.settings_mut();
                 settings.forget_ask = false;
-                settings.forget_status = Some(match result {
-                    Ok(n) => format!(
-                        "{} {n}",
-                        lang.pick("Diários esquecidos:", "Journals forgotten:")
-                    ),
-                    Err(err) => format!(
-                        "{}: {err}",
-                        lang.pick("Falha ao esquecer diários", "Could not forget journals")
-                    ),
+                let forgotten = lang.pick("Diários esquecidos:", "Journals forgotten:");
+                settings.forget_status = Some(if outcome.failed == 0 {
+                    format!("{forgotten} {}", outcome.removed)
+                } else {
+                    format!(
+                        "{forgotten} {}. {} {}.",
+                        outcome.removed,
+                        lang.pick("Não foi possível apagar", "Could not delete"),
+                        outcome.failed
+                    )
                 });
                 Task::none()
             }
@@ -15347,6 +15363,48 @@ mod tests {
 
     fn entries(dir: &std::path::Path) -> usize {
         std::fs::read_dir(dir).map_or(0, |dir| dir.count())
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn forget_that_fails_keeps_the_offer_it_could_not_remove() {
+        use std::os::unix::fs::PermissionsExt;
+        recovery_case("forget-partial", |doc, journals| {
+            for text in ["um", "dois"] {
+                let mut ready = open_like_window(doc);
+                ready.annotations = vec![recovery_mark(0, text)];
+                assert!(checkpoint_now(&mut ready));
+            }
+            let mut session = Session::Ready(Tabs::single(open_like_window(doc)));
+            assert_eq!(
+                offered(active_ready(&session)).len(),
+                2,
+                "as duas marcações são oferecidas"
+            );
+            // Um diário que não sai do disco: o lock sem permissão impede apagá-lo.
+            let stuck = std::fs::read_dir(journals)
+                .unwrap()
+                .map(|entry| entry.unwrap().path())
+                .find(|path| path.extension().is_some_and(|ext| ext == "lock"))
+                .expect("há um lock");
+            std::fs::set_permissions(&stuck, std::fs::Permissions::from_mode(0o000)).unwrap();
+            apply(&mut session, Message::ForgetRecoveryAsk(true));
+            apply(&mut session, Message::ForgetRecoveryConfirm);
+            std::fs::set_permissions(&stuck, std::fs::Permissions::from_mode(0o600)).unwrap();
+            let remaining = offered(active_ready(&session)).to_vec();
+            assert_eq!(remaining.len(), 1, "só o diário que saiu some da oferta");
+            assert_eq!(
+                session_settings(&session).forget_status.as_deref(),
+                Some("Diários esquecidos: 1. Não foi possível apagar 1."),
+                "a falha aparece no status de Configurações"
+            );
+            apply(&mut session, Message::RecoveryRestore);
+            assert_eq!(
+                active_ready(&session).annotations,
+                remaining[0].checkpoint.annotations,
+                "restaurar o diário que ficou ainda funciona"
+            );
+        });
     }
 
     fn session_settings(session: &Session) -> &SettingsPanel {

@@ -354,9 +354,26 @@ pub(crate) fn retire_ids<'a>(
     Ok(removed)
 }
 
-/// Esquecer diários (Configurações): todo diário sem dono da pasta.
-pub(crate) fn forget(dir: &Path) -> io::Result<usize> {
-    retire_ids(dir, &instance_ids(dir))
+/// Resultado de esquecer diários: quantos saíram e quantos resistiram (permissão,
+/// lock preso). Os que resistem continuam no disco e voltam a ser oferecidos.
+#[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
+pub(crate) struct Forgotten {
+    pub removed: usize,
+    pub failed: usize,
+}
+
+/// Esquecer diários (Configurações): apaga os sem dono da pasta. Um que não
+/// sai não impede os outros.
+pub(crate) fn forget(dir: &Path) -> Forgotten {
+    let mut outcome = Forgotten::default();
+    for id in instance_ids(dir) {
+        match retire_abandoned(dir, &id) {
+            Ok(true) => outcome.removed += 1,
+            Ok(false) => {}
+            Err(_) => outcome.failed += 1,
+        }
+    }
+    outcome
 }
 
 /// Marcações iguais por bits, o mesmo critério que o arquivo grava. O `PartialEq`
@@ -547,7 +564,7 @@ fn decode_quads(raw: &str) -> Option<Vec<Quad>> {
 }
 
 /// Ids com algum arquivo da instância (diário, anterior, temporário ou lock).
-fn instance_ids(dir: &Path) -> Vec<InstanceId> {
+pub(crate) fn instance_ids(dir: &Path) -> Vec<InstanceId> {
     let Ok(entries) = std::fs::read_dir(dir) else {
         return Vec::new();
     };
@@ -998,7 +1015,7 @@ mod tests {
         dead.write(&checkpoint(&["morta"])).unwrap();
         let live_id = live.id().clone();
         drop(dead);
-        assert_eq!(forget(&dir).unwrap(), 1, "só o diário sem dono sai");
+        assert_eq!(forget(&dir).removed, 1, "só o diário sem dono sai");
         assert_eq!(names(&dir), instance_files(&live_id, &[LOCK, JOURNAL]));
         live.retire().unwrap();
         drop(live);
