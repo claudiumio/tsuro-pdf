@@ -1,4 +1,5 @@
 use std::collections::{HashMap, HashSet};
+use std::future::Future;
 use std::path::PathBuf;
 use std::sync::{Arc, LazyLock};
 
@@ -156,11 +157,20 @@ impl OpenSource {
         }
     }
 
-    pub fn from_dialog() -> Option<Self> {
-        rfd::FileDialog::new()
+    /// Seletor de arquivo como futuro. `pick_file` do rfd monta o painel na
+    /// hora, então esta função precisa rodar na main thread (é de onde o
+    /// `update` a chama); o sheet em si abre e resolve sem bloquear o loop.
+    /// O caminho síncrono (`runModal`) não serve: ele reentra no handler do
+    /// winit e o processo aborta com `tried to handle event while another
+    /// event is currently being handled` (issue #169).
+    pub fn pick_file_async() -> impl Future<Output = Option<Self>> + Send {
+        let picking = rfd::AsyncFileDialog::new()
             .add_filter("PDF", &["pdf"])
-            .pick_file()
-            .map(OpenSource::Path)
+            .pick_file();
+        async move {
+            let picked = picking.await?;
+            Some(OpenSource::Path(picked.path().to_path_buf()))
+        }
     }
 }
 
@@ -2513,6 +2523,8 @@ fn render_key(page: PageNo, scale: Scale, rotation: u8) -> (u32, u16, u8) {
 #[derive(Debug, Clone)]
 pub enum Message {
     PickFile,
+    /// Escolha do seletor nativo (assíncrona): `None` quando o usuário cancela.
+    PickedFile(Option<OpenSource>),
     FileDropped(PathBuf),
     Opened {
         gen: u64,
@@ -2905,7 +2917,10 @@ impl Session {
             return Task::none();
         }
         match message {
-            Message::PickFile => match OpenSource::from_dialog() {
+            Message::PickFile => {
+                Task::future(OpenSource::pick_file_async()).map(Message::PickedFile)
+            }
+            Message::PickedFile(picked) => match picked {
                 None => Task::none(),
                 Some(source) => {
                     self.close_overflow();
@@ -12749,6 +12764,35 @@ mod tests {
                     assert_eq!(source.path(), PathBuf::from("/tmp/b.pdf").as_path());
                 }
                 other => panic!("A's result replaced B, got {other:?}"),
+            }
+        });
+    }
+
+    #[test]
+    fn cancelled_pick_keeps_the_session_where_it_was() {
+        isolated(|| {
+            let mut session = Session::empty();
+            apply(&mut session, Message::PickedFile(None));
+            assert!(
+                matches!(session, Session::Empty(_)),
+                "cancel started an open: {session:?}"
+            );
+        });
+    }
+
+    #[test]
+    fn picked_file_opens_like_a_dropped_one() {
+        isolated(|| {
+            let mut session = Session::empty();
+            apply(
+                &mut session,
+                Message::PickedFile(Some(OpenSource::Path(PathBuf::from("/tmp/a.pdf")))),
+            );
+            match &session {
+                Session::Loading { source, .. } => {
+                    assert_eq!(source.path(), PathBuf::from("/tmp/a.pdf").as_path())
+                }
+                other => panic!("expected Loading, got {other:?}"),
             }
         });
     }
