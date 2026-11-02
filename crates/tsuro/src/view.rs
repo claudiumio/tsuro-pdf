@@ -1,12 +1,12 @@
 use iced::advanced::widget::operation::{Focusable, Operation};
 use iced::advanced::widget::{operate, Id as WidgetId};
+use iced::font;
 use iced::widget::canvas::event::{Event as CanvasEvent, Status as CanvasStatus};
 use iced::widget::canvas::{Frame, Geometry, LineDash, Path, Program, Stroke, Style};
 use iced::widget::{
     button, column, container, image, mouse_area, pick_list, row, scrollable, stack, text,
     text_editor, text_input, tooltip, Canvas, Space,
 };
-use iced::{font, Font};
 use iced::{mouse, Alignment, Background, Border, Color, Element, Length, Padding, Point, Task};
 use iced::{Rectangle, Size};
 use tsuro_sign::{SignatureInfo, SignatureStatus};
@@ -15,6 +15,7 @@ use crate::browse::{EmptyState, FsEntry, Thumb};
 use crate::i18n::Lang;
 use crate::kiri::{self, CheckSeverity, Theme, Tokens};
 use crate::page::{MediaBox, PageNo};
+use crate::prefs::ThemePref;
 use crate::print::{PrintOrientation, MAX_COPIES};
 use crate::search::Search;
 #[cfg(target_os = "macos")]
@@ -27,11 +28,21 @@ use crate::session::{
     THUMB_ROW,
 };
 
-/// Altura do chrome Kiri: toolbar 36px + progresso 2px + respiro.
-pub const CHROME_HEIGHT: f32 = 46.0;
+/// Altura da faixa de ferramentas (spec §5, caso expandido): título nativo
+/// da plataforma acima e a nossa faixa abaixo do controle (44 no macOS).
+pub fn bar_height() -> f32 {
+    kiri::Metrics::current().bar_height()
+}
+
+/// Altura do chrome Kiri: toolbar + progresso + respiro de 4 em cima e embaixo.
+pub fn chrome_height() -> f32 {
+    bar_height() + kiri::PROGRESS_HEIGHT + 8.0
+}
 
 /// Altura da faixa de abas (issue #40), reservada só com 2+ documentos.
-pub const TAB_STRIP_HEIGHT: f32 = 30.0;
+pub fn tab_strip_height() -> f32 {
+    kiri::Metrics::current().tab_strip_height()
+}
 
 /// Papel do post-it (issue #30): amarelo fixo, como o marcador nota do
 /// canvas — papel não segue o tema e a tinta escura lê nos dois.
@@ -90,7 +101,7 @@ pub fn chrome(session: &Session, theme: Theme, lang: Lang) -> Element<'_, Messag
         Session::Ready(ready) => ready_body(ready, t),
     };
 
-    // Toolbar 36px + progresso 2px + respiro 8px = `CHROME_HEIGHT` (46px).
+    // Toolbar 44px + progresso 2px + respiro 8px = `CHROME_HEIGHT` (54px).
     let mut col = column![topbar(session, t)];
     if let Session::Ready(tabs) = session {
         // Progresso de leitura é do documento: some com o Início na tela.
@@ -318,35 +329,36 @@ fn control_active(
         .style(control_style(t, active))
 }
 
-/// Ícone dos botões da barra: 20px + padding 8 = os 36px da barra.
-const BAR_ICON: f32 = 20.0;
-/// Ícone dos segmentos (◀▶, −/+, marcar, HUD): 18px + padding 4 = 26px, a
-/// mesma altura de antes (16 + 5).
-const SEG_ICON: f32 = 18.0;
+/// Ícone dos botões da barra: o alvo do botão menos 12 de padding (16 no
+/// macOS). Os segmentos usam o mesmo tamanho: 24 de conteúdo, 16 de ícone.
+fn bar_icon() -> f32 {
+    kiri::Metrics::current().icon()
+}
 
-/// Botão-ícone 36×36 da barra (casa, abrir, painéis, ⋯).
+/// Botão-ícone 28×28 da barra (casa, abrir, painéis, ⋯).
 fn bar_button(
     t: Tokens,
     file: &str,
     active: bool,
 ) -> iced::widget::button::Button<'static, Message> {
-    button(kiri::ori_icon(file, BAR_ICON))
-        .padding(8)
-        .style(control_style(t, active))
+    button(kiri::ori_icon(file, bar_icon()))
+        .padding(6)
+        .style(kiri::bar_btn_style(t, active))
 }
 
 fn seg_icon(file: &str) -> Element<'static, Message> {
-    kiri::ori_icon(file, SEG_ICON)
+    kiri::ori_icon(file, bar_icon())
 }
 
-/// Botão-ícone 26px de altura para dentro de segmentos (`kiri::seg_style` +
-/// padding 2 = 30px).
+/// Botão-ícone dentro de segmentos: o conteúdo do controle (24 no macOS)
+/// menos o que o ícone já ocupa, metade de cada lado.
 fn control_seg(
     t: Tokens,
     btn: iced::widget::button::Button<'_, Message>,
 ) -> iced::widget::button::Button<'_, Message> {
-    btn.padding(Padding::from([4, 5]))
-        .style(control_style(t, false))
+    let pad = (kiri::Metrics::current().control - bar_icon()) / 2.0;
+    btn.padding(Padding::from([pad, pad]))
+        .style(kiri::bar_btn_style(t, false))
 }
 
 /// Dica (tooltip) de ícone/botão: fundo `kiri::tooltip_style`, para o rótulo
@@ -360,9 +372,13 @@ fn tip<'a>(
 ) -> Element<'a, Message> {
     tooltip::Tooltip::new(
         content,
-        container(text(label).size(13))
-            .padding(Padding::from([4, 8]))
-            .style(kiri::tooltip_style(t)),
+        container(
+            text(label)
+                .size(11)
+                .font(crate::font::inter(font::Weight::Medium)),
+        )
+        .padding(Padding::from([3, 6]))
+        .style(kiri::tooltip_style(t)),
         tooltip::Position::Bottom,
     )
     .gap(6)
@@ -377,9 +393,13 @@ fn tip_owned<'a>(
 ) -> Element<'a, Message> {
     tooltip::Tooltip::new(
         content,
-        container(text(label).size(13))
-            .padding(Padding::from([4, 8]))
-            .style(kiri::tooltip_style(t)),
+        container(
+            text(label)
+                .size(11)
+                .font(crate::font::inter(font::Weight::Medium)),
+        )
+        .padding(Padding::from([3, 6]))
+        .style(kiri::tooltip_style(t)),
         tooltip::Position::Bottom,
     )
     .gap(6)
@@ -449,11 +469,11 @@ fn settings_button(t: Tokens, open: bool) -> Element<'static, Message> {
     )
 }
 
-/// Moldura da toolbar Kiri: 36px, fundo `chrome`, respiro horizontal 8px.
+/// Moldura da toolbar Kiri: `bar_height()`, fundo `chrome`, respiro horizontal 8px.
 fn toolbar_frame(t: Tokens, content: Element<'_, Message>) -> Element<'_, Message> {
     container(content)
         .width(Length::Fill)
-        .height(Length::Fixed(36.0))
+        .height(Length::Fixed(bar_height()))
         .padding(Padding::from([0, 8]))
         .style(move |_| container::Style {
             background: Some(Background::Color(t.chrome)),
@@ -591,9 +611,9 @@ fn topbar(session: &Session, t: Tokens) -> Element<'_, Message> {
                 .on_input(Message::SearchChanged)
                 .on_submit(Message::SearchSubmit)
                 .style(kiri::bar_input_style(t))
-                .padding([2, 4])
+                .padding([4, 8])
                 .size(12)
-                .width(Length::Fixed(120.0)),
+                .width(Length::Fixed(140.0)),
                 search_nav(ready, t),
                 kiri::vsep(t),
                 row![
@@ -606,7 +626,7 @@ fn topbar(session: &Session, t: Tokens) -> Element<'_, Message> {
                             .style(kiri::bar_input_style(t))
                             .font(iced::Font::MONOSPACE)
                             .size(12)
-                            .padding([2, 4])
+                            .padding([4, 6])
                             .width(Length::Fixed(30.0)),
                         t.lang.pick(
                             "Ir para página (Enter confirma)",
@@ -880,16 +900,16 @@ fn overflow_layer(tabs: &Tabs, t: Tokens) -> Element<'_, Message> {
         .width(Length::Fill)
         .height(Length::Fill)
         .style(|_| container::Style {
-            background: Some(Background::Color(Color::from_rgba(0.0, 0.0, 0.0, 0.25))),
+            background: Some(Background::Color(kiri::scrim())),
             ..container::Style::default()
         });
-    // Com 2+ abas a faixa soma TAB_STRIP_HEIGHT à topbar (44px).
+    // Abaixo da barra e do progresso, com a faixa de abas somada quando existe.
     let top = if tabs.len() > 1 {
-        44.0 + TAB_STRIP_HEIGHT
+        chrome_height() - 4.0 + tab_strip_height()
     } else {
-        44.0
+        chrome_height() - 4.0
     };
-    let card = container(overflow_menu(tabs, t))
+    let card = container(overflow_menu(tabs, tabs.settings.theme_pref, t))
         .width(Length::Fill)
         .height(Length::Fill)
         .align_x(Alignment::End)
@@ -905,7 +925,7 @@ fn overflow_layer(tabs: &Tabs, t: Tokens) -> Element<'_, Message> {
 
 /// Menu ⋯ (#42): grupos Arquivo/Editar/Ver/Ir/Ajuda com dicas de atalho.
 /// Recentes na mesma lista da tela vazia; Sobre abre o cartão de versão.
-fn overflow_menu(ready: &Ready, t: Tokens) -> Element<'_, Message> {
+fn overflow_menu(ready: &Ready, pref: ThemePref, t: Tokens) -> Element<'_, Message> {
     let mut items = column![].spacing(2).width(Length::Fill);
     items = items.push(section_title(t.lang.pick("Arquivo", "File"), t));
     items = items.push(menu_item(
@@ -919,9 +939,9 @@ fn overflow_menu(ready: &Ready, t: Tokens) -> Element<'_, Message> {
         t,
         "folder",
         if ready.recents_expanded {
-            t.lang.pick("Recentes ▾", "Recent ▾")
+            t.lang.pick("Recentes ▼", "Recent ▼")
         } else {
-            t.lang.pick("Recentes ▸", "Recent ▸")
+            t.lang.pick("Recentes ▶", "Recent ▶")
         },
         Message::ToggleRecents,
         false,
@@ -1060,11 +1080,26 @@ fn overflow_menu(ready: &Ready, t: Tokens) -> Element<'_, Message> {
         Message::SetViewMode(ViewMode::Continuous),
         !single,
     ));
-    let dark = ready.theme.is_dark();
     items = items.push(
         row![
-            menu_theme_button(t, t.lang.pick("Escuro", "Dark"), Theme::Dark, dark),
-            menu_theme_button(t, t.lang.pick("Claro", "Light"), Theme::Light, !dark),
+            menu_theme_button(
+                t,
+                t.lang.pick("Sistema", "System"),
+                ThemePref::System,
+                pref == ThemePref::System
+            ),
+            menu_theme_button(
+                t,
+                t.lang.pick("Escuro", "Dark"),
+                ThemePref::Dark,
+                pref == ThemePref::Dark
+            ),
+            menu_theme_button(
+                t,
+                t.lang.pick("Claro", "Light"),
+                ThemePref::Light,
+                pref == ThemePref::Light
+            ),
         ]
         .spacing(4),
     );
@@ -1112,12 +1147,18 @@ fn overflow_menu(ready: &Ready, t: Tokens) -> Element<'_, Message> {
         Message::ToggleAbout,
         false,
     ));
-    container(items)
-        .width(Length::Fixed(264.0))
+    container(scrollable(items))
+        .width(Length::Fixed(300.0))
+        // Altura máxima com rolagem interna: com muitos recentes o menu
+        // nunca deixa item fora da tela.
+        .max_height(MENU_MAX_H)
         .padding(6)
         .style(kiri::menu_style(t))
         .into()
 }
+
+/// Altura máxima do menu ⋯ antes de rolar por dentro.
+const MENU_MAX_H: f32 = 560.0;
 
 /// Rótulo de recente no menu: `pasta/arquivo.pdf` (como o cartão da tela
 /// vazia, numa linha só), com elipse no meio se passar de 30.
@@ -1153,8 +1194,8 @@ fn menu_item(
     }
     button(content)
         .width(Length::Fill)
-        .padding(Padding::from([8, 10]))
-        .style(kiri::panel_seg_style(t, active))
+        .padding(Padding::from([4, 10]))
+        .style(kiri::menu_row_style(t, active))
         .on_press(message)
         .into()
 }
@@ -1165,12 +1206,12 @@ fn menu_recent(t: Tokens, label: String, message: Message) -> Element<'static, M
     button(text(label).size(13))
         .width(Length::Fill)
         .padding(Padding {
-            top: 8.0,
+            top: 4.0,
             right: 10.0,
-            bottom: 8.0,
+            bottom: 4.0,
             left: 34.0,
         })
-        .style(kiri::panel_seg_style(t, false))
+        .style(kiri::menu_row_style(t, false))
         .on_press(message)
         .into()
 }
@@ -1186,7 +1227,7 @@ fn menu_disabled(t: Tokens, label: &'static str) -> Element<'static, Message> {
         .align_y(Alignment::Center),
     )
     .width(Length::Fill)
-    .padding(Padding::from([8, 10]))
+    .padding(Padding::from([4, 10]))
     .into()
 }
 
@@ -1197,7 +1238,7 @@ fn print_layer<'a>(ready: &'a Ready, dialog: &'a PrintDialog, t: Tokens) -> Elem
         .width(Length::Fill)
         .height(Length::Fill)
         .style(|_| container::Style {
-            background: Some(Background::Color(Color::from_rgba(0.0, 0.0, 0.0, 0.55))),
+            background: Some(Background::Color(kiri::scrim())),
             ..container::Style::default()
         });
     let card = container(mouse_area(print_card(ready, dialog, t)).on_press(Message::PrintNop))
@@ -1241,7 +1282,7 @@ fn print_card<'a>(ready: &'a Ready, dialog: &'a PrintDialog, t: Tokens) -> Eleme
     container(col)
         .width(Length::Fixed(620.0))
         .padding(16)
-        .style(kiri::menu_style(t))
+        .style(kiri::sheet_style(t))
         .into()
 }
 
@@ -1473,7 +1514,7 @@ fn note_layer(ready: &Ready, t: Tokens) -> Element<'_, Message> {
         .width(Length::Fill)
         .height(Length::Fill)
         .style(|_| container::Style {
-            background: Some(Background::Color(Color::from_rgba(0.0, 0.0, 0.0, 0.25))),
+            background: Some(Background::Color(kiri::scrim())),
             ..container::Style::default()
         });
     let card = container(mouse_area(note_card(draft, t)).on_press(Message::PrintNop))
@@ -1667,7 +1708,7 @@ fn recovery_layer(ready: &Ready, t: Tokens) -> Element<'static, Message> {
         .width(Length::Fill)
         .height(Length::Fill)
         .style(|_| container::Style {
-            background: Some(Background::Color(Color::from_rgba(0.0, 0.0, 0.0, 0.25))),
+            background: Some(Background::Color(kiri::scrim())),
             ..container::Style::default()
         });
     let card = container(mouse_area(recovery_card(ready, t)).on_press(Message::PrintNop))
@@ -1788,7 +1829,7 @@ fn recovery_card(ready: &Ready, t: Tokens) -> Element<'static, Message> {
     container(body.push(buttons))
         .width(Length::Fixed(440.0))
         .padding(16)
-        .style(kiri::menu_style(t))
+        .style(kiri::sheet_style(t))
         .into()
 }
 
@@ -1858,7 +1899,7 @@ fn save_warning_layer(t: Tokens) -> Element<'static, Message> {
         .width(Length::Fill)
         .height(Length::Fill)
         .style(|_| container::Style {
-            background: Some(Background::Color(Color::from_rgba(0.0, 0.0, 0.0, 0.25))),
+            background: Some(Background::Color(kiri::scrim())),
             ..container::Style::default()
         });
     let card = container(mouse_area(save_warning_card(t)).on_press(Message::PrintNop))
@@ -1876,7 +1917,7 @@ fn about_layer(t: Tokens) -> Element<'static, Message> {
         .width(Length::Fill)
         .height(Length::Fill)
         .style(|_| container::Style {
-            background: Some(Background::Color(Color::from_rgba(0.0, 0.0, 0.0, 0.25))),
+            background: Some(Background::Color(kiri::scrim())),
             ..container::Style::default()
         });
     let card = container(mouse_area(about_card(t)).on_press(Message::PrintNop))
@@ -1923,7 +1964,7 @@ fn about_card(t: Tokens) -> Element<'static, Message> {
     container(body)
         .width(Length::Fixed(320.0))
         .padding(16)
-        .style(kiri::menu_style(t))
+        .style(kiri::sheet_style(t))
         .into()
 }
 
@@ -1934,7 +1975,7 @@ fn settings_layer(settings: &SettingsPanel, t: Tokens) -> Element<'static, Messa
         .width(Length::Fill)
         .height(Length::Fill)
         .style(|_| container::Style {
-            background: Some(Background::Color(Color::from_rgba(0.0, 0.0, 0.0, 0.25))),
+            background: Some(Background::Color(kiri::scrim())),
             ..container::Style::default()
         });
     let card = container(mouse_area(settings_card(settings, t)).on_press(Message::PrintNop))
@@ -1947,15 +1988,30 @@ fn settings_layer(settings: &SettingsPanel, t: Tokens) -> Element<'static, Messa
 
 #[allow(clippy::too_many_lines)]
 fn settings_card(settings: &SettingsPanel, t: Tokens) -> Element<'static, Message> {
-    let dark = t.is_dark;
     let mut body = column![
         text(t.lang.pick("Configurações", "Settings"))
             .size(16)
             .color(t.ink),
         section_title(t.lang.pick("Tema", "Theme"), t),
         row![
-            menu_theme_button(t, t.lang.pick("Escuro", "Dark"), Theme::Dark, dark),
-            menu_theme_button(t, t.lang.pick("Claro", "Light"), Theme::Light, !dark),
+            menu_theme_button(
+                t,
+                t.lang.pick("Sistema", "System"),
+                ThemePref::System,
+                settings.theme_pref == ThemePref::System
+            ),
+            menu_theme_button(
+                t,
+                t.lang.pick("Escuro", "Dark"),
+                ThemePref::Dark,
+                settings.theme_pref == ThemePref::Dark
+            ),
+            menu_theme_button(
+                t,
+                t.lang.pick("Claro", "Light"),
+                ThemePref::Light,
+                settings.theme_pref == ThemePref::Light
+            ),
         ]
         .spacing(4),
         section_title(t.lang.pick("Leitor padrão", "Default reader"), t),
@@ -2109,7 +2165,7 @@ fn settings_card(settings: &SettingsPanel, t: Tokens) -> Element<'static, Messag
     container(body)
         .padding(12)
         .width(324)
-        .style(kiri::menu_style(t))
+        .style(kiri::sheet_style(t))
         .into()
 }
 
@@ -2119,7 +2175,7 @@ fn close_prompt_layer(t: Tokens) -> Element<'static, Message> {
         .width(Length::Fill)
         .height(Length::Fill)
         .style(|_| container::Style {
-            background: Some(Background::Color(Color::from_rgba(0.0, 0.0, 0.0, 0.25))),
+            background: Some(Background::Color(kiri::scrim())),
             ..container::Style::default()
         });
     let card = container(mouse_area(close_prompt_card(t)).on_press(Message::PrintNop))
@@ -2161,7 +2217,7 @@ fn close_prompt_card(t: Tokens) -> Element<'static, Message> {
     )
     .width(Length::Fixed(440.0))
     .padding(16)
-    .style(kiri::menu_style(t))
+    .style(kiri::sheet_style(t))
     .into()
 }
 
@@ -2171,7 +2227,7 @@ fn palette_layer(palette: &PaletteState, t: Tokens) -> Element<'_, Message> {
         .width(Length::Fill)
         .height(Length::Fill)
         .style(|_| container::Style {
-            background: Some(Background::Color(Color::from_rgba(0.0, 0.0, 0.0, 0.25))),
+            background: Some(Background::Color(kiri::scrim())),
             ..container::Style::default()
         });
     // Âncora no topo (Spotlight/VSCode), não no centro como os outros modais.
@@ -2262,7 +2318,7 @@ fn palette_card(palette: &PaletteState, t: Tokens) -> Element<'_, Message> {
     container(column![query, list].spacing(8))
         .width(Length::Fixed(560.0))
         .padding(12)
-        .style(kiri::menu_style(t))
+        .style(kiri::popover_style(t))
         .into()
 }
 
@@ -2295,19 +2351,19 @@ fn save_warning_card(t: Tokens) -> Element<'static, Message> {
     )
     .width(Length::Fixed(440.0))
     .padding(16)
-    .style(kiri::menu_style(t))
+    .style(kiri::sheet_style(t))
     .into()
 }
 
 fn menu_theme_button(
     t: Tokens,
     label: &'static str,
-    theme: Theme,
+    pref: ThemePref,
     active: bool,
 ) -> Element<'static, Message> {
     control_active(
         t,
-        button(text(label).size(13)).on_press(Message::SetTheme(theme)),
+        button(text(label).size(13)).on_press(Message::SetTheme(pref)),
         active,
     )
     .width(Length::Fill)
@@ -2329,7 +2385,7 @@ fn menu_lang_button(
     .into()
 }
 
-/// Progresso Kiri: 2px, fill `accent` proporcional à página visível.
+/// Progresso Kiri: `PROGRESS_HEIGHT`, fill `accent` proporcional à página visível.
 fn progress(ready: &Ready, t: Tokens) -> Element<'static, Message> {
     let n = ready.page_count().max(1);
     let done = (ready.visible.index() + 1).min(n);
@@ -2337,7 +2393,7 @@ fn progress(ready: &Ready, t: Tokens) -> Element<'static, Message> {
     let filled = ((done * 1000) / n).clamp(1, 1000) as u16;
     let mut bar = row![container(Space::with_width(Length::Fill))
         .width(Length::FillPortion(filled))
-        .height(Length::Fixed(2.0))
+        .height(Length::Fixed(kiri::PROGRESS_HEIGHT))
         .style(move |_| container::Style {
             background: Some(Background::Color(t.accent)),
             ..container::Style::default()
@@ -2351,7 +2407,7 @@ fn progress(ready: &Ready, t: Tokens) -> Element<'static, Message> {
     }
     container(bar)
         .width(Length::Fill)
-        .height(Length::Fixed(2.0))
+        .height(Length::Fixed(kiri::PROGRESS_HEIGHT))
         .style(move |_| container::Style {
             background: Some(Background::Color(t.surface)),
             ..container::Style::default()
@@ -2577,10 +2633,7 @@ fn home_section(
         icon,
         text(label)
             .size(15)
-            .font(Font {
-                weight: font::Weight::Semibold,
-                ..Font::default()
-            })
+            .font(crate::font::inter(font::Weight::Semibold))
             .color(t.ink)
     ]
     .spacing(10)
@@ -2812,10 +2865,15 @@ fn tab_strip(tabs: &Tabs, t: Tokens) -> Element<'_, Message> {
     for (index, doc) in tabs.docs().iter().enumerate() {
         let label = short_name(doc.source.path());
         let active = tabs.home().is_none() && index == tabs.active_index();
+        let mut name_text = text(label).size(13);
+        if active {
+            // Aba ativa com peso 600 (spec §5).
+            name_text = name_text.font(crate::font::inter(font::Weight::Semibold));
+        }
         let name = tip_owned(
             t,
-            button(text(label).size(13))
-                .padding(Padding::from([4, 10]))
+            button(name_text)
+                .padding(Padding::from([3, 10]))
                 .style(kiri::ibtn_style(t, false))
                 .on_press(Message::SelectTab(index)),
             identity_tip(doc.source.path()),
@@ -2823,7 +2881,7 @@ fn tab_strip(tabs: &Tabs, t: Tokens) -> Element<'_, Message> {
         let close = tip(
             t,
             button(text("×").size(14).color(t.muted))
-                .padding(Padding::from([4, 8]))
+                .padding(Padding::from([3, 7]))
                 .style(kiri::ibtn_style(t, false))
                 .on_press(Message::CloseTab(index)),
             if cfg!(target_os = "macos") {
@@ -2841,7 +2899,7 @@ fn tab_strip(tabs: &Tabs, t: Tokens) -> Element<'_, Message> {
     }
     container(strip)
         .width(Length::Fill)
-        .height(Length::Fixed(TAB_STRIP_HEIGHT))
+        .height(Length::Fixed(tab_strip_height()))
         .padding(Padding::from([0, 8]))
         .style(move |_| container::Style {
             background: Some(Background::Color(t.chrome)),
@@ -2864,8 +2922,9 @@ fn short_name(path: &std::path::Path) -> String {
 /// segmentado Páginas | Sumário | Marcações e a lista da aba escolhida.
 fn pages_panel(ready: &Ready, t: Tokens) -> Element<'_, Message> {
     let mut col = column![text(t.lang.pick("Navegação", "Navigation"))
-        .size(13)
-        .color(t.ink)]
+        .size(11)
+        .font(crate::font::inter(font::Weight::Bold))
+        .color(t.muted)]
     .spacing(8);
     col = col.push(panel_tabs(ready, t));
     col = match ready.panel {
@@ -2886,7 +2945,7 @@ fn pages_panel(ready: &Ready, t: Tokens) -> Element<'_, Message> {
 fn panel_tabs(ready: &Ready, t: Tokens) -> Element<'_, Message> {
     // Três abas em partes iguais cortavam "Marcações"/"Annotations" (~45px de
     // texto por aba). Cada aba recebe partes pelo tamanho do rótulo: no painel
-    // de 216px sobram 200px úteis, ~8,7px por caractere (23 caracteres por
+    // de 256px sobram 240px úteis, ~8,7px por caractere (23 caracteres por
     // conjunto de rótulos, PT e EN).
     let seg = |label: &'static str, active: bool, tab: Option<PanelTab>| {
         button(
@@ -2897,7 +2956,8 @@ fn panel_tabs(ready: &Ready, t: Tokens) -> Element<'_, Message> {
                 .align_x(Alignment::Center),
         )
         .width(Length::FillPortion(label.chars().count() as u16))
-        .padding(Padding::from([5, 4]))
+        .height(Length::Fixed(24.0))
+        .padding(Padding::from([0, 4]))
         .style(kiri::panel_seg_style(t, active))
         .on_press(Message::SetPanelTab(tab))
     };
@@ -2936,7 +2996,7 @@ fn outline_tab(ready: &Ready, t: Tokens) -> Element<'_, Message> {
         let is_focus = focus.as_ref() == Some(&path);
         let fold: Element<'_, Message> = if has_children {
             let collapsed = ready.outline_collapsed.contains(&path);
-            button(text(if collapsed { "▸" } else { "▾" }).size(11))
+            button(text(if collapsed { "▶" } else { "▼" }).size(11))
                 .padding(Padding::from([3, 5]))
                 .style(kiri::panel_fold_style(t))
                 .on_press(Message::OutlineFold(path.clone()))
@@ -2994,9 +3054,9 @@ fn outline_title(title: &str) -> String {
 }
 
 /// Largura útil de uma linha da lista de marcações, em caracteres (painel de
-/// 200px, texto 12). Linha de altura fixa: texto que quebra estouraria o
+/// 240px, texto 12). Linha de altura fixa: texto que quebra estouraria o
 /// cálculo de rolagem do cursor.
-const ANNOT_ROW_CHARS: usize = 30;
+const ANNOT_ROW_CHARS: usize = 36;
 
 /// Aba Marcações: as marcações desta sessão como linhas (página, tipo, trecho,
 /// nota), com busca por trecho e nota. Sem marcações, diz como criar uma; não

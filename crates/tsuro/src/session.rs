@@ -1,6 +1,6 @@
 use std::collections::{HashMap, HashSet};
 use std::path::PathBuf;
-use std::sync::Arc;
+use std::sync::{Arc, LazyLock};
 
 use iced::clipboard;
 use iced::event::{self, Event};
@@ -18,6 +18,8 @@ use crate::browse::{
 use crate::engine::PdfiumEngine;
 use crate::i18n::Lang;
 use crate::kiri::Theme;
+#[cfg(test)]
+use crate::kiri::Tokens;
 use crate::page::{
     Bitmap, EngineError, Glyph, MediaBox, Outline, OutlineItem, PageEngine, PageNo, PageSurface,
     Quad, Scale, TextLayer, Viewport,
@@ -25,7 +27,7 @@ use crate::page::{
 use crate::positions::{
     file_identity, find_position, read_positions, record_position, save_positions, DocPosition,
 };
-use crate::prefs::{read_lang, read_theme, save_lang, save_theme};
+use crate::prefs::{read_lang, read_theme_pref, save_lang, save_theme_pref, ThemePref};
 use crate::print::{
     print_selection_pdf, write_and_open_print_pdf, PrintOrientation, PrintRange, PrintSelection,
     MAX_COPIES,
@@ -57,7 +59,7 @@ pub(crate) const ANNOT_ROW: f32 = 62.0;
 const NEIGHBOR_CACHE_BUDGET: usize = 64 * 1024 * 1024;
 
 /// Larguras do chrome (espelham `view.rs`); base da geometria do contínuo.
-pub(crate) const PAGES_PANEL_W: f32 = 216.0;
+pub(crate) const PAGES_PANEL_W: f32 = 256.0;
 pub(crate) const SIG_PANEL_W: f32 = 220.0;
 const PANES_GAP: f32 = 12.0;
 const CHROME_PAD: f32 = 8.0;
@@ -1536,7 +1538,7 @@ enum CloseTarget {
 /// hoje fica idêntica) e `view::TAB_STRIP_HEIGHT` com duas ou mais.
 fn strip_height(count: usize) -> f32 {
     if count > 1 {
-        crate::view::TAB_STRIP_HEIGHT
+        crate::view::tab_strip_height()
     } else {
         0.0
     }
@@ -1844,6 +1846,9 @@ pub struct SettingsPanel {
     pub update: UpdateState,
     #[cfg(target_os = "macos")]
     pub(crate) permissions: PermissionsState,
+    /// Theme preference (System/Dark/Light) chosen in Settings; the `theme`
+    /// fields across the session states carry its resolution.
+    pub(crate) theme_pref: ThemePref,
     /// Configurações → Recuperação: "Esquecer diários" pede confirmação antes.
     pub(crate) forget_ask: bool,
     /// Resultado do último "Esquecer diários de recuperação".
@@ -2745,7 +2750,9 @@ pub enum Message {
         saved: Vec<Annotation>,
         result: Result<(), String>,
     },
-    SetTheme(Theme),
+    /// Theme preference (System follows the OS appearance, Dark/Light pin it);
+    /// resolved to the rendered `kiri::Theme` by `resolve_theme`.
+    SetTheme(ThemePref),
     SetLang(Lang),
     /// Janela informou tamanho + identidade: ajusta viewport e reconsulta o DPR.
     WindowMetrics {
@@ -2779,6 +2786,9 @@ pub enum Message {
     },
     OpenRecent(PathBuf),
     RecentsReady(Vec<PathBuf>),
+    /// One embedded Inter face finished registering at boot (see
+    /// `crate::font`); the weight identifies which of the four arrived.
+    FontsLoaded(iced::font::Weight),
 }
 
 #[derive(Debug, Clone)]
@@ -2806,24 +2816,33 @@ impl OpenError {
 
 impl Session {
     pub fn empty() -> Self {
+        let (pref, theme) = boot_theme();
         Session::Empty(EmptyState {
-            theme: read_theme(),
+            theme,
             lang: read_lang(),
             render_scale: 1.0,
+            settings: SettingsPanel {
+                theme_pref: pref,
+                ..SettingsPanel::default()
+            },
             ..EmptyState::default()
         })
     }
 
     pub fn open_path(path: PathBuf) -> Self {
+        let (pref, theme) = boot_theme();
         Session::Loading {
             source: OpenSource::Path(path),
             recents: read_recents(),
             gen: 1,
-            theme: read_theme(),
+            theme,
             lang: read_lang(),
             render_scale: 1.0,
             phase: 0,
-            settings: SettingsPanel::default(),
+            settings: SettingsPanel {
+                theme_pref: pref,
+                ..SettingsPanel::default()
+            },
         }
     }
 
@@ -2843,7 +2862,7 @@ impl Session {
             Session::Empty(_) => empty_tasks(self.lang()),
             _ => Task::none(),
         };
-        (self, Task::batch([open, check]))
+        (self, Task::batch([open, check, crate::font::register()]))
     }
 
     pub fn update(&mut self, message: Message) -> Task<Message> {
@@ -4214,10 +4233,16 @@ impl Session {
                     Task::none()
                 }
             }
-            Message::SetTheme(theme) => {
-                self.set_theme(theme);
+            Message::SetTheme(pref) => {
+                self.settings_mut().theme_pref = pref;
+                let os_dark = if pref == ThemePref::System {
+                    query_os_dark()
+                } else {
+                    None
+                };
+                self.set_theme(resolve_theme(pref, os_dark));
                 self.close_overflow();
-                let _ = save_theme(theme);
+                let _ = save_theme_pref(pref);
                 Task::none()
             }
             Message::SetLang(lang) => {
@@ -4333,6 +4358,12 @@ impl Session {
                     Session::Failed { .. } => {}
                 }
                 self.schedule_thumb()
+            }
+            Message::FontsLoaded(weight) => {
+                // Boot evidence: the four embedded Inter faces registered;
+                // the app default family is `crate::font::INTER`.
+                println!("Inter {weight:?} registered; default family: Inter");
+                Task::none()
             }
         }
     }
@@ -5389,6 +5420,77 @@ impl Session {
     }
 }
 
+/// OS appearance, queried once per process: the boot path and every test
+/// binary pay for a single spawn (`LazyLock`, as in `engine.rs`).
+static OS_DARK: LazyLock<Option<bool>> = LazyLock::new(query_os_dark);
+
+/// Boot theme read: the preference from prefs (missing/invalid → System) and
+/// the resolved `kiri::Theme`. `System` consults the OS appearance once and
+/// caches it for the process lifetime.
+fn boot_theme() -> (ThemePref, Theme) {
+    let pref = read_theme_pref();
+    (pref, resolve_theme(pref, *OS_DARK))
+}
+
+/// Preference → rendered theme. `os_dark: None` (query unavailable or
+/// unsupported platform) falls back to Dark, the pre-System default.
+fn resolve_theme(pref: ThemePref, os_dark: Option<bool>) -> Theme {
+    match pref {
+        ThemePref::System => match os_dark {
+            Some(false) => Theme::Light,
+            _ => Theme::Dark,
+        },
+        ThemePref::Dark => Theme::Dark,
+        ThemePref::Light => Theme::Light,
+    }
+}
+
+/// GAP: iced 0.13 does not expose the OS theme. winit fires
+/// `WindowEvent::ThemeChanged`, but iced_winit's conversion drops it
+/// (`_ => None`) and iced has no query command, so `System` resolves at boot
+/// and on explicit selection; an OS appearance change while the app runs
+/// only takes effect after a restart. Surfacing the winit event through
+/// iced (or an AppKit appearance observer on macOS) would close it.
+#[cfg(target_os = "macos")]
+fn query_os_dark() -> Option<bool> {
+    // `AppleInterfaceStyle` exists only in dark mode; a non-zero exit (key
+    // unset) means light.
+    let out = std::process::Command::new("/usr/bin/defaults")
+        .args(["read", "-g", "AppleInterfaceStyle"])
+        .output()
+        .ok()?;
+    Some(out.status.success() && String::from_utf8_lossy(&out.stdout).trim() == "Dark")
+}
+
+/// `AppsUseLightTheme`: 0 = dark, 1 = light.
+#[cfg(target_os = "windows")]
+fn query_os_dark() -> Option<bool> {
+    let out = std::process::Command::new("reg")
+        .args([
+            "query",
+            r"HKCU\Software\Microsoft\Windows\CurrentVersion\Themes\Personalize",
+            "/v",
+            "AppsUseLightTheme",
+        ])
+        .output()
+        .ok()?;
+    let stdout = String::from_utf8_lossy(&out.stdout);
+    let line = stdout
+        .lines()
+        .find(|line| line.contains("AppsUseLightTheme"))?;
+    match line.split_whitespace().last()? {
+        "0x0" => Some(true),
+        "0x1" => Some(false),
+        _ => None,
+    }
+}
+
+/// Platforms without a query (Linux today): `None` → Dark.
+#[cfg(not(any(target_os = "macos", target_os = "windows")))]
+fn query_os_dark() -> Option<bool> {
+    None
+}
+
 /// Eventos da janela e do teclado que viram mensagem (sem mouse).
 fn window_event(event: Event, status: event::Status, id: window::Id) -> Option<Message> {
     match event {
@@ -5400,7 +5502,7 @@ fn window_event(event: Event, status: event::Status, id: window::Id) -> Option<M
             width: size.width,
             // A faixa de abas encolhe o painel; quem desconta é
             // `WindowMetrics` (a altura da faixa é estado, não evento).
-            height: (size.height - crate::view::CHROME_HEIGHT).max(1.0),
+            height: (size.height - crate::view::chrome_height()).max(1.0),
             id,
         }),
         Event::Keyboard(keyboard::Event::KeyPressed { key, modifiers, .. }) => {
@@ -5613,6 +5715,9 @@ pub(crate) fn keyboard_message(
             Key::Character("o" | "O") => return Some(Message::PickFile),
             Key::Character("p" | "P") => return Some(Message::OpenPrintDialog),
             Key::Character("s" | "S") => return Some(Message::SaveCopyRequested),
+            // Cmd/Ctrl+E: export annotations. Cmd/Ctrl+,: Settings (macOS prefs convention).
+            Key::Character("e" | "E") => return Some(Message::ExportAnnotations),
+            Key::Character(",") => return Some(Message::ToggleSettings),
             _ => {}
         }
     }
@@ -5819,6 +5924,16 @@ pub(crate) fn shortcut_hint(msg: &Message) -> Option<&'static str> {
             "Cmd+S"
         } else {
             "Ctrl+S"
+        }),
+        Message::ExportAnnotations => Some(if cfg!(target_os = "macos") {
+            "Cmd+E"
+        } else {
+            "Ctrl+E"
+        }),
+        Message::ToggleSettings => Some(if cfg!(target_os = "macos") {
+            "Cmd+,"
+        } else {
+            "Ctrl+,"
         }),
         Message::DeleteSelectedAnnot => Some("Del"),
         Message::AnnotUndo => Some(if cfg!(target_os = "macos") {
@@ -9252,7 +9367,7 @@ mod tests {
             }
         }
         // Símbolos de zoom (#72) e teclas nomeadas.
-        for sym in ["+", "-", "="] {
+        for sym in ["+", "-", "=", ","] {
             for mods in combos {
                 probe(Key::Character(sym.into()), mods);
             }
@@ -9294,13 +9409,15 @@ mod tests {
             Message::CopySelection,
             Message::OpenPrintDialog,
             Message::SaveCopyRequested,
+            Message::ExportAnnotations,
+            Message::ToggleSettings,
             Message::DeleteSelectedAnnot,
             Message::AnnotUndo,
             Message::AnnotRedo,
             Message::HistoryBack,
             Message::HistoryForward,
         ];
-        assert_eq!(hinted.len(), 12);
+        assert_eq!(hinted.len(), 14);
         for msg in hinted {
             let hint = shortcut_hint(&msg).expect("com hint");
             assert!(hint.is_ascii(), "hint não-ASCII: {hint:?} ({msg:?})");
@@ -9335,6 +9452,30 @@ mod tests {
             keyboard_message(Key::Character("S".into()), cmd, Status::Ignored),
             Some(Message::SaveCopyRequested)
         ));
+        assert!(matches!(
+            keyboard_message(Key::Character("e".into()), cmd, Status::Ignored),
+            Some(Message::ExportAnnotations)
+        ));
+        assert!(matches!(
+            keyboard_message(Key::Character(",".into()), cmd, Status::Ignored),
+            Some(Message::ToggleSettings)
+        ));
+        assert_eq!(
+            shortcut_hint(&Message::ExportAnnotations),
+            Some(if cfg!(target_os = "macos") {
+                "Cmd+E"
+            } else {
+                "Ctrl+E"
+            })
+        );
+        assert_eq!(
+            shortcut_hint(&Message::ToggleSettings),
+            Some(if cfg!(target_os = "macos") {
+                "Cmd+,"
+            } else {
+                "Ctrl+,"
+            })
+        );
         // +/-/= com foco livre; com campo focado o iced captura antes.
         assert!(matches!(
             keyboard_message(
@@ -9367,6 +9508,8 @@ mod tests {
         )
         .is_none());
         assert!(keyboard_message(Key::Character("c".into()), cmd, Status::Captured).is_none());
+        assert!(keyboard_message(Key::Character("e".into()), cmd, Status::Captured).is_none());
+        assert!(keyboard_message(Key::Character(",".into()), cmd, Status::Captured).is_none());
     }
 
     #[test]
@@ -9918,7 +10061,7 @@ mod tests {
             let ready = sample_ready().expect("settings regression requires fixture and Pdfium");
             let mut session = Session::Ready(Tabs::single(ready));
             apply(&mut session, Message::ToggleSettings);
-            apply(&mut session, Message::SetTheme(Theme::Light));
+            apply(&mut session, Message::SetTheme(ThemePref::Light));
             assert_eq!(active_ready(&session).theme, Theme::Light);
             assert!(session.settings().open);
             apply(&mut session, Message::RotateView);
@@ -13188,21 +13331,55 @@ mod tests {
     }
 
     #[test]
-    fn set_theme_updates_state_and_persists() {
+    fn set_theme_pref_updates_state_and_persists() {
         let prefs =
             std::env::temp_dir().join(format!("tsuro-prefs-unit-{}-theme", std::process::id()));
         crate::prefs::with_prefs_path(prefs.clone(), || {
             let _ = std::fs::remove_file(&prefs);
             let mut session = Session::empty();
-            assert_eq!(session.theme(), Theme::Dark);
-            apply(&mut session, Message::SetTheme(Theme::Light));
+            assert_eq!(session.settings().theme_pref, ThemePref::System);
+            apply(&mut session, Message::SetTheme(ThemePref::Light));
             assert_eq!(session.theme(), Theme::Light);
-            assert_eq!(crate::prefs::read_theme(), Theme::Light);
+            assert_eq!(session.settings().theme_pref, ThemePref::Light);
+            assert_eq!(crate::prefs::read_theme_pref(), ThemePref::Light);
             assert_eq!(Session::empty().theme(), Theme::Light);
-            apply(&mut session, Message::SetTheme(Theme::Dark));
-            assert_eq!(crate::prefs::read_theme(), Theme::Dark);
+            apply(&mut session, Message::SetTheme(ThemePref::Dark));
+            assert_eq!(session.theme(), Theme::Dark);
+            assert_eq!(crate::prefs::read_theme_pref(), ThemePref::Dark);
         });
         let _ = std::fs::remove_file(&prefs);
+    }
+
+    #[test]
+    fn missing_or_invalid_pref_boots_system() {
+        let prefs =
+            std::env::temp_dir().join(format!("tsuro-prefs-unit-{}-boot", std::process::id()));
+        crate::prefs::with_prefs_path(prefs.clone(), || {
+            let _ = std::fs::remove_file(&prefs);
+            let session = Session::empty();
+            assert_eq!(session.settings().theme_pref, ThemePref::System);
+            std::fs::write(&prefs, "theme=banana\n").unwrap();
+            let session = Session::empty();
+            assert_eq!(session.settings().theme_pref, ThemePref::System);
+            std::fs::write(&prefs, "theme=dark\n").unwrap();
+            let session = Session::empty();
+            assert_eq!(session.settings().theme_pref, ThemePref::Dark);
+            assert_eq!(session.theme(), Theme::Dark);
+        });
+        let _ = std::fs::remove_file(&prefs);
+    }
+
+    #[test]
+    fn resolved_theme_drives_tokens() {
+        assert_eq!(resolve_theme(ThemePref::System, Some(true)), Theme::Dark);
+        assert_eq!(resolve_theme(ThemePref::System, Some(false)), Theme::Light);
+        assert_eq!(resolve_theme(ThemePref::System, None), Theme::Dark);
+        assert_eq!(resolve_theme(ThemePref::Dark, Some(false)), Theme::Dark);
+        assert_eq!(resolve_theme(ThemePref::Light, Some(true)), Theme::Light);
+        let dark = Tokens::for_theme(resolve_theme(ThemePref::System, Some(true)), Lang::Pt);
+        let light = Tokens::for_theme(resolve_theme(ThemePref::System, Some(false)), Lang::Pt);
+        assert!(dark.is_dark && !light.is_dark);
+        assert_ne!(dark.bg, light.bg);
     }
 
     #[test]
