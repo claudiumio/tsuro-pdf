@@ -105,7 +105,7 @@ fn hex(r: u8, g: u8, b: u8) -> Color {
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct TextStyle {
     pub size: f32,
-    pub line_height: f32,
+    pub line_height: iced::Pixels,
     pub weight: u16,
 }
 
@@ -138,7 +138,7 @@ pub fn text_style(kind: TextKind, emphasized: bool) -> TextStyle {
     };
     TextStyle {
         size,
-        line_height,
+        line_height: iced::Pixels(line_height),
         weight: if emphasized { strong } else { regular },
     }
 }
@@ -1335,7 +1335,10 @@ mod tests {
     #[test]
     fn section_header_is_11_over_14_bold() {
         let s = text_style(TextKind::Section, false);
-        assert_eq!((s.size, s.line_height, s.weight), (11.0, 14.0, 700));
+        assert_eq!(
+            (s.size, s.line_height, s.weight),
+            (11.0, iced::Pixels(14.0), 700)
+        );
     }
 
     #[test]
@@ -1381,12 +1384,22 @@ mod tests {
     }
 
     #[test]
+    fn body_line_height_is_sixteen_logical_pixels() {
+        let style = text_style(TextKind::Body, false);
+        let height = iced::widget::text::LineHeight::from(style.line_height);
+        assert_eq!(
+            height.to_absolute(iced::Pixels(style.size)),
+            iced::Pixels(16.0)
+        );
+    }
+
+    #[test]
     fn text_scale_pins_spec_section_2() {
         assert_eq!(
             text_style(TextKind::Body, false),
             TextStyle {
                 size: 13.0,
-                line_height: 16.0,
+                line_height: iced::Pixels(16.0),
                 weight: 400
             }
         );
@@ -1395,19 +1408,25 @@ mod tests {
             text_style(TextKind::Headline, false),
             TextStyle {
                 size: 13.0,
-                line_height: 16.0,
+                line_height: iced::Pixels(16.0),
                 weight: 700
             }
         );
         assert_eq!(text_style(TextKind::Title2, false).size, 17.0);
-        assert_eq!(text_style(TextKind::Title2, false).line_height, 22.0);
+        assert_eq!(
+            text_style(TextKind::Title2, false).line_height,
+            iced::Pixels(22.0)
+        );
         assert_eq!(text_style(TextKind::Title2, true).weight, 600);
         assert_eq!(text_style(TextKind::Title3, false).size, 15.0);
         assert_eq!(text_style(TextKind::Callout, false).size, 12.0);
         assert_eq!(text_style(TextKind::Subheadline, false).size, 11.0);
         // Scale floor [HIG].
         assert_eq!(text_style(TextKind::Footnote, false).size, 10.0);
-        assert_eq!(text_style(TextKind::Footnote, false).line_height, 13.0);
+        assert_eq!(
+            text_style(TextKind::Footnote, false).line_height,
+            iced::Pixels(13.0)
+        );
     }
 
     #[test]

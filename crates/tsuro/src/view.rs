@@ -2980,7 +2980,7 @@ fn pages_panel(ready: &Ready, t: Tokens) -> Element<'_, Message> {
         false,
         t.faint,
     )]
-    .spacing(8);
+    .spacing(crate::session::OUTLINE_GAP);
     col = col.push(panel_tabs(ready, t));
     col = match ready.panel {
         Some(PanelTab::Outline) if ready.outline.is_some() => col.push(outline_tab(ready, t)),
@@ -3059,7 +3059,7 @@ fn panel_tabs(ready: &Ready, t: Tokens) -> Element<'_, Message> {
 fn outline_tab(ready: &Ready, t: Tokens) -> Element<'_, Message> {
     let active = ready.outline_active();
     let focus = ready.outline_focus();
-    let mut col = column![].spacing(8);
+    let mut col = column![].spacing(crate::session::OUTLINE_GAP);
     for (path, depth, title, page, has_children) in ready.outline_rows() {
         let is_active = active.as_ref() == Some(&path);
         // O cursor do teclado é a pílula; a página ativa, o texto em accent.
@@ -3084,8 +3084,7 @@ fn outline_tab(ready: &Ready, t: Tokens) -> Element<'_, Message> {
                 .color(if is_active { t.accent } else { t.ink }),
         )
         .width(Length::Fill)
-        .height(Length::Fixed(kiri::SIDEBAR_ITEM_HEIGHT))
-        .padding(Padding::from([0, 8]))
+        .padding(Padding::from([8, 8]))
         .style(kiri::ibtn_style(t, is_focus))
         .on_press(Message::OutlineJump(page));
         col = col.push(
@@ -3095,7 +3094,8 @@ fn outline_tab(ready: &Ready, t: Tokens) -> Element<'_, Message> {
                 entry,
             ]
             .spacing(2)
-            .align_y(Alignment::Center),
+            .align_y(Alignment::Center)
+            .height(Length::Fixed(kiri::SIDEBAR_ITEM_HEIGHT)),
         );
     }
     scrollable(col)

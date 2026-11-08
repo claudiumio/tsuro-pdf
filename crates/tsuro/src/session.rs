@@ -43,12 +43,12 @@ pub(crate) const THUMB_ROW: f32 = 156.0;
 const THUMB_VISIBLE: u32 = 8;
 const THUMB_PREFETCH: u32 = 3;
 
-/// Passo vertical de uma linha da árvore do sumário, usado só para manter a
-/// linha do cursor visível ao andar com ↑/↓. `outline_tab` em view.rs mede
-/// texto 12 com line-height 1.3 (=15,6) + padding [9,10] (=18) + spacing 8
-/// = 41,6; o valor é arredondado para baixo de propósito: subestimar deixa a
-/// linha um pouco abaixo do topo (visível), superestimar a esconderia.
-pub(crate) const OUTLINE_ROW: f32 = 41.0;
+/// Espaçamento entre linhas do sumário, compartilhado pela view e rolagem.
+pub(crate) const OUTLINE_GAP: f32 = 8.0;
+
+fn outline_row_offset(row: usize) -> f32 {
+    row as f32 * (crate::kiri::SIDEBAR_ITEM_HEIGHT + OUTLINE_GAP)
+}
 
 /// Altura fixa de uma linha da lista de marcações (3 linhas de texto 12 +
 /// padding + espaço entre linhas): a rolagem do cursor depende dela. A view
@@ -5244,14 +5244,11 @@ impl Session {
             Some(PanelTab::Outline) if ready.outline.is_some() => match cmd {
                 PanelKey::Prev | PanelKey::Next => {
                     match ready.outline_step(matches!(cmd, PanelKey::Next)) {
-                        // Rola junto (senão o cursor sai da janela): +1
-                        // desconta o cabeçalho das abas, que ocupa uma
-                        // linha e está dentro do mesmo scrollable.
                         Some(row) => scrollable::scroll_to(
                             crate::view::pages_scroll_id(),
                             scrollable::AbsoluteOffset {
                                 x: 0.0,
-                                y: (row as f32 + 1.0) * OUTLINE_ROW,
+                                y: outline_row_offset(row),
                             },
                         ),
                         None => Task::none(),
@@ -7642,6 +7639,12 @@ impl EmptyState {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn outline_keyboard_scroll_tracks_row_positions() {
+        assert_eq!(outline_row_offset(0), 0.0);
+        assert_eq!(outline_row_offset(100), 4000.0);
+    }
     use crate::page::Glyph;
 
     fn apply(session: &mut Session, message: Message) {
