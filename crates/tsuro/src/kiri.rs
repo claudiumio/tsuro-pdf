@@ -30,10 +30,14 @@ pub struct Tokens {
     pub is_dark: bool,
     pub bg: Color,
     pub surface: Color,
+    /// Trilho de controle (spec §3 `fill_3`): segmentado, progresso.
+    pub track: Color,
     pub chrome: Color,
     pub elevated: Color,
     pub ink: Color,
     pub muted: Color,
+    /// Terceiro nível de texto (spec §3): atalho, desabilitado, cabeçalho.
+    pub faint: Color,
     pub line: Color,
     pub accent: Color,
     pub accent_bg: Color,
@@ -52,48 +56,34 @@ pub struct Tokens {
 }
 
 impl Tokens {
+    /// Chrome tokens, now sourced from the approved semantic roles
+    /// (`Roles`, spec §3) so there is one table of truth. Legacy field names
+    /// stay: `ink`/`muted`/`line` are `label`/`label_2`/`separator` and the
+    /// surfaces are `window_bg` (chrome), `under_page` (backdrop) and `fill_1`
+    /// (control surface). Phase 2 moved every chrome surface onto these roles.
     pub fn for_theme(theme: Theme, lang: Lang) -> Self {
-        match theme {
-            Theme::Dark => Self {
-                is_dark: true,
-                lang,
-                bg: hex(0x18, 0x18, 0x18),
-                surface: hex(0x22, 0x22, 0x22),
-                chrome: hex(0x1a, 0x1a, 0x1a),
-                elevated: hex(0x26, 0x26, 0x26),
-                ink: hex(0xec, 0xec, 0xea),
-                muted: hex(0x9a, 0x98, 0x90),
-                line: hex(0x33, 0x33, 0x31),
-                accent: hex(0x4d, 0xb8, 0xb0),
-                accent_bg: hex(0x1e, 0x33, 0x31),
-                hover: hex(0x2a, 0x2a, 0x28),
-                ok: hex(0x5c, 0xb8, 0x5c),
-                warn: hex(0xd4, 0xa0, 0x17),
-                danger: hex(0xc0, 0x39, 0x2b),
-                page: Color::WHITE,
-                mark: hex(0xfd, 0xe6, 0x8a),
-                mark_current: hex(0xf5, 0x9e, 0x0b),
-            },
-            Theme::Light => Self {
-                is_dark: false,
-                lang,
-                bg: hex(0xef, 0xef, 0xed),
-                surface: Color::WHITE,
-                chrome: hex(0xf7, 0xf7, 0xf6),
-                elevated: Color::WHITE,
-                ink: hex(0x1c, 0x1c, 0x1a),
-                muted: hex(0x78, 0x76, 0x70),
-                line: hex(0xe0, 0xde, 0xd9),
-                accent: hex(0x1f, 0x7d, 0x76),
-                accent_bg: hex(0xe0, 0xf2, 0xf0),
-                hover: hex(0xe8, 0xe8, 0xe5),
-                ok: hex(0x5c, 0xb8, 0x5c),
-                warn: hex(0xd4, 0xa0, 0x17),
-                danger: hex(0xc0, 0x39, 0x2b),
-                page: Color::WHITE,
-                mark: hex(0xfd, 0xe6, 0x8a),
-                mark_current: hex(0xf5, 0x9e, 0x0b),
-            },
+        let r = Roles::for_theme(theme);
+        Self {
+            is_dark: theme.is_dark(),
+            lang,
+            bg: r.under_page,
+            surface: r.fill_1,
+            track: r.fill_3,
+            chrome: r.window_bg,
+            elevated: r.elevated,
+            ink: r.label,
+            muted: r.label_2,
+            faint: r.label_3,
+            line: r.separator,
+            accent: r.accent,
+            accent_bg: r.accent_bg,
+            hover: r.hover,
+            ok: r.green,
+            warn: r.orange,
+            danger: r.red,
+            page: r.page,
+            mark: hex(0xfd, 0xe6, 0x8a),
+            mark_current: hex(0xf5, 0x9e, 0x0b),
         }
     }
 }
@@ -103,9 +93,9 @@ fn hex(r: u8, g: u8, b: u8) -> Color {
 }
 
 // ── Visual foundation (docs/design/01-fundacao-visual.md) ─────────────────
-// Approved-spec tokens beside the legacy `Tokens`. Nothing here is consumed
-// yet: no rendered pixel changes in this phase — `view.rs` migrates onto
-// these tables in phase 2.
+// Approved-spec tables. Phase 1 added them; phase 2 moved the chrome surfaces
+// (`view.rs` toolbar, tabs, sidebar, segmented, search) onto them, so only
+// content areas still use ad-hoc sizes and colors.
 
 // Typography (spec §2) ──────────────────────────────────────────────────────
 
@@ -115,7 +105,7 @@ fn hex(r: u8, g: u8, b: u8) -> Color {
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct TextStyle {
     pub size: f32,
-    pub line_height: f32,
+    pub line_height: iced::Pixels,
     pub weight: u16,
 }
 
@@ -129,6 +119,8 @@ pub enum TextKind {
     Callout,
     Subheadline,
     Footnote,
+    /// Section header (spec §5 sidebar): 11/14 w700, `label_3`.
+    Section,
 }
 
 /// Pure mapping style + emphasis -> metrics. Emphasized lifts 400 to 600;
@@ -142,11 +134,26 @@ pub fn text_style(kind: TextKind, emphasized: bool) -> TextStyle {
         TextKind::Callout => (12.0, 15.0, 400, 600),
         TextKind::Subheadline => (11.0, 14.0, 400, 600),
         TextKind::Footnote => (10.0, 13.0, 400, 600),
+        TextKind::Section => (11.0, 14.0, 700, 700),
     };
     TextStyle {
         size,
-        line_height,
+        line_height: iced::Pixels(line_height),
         weight: if emphasized { strong } else { regular },
+    }
+}
+
+impl TextStyle {
+    /// iced font for the numeric weight (spec §2): 400 Regular, 500 Medium,
+    /// 600 SemiBold, 700 Bold — all embedded Inter faces.
+    pub fn font(self) -> iced::Font {
+        let weight = match self.weight {
+            700 => iced::font::Weight::Bold,
+            600 => iced::font::Weight::Semibold,
+            500 => iced::font::Weight::Medium,
+            _ => iced::font::Weight::Normal,
+        };
+        crate::font::inter(weight)
     }
 }
 
@@ -174,6 +181,15 @@ pub struct Roles {
     pub orange: Color,
     /// PDF sheet — always white in both themes (declared exception, spec §3).
     pub page: Color,
+    /// Raised surface (menu, sheet, popover, tooltip): the opaque substitute
+    /// for the kit's glass, one step above `window_bg` [INF, principle 4].
+    pub elevated: Color,
+    /// Selection tint: `accent` over `window_bg` [INF]; the kit's selection
+    /// fill in the brand accent.
+    pub accent_bg: Color,
+    /// Hover fill, lighter than `fill_1` so a hover never reads as a control
+    /// surface [INF].
+    pub hover: Color,
 }
 
 impl Roles {
@@ -193,6 +209,9 @@ impl Roles {
                 green: hex(0x3b, 0xdb, 0x63),
                 orange: hex(0xff, 0x9e, 0x33),
                 page: Color::WHITE,
+                elevated: hex(0x30, 0x30, 0x30),
+                accent_bg: hex(0x1e, 0x33, 0x31),
+                hover: hex(0x2a, 0x2a, 0x2a),
             },
             Theme::Light => Self {
                 label: hex(0x26, 0x26, 0x26),     // #000 85% over #FFF
@@ -208,6 +227,9 @@ impl Roles {
                 green: hex(0x34, 0xc7, 0x59),
                 orange: hex(0xff, 0x8d, 0x28),
                 page: Color::WHITE,
+                elevated: Color::WHITE,
+                accent_bg: hex(0xdf, 0xf1, 0xef),
+                hover: hex(0xee, 0xee, 0xee),
             },
         }
     }
@@ -472,6 +494,10 @@ impl Metrics {
     }
 }
 
+/// Item de navegação da sidebar (spec §5): 32 de altura, raio 8, padding 14 à
+/// esquerda, ícone 16 e texto 13/16.
+pub const SIDEBAR_ITEM_HEIGHT: f32 = 32.0;
+
 /// Altura da barra de progresso entre a toolbar e o conteúdo.
 pub const PROGRESS_HEIGHT: f32 = 6.0;
 
@@ -585,14 +611,13 @@ pub fn bar_btn_style(
     }
 }
 
-/// Pílula central (busca + página): fundo `elevated`, raio 99px.
+/// Pílula central (busca + página): control surface `fill_1`, pill radius.
 pub fn pill_style(tokens: Tokens) -> impl Fn(&iced::Theme) -> container::Style {
     move |_| container::Style {
-        background: Some(Background::Color(tokens.elevated)),
+        background: Some(Background::Color(tokens.surface)),
         border: Border {
-            color: tokens.line,
-            width: 1.0,
-            radius: 99.0.into(),
+            radius: radius(Radius::Pill).into(),
+            ..Border::default()
         },
         text_color: Some(tokens.ink),
         ..container::Style::default()
@@ -615,24 +640,20 @@ pub fn seg_style(tokens: Tokens) -> impl Fn(&iced::Theme) -> container::Style {
     }
 }
 
-/// Aba como pílula (nome e ×): hairline `line`, raio 8 igual ao do `ibtn` que
-/// fica dentro, para o hover não passar da borda. `accent_bg` na ativa;
-/// `elevated` (dark) ou `surface` (light) nas demais.
+/// Aba (spec §5): 26 de altura, raio 9, sem moldura. A ativa leva `fill_1` e
+/// peso 600 (no `view.rs`); a inativa é transparente com texto `label_2`.
 pub fn tab_pill_style(tokens: Tokens, active: bool) -> impl Fn(&iced::Theme) -> container::Style {
     move |_| container::Style {
         background: Some(Background::Color(if active {
-            tokens.accent_bg
-        } else if tokens.is_dark {
-            tokens.elevated
-        } else {
             tokens.surface
+        } else {
+            Color::TRANSPARENT
         })),
         border: Border {
-            color: tokens.line,
-            width: 1.0,
             radius: radius(Radius::Tab).into(),
+            ..Border::default()
         },
-        text_color: Some(tokens.ink),
+        text_color: Some(if active { tokens.ink } else { tokens.muted }),
         ..container::Style::default()
     }
 }
@@ -998,12 +1019,33 @@ pub fn bar_input_style(
             radius: radius(Radius::Pill).into(),
         },
         icon: tokens.muted,
-        placeholder: tokens.muted,
+        placeholder: tokens.faint,
         value: tokens.ink,
         selection: Color {
             a: 0.4,
             ..tokens.accent
         },
+    }
+}
+
+/// Campo de busca da barra (spec §5): superfície própria de 24 px, raio
+/// pílula e borda de 1 px `separator`. No escuro a superfície é `fill_1` (o
+/// branco do kit é do tema claro); o anel de acento do foco fica no
+/// `bar_input_style` do campo interno, que é transparente.
+pub fn search_field_style(tokens: Tokens) -> impl Fn(&iced::Theme) -> container::Style {
+    move |_| container::Style {
+        background: Some(Background::Color(if tokens.is_dark {
+            tokens.surface
+        } else {
+            tokens.elevated
+        })),
+        border: Border {
+            color: tokens.line,
+            width: 1.0,
+            radius: radius(Radius::Pill).into(),
+        },
+        text_color: Some(tokens.ink),
+        ..container::Style::default()
     }
 }
 
@@ -1070,7 +1112,7 @@ pub fn panel_bg_style(tokens: Tokens) -> impl Fn(&iced::Theme) -> container::Sty
 pub fn panel_seg_track_style(tokens: Tokens) -> impl Fn(&iced::Theme) -> container::Style {
     move |_| container::Style {
         background: Some(Background::Color(if tokens.is_dark {
-            tokens.surface
+            tokens.track
         } else {
             tokens.chrome
         })),
@@ -1083,15 +1125,16 @@ pub fn panel_seg_track_style(tokens: Tokens) -> impl Fn(&iced::Theme) -> contain
     }
 }
 
-/// Segmento do controle Miniaturas|Sumário: `accent_bg`+`accent` quando ativo,
-/// `hover` só no hover; raio 4.
+/// Segmento do painel (spec §5): o selecionado é a pílula elevada (`fill_1`,
+/// texto `label`, peso 600 no `view.rs`); os demais são transparentes com
+/// `hover` no ponteiro. Raio 6 = raio do trilho menos o padding de 2.
 pub fn panel_seg_style(
     tokens: Tokens,
     active: bool,
 ) -> impl Fn(&iced::Theme, button::Status) -> button::Style {
     move |_theme, status| {
         let background = if active {
-            tokens.accent_bg
+            tokens.elevated
         } else {
             match status {
                 button::Status::Hovered | button::Status::Pressed => tokens.hover,
@@ -1100,7 +1143,7 @@ pub fn panel_seg_style(
         };
         button::Style {
             background: Some(Background::Color(background)),
-            text_color: if active { tokens.accent } else { tokens.ink },
+            text_color: tokens.ink,
             border: Border {
                 radius: radius(Radius::Button).into(),
                 ..Border::default()
@@ -1271,16 +1314,47 @@ mod tests {
     }
 
     #[test]
-    fn tab_pill_fills_active_accent_and_inactive_per_theme() {
+    fn chrome_tokens_come_from_the_approved_roles() {
+        // Phase 2: uma tabela só — o chrome usa os papéis semânticos do spec §3.
+        for theme in [Theme::Dark, Theme::Light] {
+            let r = Roles::for_theme(theme);
+            let t = Tokens::for_theme(theme, Lang::Pt);
+            assert_eq!(t.chrome, r.window_bg);
+            assert_eq!(t.bg, r.under_page);
+            assert_eq!(t.ink, r.label);
+            assert_eq!(t.muted, r.label_2);
+            assert_eq!(t.faint, r.label_3);
+            assert_eq!(t.line, r.separator);
+            assert_eq!(t.surface, r.fill_1);
+            assert_eq!(t.track, r.fill_3);
+            assert_eq!(t.elevated, r.elevated);
+            assert_eq!(t.accent, r.accent);
+        }
+    }
+
+    #[test]
+    fn section_header_is_11_over_14_bold() {
+        let s = text_style(TextKind::Section, false);
+        assert_eq!(
+            (s.size, s.line_height, s.weight),
+            (11.0, iced::Pixels(14.0), 700)
+        );
+    }
+
+    #[test]
+    fn tab_pill_fills_active_and_keeps_inactive_flat() {
+        // Spec §5: a aba ativa leva `fill_1` (`surface`); a inativa é
+        // transparente, sem moldura, e o texto cai para `label_2`.
         let dark = Tokens::for_theme(Theme::Dark, Lang::Pt);
         let style = tab_pill_style(dark, false)(&iced::Theme::Dark);
-        assert!(matches!(style.background, Some(Background::Color(c)) if c == dark.elevated));
-        assert_eq!(style.border.width, 1.0);
-        assert_eq!(style.border.color, dark.line);
+        assert!(matches!(style.background, Some(Background::Color(c)) if c.a == 0.0));
+        assert_eq!(style.border.width, 0.0);
+        assert_eq!(style.text_color, Some(dark.muted));
         let style = tab_pill_style(dark, true)(&iced::Theme::Dark);
-        assert!(matches!(style.background, Some(Background::Color(c)) if c == dark.accent_bg));
+        assert!(matches!(style.background, Some(Background::Color(c)) if c == dark.surface));
+        assert_eq!(style.text_color, Some(dark.ink));
         let light = Tokens::for_theme(Theme::Light, Lang::Pt);
-        let style = tab_pill_style(light, false)(&iced::Theme::Light);
+        let style = tab_pill_style(light, true)(&iced::Theme::Light);
         assert!(matches!(style.background, Some(Background::Color(c)) if c == light.surface));
     }
 
@@ -1310,12 +1384,22 @@ mod tests {
     }
 
     #[test]
+    fn body_line_height_is_sixteen_logical_pixels() {
+        let style = text_style(TextKind::Body, false);
+        let height = iced::widget::text::LineHeight::from(style.line_height);
+        assert_eq!(
+            height.to_absolute(iced::Pixels(style.size)),
+            iced::Pixels(16.0)
+        );
+    }
+
+    #[test]
     fn text_scale_pins_spec_section_2() {
         assert_eq!(
             text_style(TextKind::Body, false),
             TextStyle {
                 size: 13.0,
-                line_height: 16.0,
+                line_height: iced::Pixels(16.0),
                 weight: 400
             }
         );
@@ -1324,19 +1408,25 @@ mod tests {
             text_style(TextKind::Headline, false),
             TextStyle {
                 size: 13.0,
-                line_height: 16.0,
+                line_height: iced::Pixels(16.0),
                 weight: 700
             }
         );
         assert_eq!(text_style(TextKind::Title2, false).size, 17.0);
-        assert_eq!(text_style(TextKind::Title2, false).line_height, 22.0);
+        assert_eq!(
+            text_style(TextKind::Title2, false).line_height,
+            iced::Pixels(22.0)
+        );
         assert_eq!(text_style(TextKind::Title2, true).weight, 600);
         assert_eq!(text_style(TextKind::Title3, false).size, 15.0);
         assert_eq!(text_style(TextKind::Callout, false).size, 12.0);
         assert_eq!(text_style(TextKind::Subheadline, false).size, 11.0);
         // Scale floor [HIG].
         assert_eq!(text_style(TextKind::Footnote, false).size, 10.0);
-        assert_eq!(text_style(TextKind::Footnote, false).line_height, 13.0);
+        assert_eq!(
+            text_style(TextKind::Footnote, false).line_height,
+            iced::Pixels(13.0)
+        );
     }
 
     #[test]
