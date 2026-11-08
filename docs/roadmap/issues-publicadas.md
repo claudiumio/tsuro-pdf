@@ -55,6 +55,8 @@ Antes de publicar, foram consultadas 43 issues existentes, duas abertas e 41 fec
 
 Publicação concluída e verificada. Foram criadas 28 issues, #128 a #155. Cada retorno foi registrado antes da próxima criação. A consulta remota confirmou ID único, título, corpo bilíngue completo, labels e estado aberto em todas as 28. O total de 109 itens de aceite por idioma corresponde ao recorte das issues, não aos 90 critérios da verificação documental anterior. Nenhum código do aplicativo, CI, dependência, fixture, commit, PR ou release foi alterado por esta tarefa.
 
+O `AGENTS.md` pede título de issue no formato Conventional Commits. As 28 issues foram publicadas antes dessa regra com o prefixo `[ID]`. Elas preservam o título atual. `publicar_issues.py` passou a gerar `type(scope): descrição [ID]` e reconhece as antigas pelo ID dentro do título, então uma nova execução não cria duplicata. A repetição de `--verify` em 7 de novembro de 2026 confirmou corpo e labels das 28 e registrou 24 abertas e quatro fechadas, `#128`, `#129`, `#135` e `#151`.
+
 Classificação técnica preservada. Três incrementos de reuso, seis delimitados, onze com investigação inicial, sete com implementação adiada e um pacto de governança. F-NAV-09 requer investigação antecipada de barreiras apesar do adiamento da implementação completa.
 
 O script de publicação foi validado sem escrita remota antes da execução e depois comparou os corpos esperados com o GitHub. A checagem estrutural do HTML foi repetida. Nenhuma suíte Rust, benchmark, spike ou impressão física foi executada nesta tarefa documental. Não houve nova verificação visual completa em celular após o recorte de DPI.

@@ -34,7 +34,7 @@ Prioridades e WSJF são propostas, não compromissos de calendário. A conta usa
 - **Tamanho e confiança.** M, confiança média. Incógnitas de contexto guardado, foco e eventos de mouse por plataforma.
 - **Prioridade sugerida.** Should. Valor 3, urgência 2, oportunidade 2, tamanho 2. WSJF = (3+2+2)/2 = 3,5.
 - **Definição de pronto.** Comportamento real e teclado em macOS e Windows, PT e EN e nota de release. `cargo test -p tsuro`, `cargo fmt --check` e `cargo clippy`, com resultados registrados. Medição de regressão por S-06.
-- **Minuta local da issue.** Publicação bilíngue e estado técnico no [índice de issues](../issues-publicadas.md). O texto publicado incorpora a avaliação técnica posterior.
+- **Rascunho de issue.** Publicação bilíngue e estado técnico no [índice de issues](../issues-publicadas.md). O texto publicado incorpora a avaliação técnica posterior.
   - Título: `feat(nav): tornar o retorno de saltos descobrível`
   - Labels: `enhancement`, `navigation`, `ux`, `needs-triage`
   - Corpo: Reusar histórico existente. Expor retorno transitório e eventos de mouse. Preservar foco e contexto da origem. Não criar histórico paralelo ou alvo que desaparece durante uso.
@@ -65,7 +65,7 @@ Prioridades e WSJF são propostas, não compromissos de calendário. A conta usa
 - **Tamanho e confiança.** M, confiança média. Incógnitas de extração, normalização, ambiguidades e disponibilidade de fixtures.
 - **Prioridade sugerida.** Should. Valor 4, urgência 3, oportunidade 3, tamanho 2. WSJF = (4+3+3)/2 = 5.
 - **Definição de pronto.** Navegação e exportação desambiguadas em aplicação real. PT e EN, nota de release, `cargo test -p tsuro`, `cargo fmt --check`, `cargo clippy`, macOS e Windows. Custo comparado com S-06.
-- **Minuta local da issue.** Publicação bilíngue e estado técnico no [índice de issues](../issues-publicadas.md). O texto publicado incorpora a avaliação técnica posterior.
+- **Rascunho de issue.** Publicação bilíngue e estado técnico no [índice de issues](../issues-publicadas.md). O texto publicado incorpora a avaliação técnica posterior.
   - Título: `feat(nav): distinguir labels do PDF e posições físicas`
   - Labels: `enhancement`, `navigation`, `needs-triage`
   - Corpo: Ler metadados de página e manter posição física. Desambiguar consultas repetidas ou numéricas. Não usar OCR nem bloquear consumidores sem labels. Preservar índices internos em base 0.
@@ -98,7 +98,7 @@ Prioridades e WSJF são propostas, não compromissos de calendário. A conta usa
 - **Tamanho e confiança.** G, confiança baixa. Incógnitas de ordem, classificação de hífen, qualidade do corpus e custo.
 - **Prioridade sugerida.** Should se S-07 for favorável. Valor 3, urgência 2, oportunidade 2, tamanho 3. WSJF = (3+2+2)/3 = 2,33. Se o spike falhar, adiar.
 - **Definição de pronto.** Corpus e limites documentados, original preservado, erros de cópia tratados. PT e EN, nota de release, `cargo test -p tsuro`, `cargo fmt --check`, `cargo clippy` e verificação real em macOS e Windows. Medir com S-06.
-- **Minuta local da issue.** Publicação bilíngue e estado técnico no [índice de issues](../issues-publicadas.md). O texto publicado incorpora a avaliação técnica posterior.
+- **Rascunho de issue.** Publicação bilíngue e estado técnico no [índice de issues](../issues-publicadas.md). O texto publicado incorpora a avaliação técnica posterior.
   - Título: `feat(read): copiar parágrafos com junção conservadora`
   - Labels: `enhancement`, `ux`, `needs-triage`
   - Corpo: Comando opt-in, sem alterar cópia padrão. Validar texto e geometria em corpus PT e EN. Preservar hifens e estruturas ambíguas. S-07 pode concluir que a função deve ser adiada.
@@ -129,7 +129,7 @@ Prioridades e WSJF são propostas, não compromissos de calendário. A conta usa
 - **Tamanho e confiança.** M, confiança média. Incógnitas de atalhos por plataforma, exceções e foco.
 - **Prioridade sugerida.** Should. Valor 3, urgência 2, oportunidade 3, tamanho 2. WSJF = (3+2+3)/2 = 4.
 - **Definição de pronto.** Registro e dispatch coerentes, exceções documentadas, teclado real em macOS e Windows. PT, EN e nota de release. `cargo test -p tsuro`, `cargo fmt --check`, `cargo clippy` e comparação com S-06.
-- **Minuta local da issue.** Publicação bilíngue e estado técnico no [índice de issues](../issues-publicadas.md). O texto publicado incorpora a avaliação técnica posterior.
+- **Rascunho de issue.** Publicação bilíngue e estado técnico no [índice de issues](../issues-publicadas.md). O texto publicado incorpora a avaliação técnica posterior.
   - Título: `feat(nav): unificar descoberta e atalhos de comandos`
   - Labels: `enhancement`, `navigation`, `accessibility`, `needs-triage`
   - Corpo: Registrar comandos suportados e condições. Testar atalhos reais e despacho, sem quantidade fixa. Preservar edição de texto e justificar exceções. Não bloquear novos consumidores pela migração completa.
@@ -162,7 +162,7 @@ Prioridades e WSJF são propostas, não compromissos de calendário. A conta usa
 - **Tamanho e confiança.** G, confiança baixa. Incógnitas de hash, migração, ambiguidades, retenção e custo de I/O.
 - **Prioridade sugerida.** Could. Valor 3, urgência 2, oportunidade 2, tamanho 3. WSJF = (3+2+2)/3 = 2,33.
 - **Definição de pronto.** Contrato de instância e conteúdo documentado, corpus sem restauração errada e custo aprovado. PT, EN, nota de release, `cargo test -p tsuro`, `cargo fmt --check`, `cargo clippy` e aplicação real em macOS e Windows.
-- **Minuta local da issue.** Publicação bilíngue e estado técnico no [índice de issues](../issues-publicadas.md). O texto publicado incorpora a avaliação técnica posterior.
+- **Rascunho de issue.** Publicação bilíngue e estado técnico no [índice de issues](../issues-publicadas.md). O texto publicado incorpora a avaliação técnica posterior.
   - Título: `feat(nav): retomar PDFs movidos sem misturar cópias`
   - Labels: `enhancement`, `navigation`, `needs-triage`
   - Corpo: Separar conteúdo, instância e posição. Reconhecer movimento seguro e desambiguar cópias idênticas. Medir custo de identificação. Não aplicar posição antiga a conteúdo editado.
@@ -180,7 +180,7 @@ Prioridades e WSJF são propostas, não compromissos de calendário. A conta usa
 - **Dependências.** Diagnóstico real e S-06. Não bloqueia outras funções.
 - **Tamanho e prioridade.** P ou M após diagnóstico. Could, confiança baixa. Se surgir defeito de leitura grave, reclassificar como correção prioritária com evidência.
 - **Expressão temática.** Sem codinome, sem ícone e sem preferência nova antes de provar necessidade. Rótulo eventual PT "Rolagem" e EN "Scrolling".
-- **Minuta local da issue.** Publicação bilíngue e estado técnico no [índice de issues](../issues-publicadas.md). O texto publicado incorpora a avaliação técnica posterior.
+- **Rascunho de issue.** Publicação bilíngue e estado técnico no [índice de issues](../issues-publicadas.md). O texto publicado incorpora a avaliação técnica posterior.
   - Título: `feat(nav): avaliar rolagem por dispositivo e plataforma`
   - Labels: `enhancement`, `navigation`, `ux`, `needs-triage`
   - Corpo: Reproduzir direção, sensibilidade e resposta. Respeitar preferência do sistema. Não aplicar uma configuração universal baseada em queixa de outro leitor. Registrar recusa se não houver problema.
@@ -200,7 +200,7 @@ Prioridades e WSJF são propostas, não compromissos de calendário. A conta usa
 - **Dependências.** S-02 é rígida. S-06 fornece orçamento. Histórico existente permite salto opcional. F-NAV-01 e F-NAV-04 melhoram descoberta sem bloquear a prévia transitória.
 - **Tamanho e prioridade.** G, Could, confiança baixa. Incógnitas de link, destino, recorte, foco e memória.
 - **Expressão temática.** Nozoki, 覗き, espiar, codinome interno. Ori candidato com duas folhas parcialmente sobrepostas e vinco no canto. PT "Espiar destino" e "Ir para o destino". EN "Preview destination" e "Go to destination".
-- **Minuta local da issue.** Publicação bilíngue e estado técnico no [índice de issues](../issues-publicadas.md). O texto publicado incorpora a avaliação técnica posterior.
+- **Rascunho de issue.** Publicação bilíngue e estado técnico no [índice de issues](../issues-publicadas.md). O texto publicado incorpora a avaliação técnica posterior.
   - Título: `feat(nav): avaliar prévia local de links internos`
   - Labels: `enhancement`, `navigation`, `ux`, `needs-triage`
   - Corpo: Investigar S-02 e usar links declarados. Prévia transitória acessível por teclado. Fechar sem mover origem. Não executar ações externas nem buscar antecipadamente sem limite.
@@ -218,7 +218,7 @@ Prioridades e WSJF são propostas, não compromissos de calendário. A conta usa
 - **Dependências.** S-04 e experimento de inferência. S-06 para custo. Nenhuma lista de marcações depende desta função.
 - **Tamanho e prioridade.** G, Won't na primeira sequência, confiança baixa. Incógnitas de atributos do texto e precisão.
 - **Expressão temática.** Kari-mokuji, 仮目次, sumário provisório, sujeito a revisão. Reusar ícone de sumário. PT "Sumário gerado. Pode conter erros." EN "Generated outline. May contain errors."
-- **Minuta local da issue.** Publicação bilíngue e estado técnico no [índice de issues](../issues-publicadas.md). O texto publicado incorpora a avaliação técnica posterior.
+- **Rascunho de issue.** Publicação bilíngue e estado técnico no [índice de issues](../issues-publicadas.md). O texto publicado incorpora a avaliação técnica posterior.
   - Título: `feat(nav): avaliar sumário provisório para PDFs sem outline`
   - Labels: `enhancement`, `navigation`, `ux`, `needs-triage`
   - Corpo: Comparar inferência com referência humana e custo. Identificar origem provisória e permitir ignorar. Não substituir estrutura autoral ou gravar o original. Recusa é resultado válido.
@@ -236,7 +236,7 @@ Prioridades e WSJF são propostas, não compromissos de calendário. A conta usa
 - **Dependências.** Investigação de foco e acessibilidade, S-04 quando geometria for necessária e S-06. Lista e busca de marcações continuam acessíveis por teclado sem esperar seleção de texto completa.
 - **Tamanho e prioridade.** GG, Won't nesta sequência de implementação, confiança baixa. A investigação de barreiras deve ocorrer antes de decidir um adiamento longo.
 - **Expressão temática.** Sem codinome ou ícone novo. PT "Selecionar texto com teclado". EN "Select text with keyboard". Anúncios de posição e seleção dependem de mecanismo acessível verificado.
-- **Minuta local da issue.** Publicação bilíngue e estado técnico no [índice de issues](../issues-publicadas.md). O texto publicado incorpora a avaliação técnica posterior.
+- **Rascunho de issue.** Publicação bilíngue e estado técnico no [índice de issues](../issues-publicadas.md). O texto publicado incorpora a avaliação técnica posterior.
   - Título: `feat(read): investigar seleção de texto por teclado`
   - Labels: `enhancement`, `accessibility`, `needs-triage`
   - Corpo: Avaliar foco, ordem e seleção em layouts reais. Separar caret de leitor de tela. Registrar limites e barreiras observadas. A investigação pode justificar aumento de prioridade.

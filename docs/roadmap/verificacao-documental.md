@@ -2,6 +2,8 @@
 
 Verificação em 13 de outubro de 2026 pelo coordenador. Escopo limitado aos três arquivos de fichas em `funcoes/` e ao `roadmap.md` desta pasta. Os checks usam Python e biblioteca padrão, sem execução do aplicativo, build, instalação ou serviços de navegador.
 
+Repetição em 7 de novembro de 2026 na raiz do repositório, depois de alinhar o rótulo do último campo das fichas com o modelo. O resultado foi `PASS documental. 28 IDs, 90 critérios, 15 contas e 34 referências locais.` com `python3 -I` e código de saída 0. O mesmo dia registrou 24 issues abertas e quatro fechadas, `#128`, `#129`, `#135` e `#151`, na verificação de `publicar_issues.py --verify`.
+
 ## Resultado estrutural
 
 PASS para IDs, tipos e campos das fichas, formato dos rascunhos locais de issues, contas WSJF e cobertura do roadmap.
@@ -15,7 +17,7 @@ PASS para IDs, tipos e campos das fichas, formato dos rascunhos locais de issues
 - 34 referências únicas no padrão de citação local conferido apontam a seções existentes dos documentos de pesquisa. Existência de seção não prova suporte semântico integral da alegação.
 - 28 linhas na tabela de cobertura e 28 na matriz de dependências, sem ID estranho ao catálogo.
 - Oito spikes propostos e 12 cláusulas do pacto presentes.
-- 16 links Markdown relativos no conjunto conferido, todos com destino existente, incluindo este relatório. O script reproduzível abaixo foi executado pelo coordenador com `python3 -I`, saiu com código 0 e retornou `PASS documental. 28 IDs, 90 critérios, 15 contas e 34 referências locais.`
+- 16 links Markdown relativos no conjunto conferido, todos com destino existente, incluindo este relatório. O script reproduzível abaixo foi executado com `python3 -I` na raiz do repositório, saiu com código 0 e retornou `PASS documental. 28 IDs, 90 critérios, 15 contas e 34 referências locais.`
 
 Distribuição da cobertura. F0 recebe 2 IDs, F1 recebe 3, F2 recebe 5, F3 recebe 3, F4 recebe 3, F5 recebe 3 e F6 recebe 3. Seis IDs ficam no backlog adiado. A entrada de F-NAV-09 em F0 é investigação, não implementação completa.
 
@@ -42,12 +44,14 @@ A primeira execução agregada falhou nas comparações de IDs porque `Counter` 
 
 Uma label `security`, fora do vocabulário do snapshot, foi removida antes da checagem final. A matriz do roadmap também deixou de tratar todo spike de segurança como bloqueio global das unidades independentes.
 
+O último campo das 28 fichas chamava `Minuta local da issue`, enquanto o modelo exigia `Rascunho de issue`. A comparação de campos parava em `F-MARC-01`. As fichas passaram a usar o rótulo do modelo, sem mudar o texto do campo.
+
 ## Repetir a checagem estrutural principal
 
 O trecho abaixo permite repetir IDs, campos, critérios, contas, cobertura, labels, seções e links. Não implementa função do produto nem substitui os roteiros futuros das fichas. Execute com o caminho da pasta `docs/roadmap` como argumento.
 
 ```bash
-rtk proxy python3 -I - /Users/claudio/leitor-pdf-opensource/docs/roadmap <<'PY'
+rtk proxy python3 -I - docs/roadmap <<'PY'
 from pathlib import Path
 from collections import Counter
 import re

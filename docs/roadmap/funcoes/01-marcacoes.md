@@ -34,7 +34,7 @@ Prioridades e WSJF são julgamentos propostos. O score usa valor, urgência ou r
 - **Tamanho e confiança.** G, confiança baixa. Incógnitas de durabilidade em dois sistemas, custo de gravação, identidade, geometria e retenção.
 - **Prioridade sugerida.** Must para a fase de confiança, sujeito à validação. Valor 5, urgência 5, oportunidade 3, tamanho 4. WSJF = (5+5+3)/4 = 3,25. O risco de perda de dados prevalece sobre scores de funções menores.
 - **Definição de pronto.** Comportamentos de recuperação e privacidade aprovados. `cargo test -p tsuro`, `cargo fmt --check` e `cargo clippy` executados, com falhas ou baseline registrados. Verificação real em macOS e Windows. Textos PT e EN, nota de release e custo comparado com S-06. Não confundir esta lista com testes já realizados.
-- **Minuta local da issue.** Publicação bilíngue e estado técnico no [índice de issues](../issues-publicadas.md). O texto publicado incorpora a avaliação técnica posterior.
+- **Rascunho de issue.** Publicação bilíngue e estado técnico no [índice de issues](../issues-publicadas.md). O texto publicado incorpora a avaliação técnica posterior.
   - Título: `feat(annot): recuperar marcações de sessões interrompidas`
   - Labels: `enhancement`, `annotation`, `needs-triage`
   - Corpo: Guardar checkpoints locais sem alterar o original. Recuperar de forma idempotente. Tratar corrupção, mudança externa e disco cheio sem descartar trabalho. Definir privacidade e retenção antes da implementação.
@@ -65,7 +65,7 @@ Prioridades e WSJF são julgamentos propostos. O score usa valor, urgência ou r
 - **Tamanho e confiança.** M, confiança média. Incógnitas de foco, migração de abas, custo da lista e texto de origem.
 - **Prioridade sugerida.** Must para a fase de revisão. Valor 4, urgência 3, oportunidade 2, tamanho 2. WSJF = (4+3+2)/2 = 4,5.
 - **Definição de pronto.** Critérios atendidos com testes de comportamento e sessão real em macOS e Windows. `cargo test -p tsuro`, `cargo fmt --check`, `cargo clippy`, PT, EN e nota de release. Lista medida contra S-06.
-- **Minuta local da issue.** Publicação bilíngue e estado técnico no [índice de issues](../issues-publicadas.md). O texto publicado incorpora a avaliação técnica posterior.
+- **Rascunho de issue.** Publicação bilíngue e estado técnico no [índice de issues](../issues-publicadas.md). O texto publicado incorpora a avaliação técnica posterior.
   - Título: `feat(annot): listar e pesquisar marcações no painel`
   - Labels: `enhancement`, `annotation`, `ui`, `needs-triage`
   - Corpo: Acrescentar aba ao painel existente. Buscar por trecho e nota e saltar com histórico. Começar pelas marcações da sessão. Não bloquear lançamento por filtro de cor ou importação externa.
@@ -96,7 +96,7 @@ Prioridades e WSJF são julgamentos propostos. O score usa valor, urgência ou r
 - **Tamanho e confiança.** M, confiança média. Incógnitas de escopo, ranking, limites e invalidação.
 - **Prioridade sugerida.** Should. Valor 3, urgência 2, oportunidade 2, tamanho 2. WSJF = (3+2+2)/2 = 3,5.
 - **Definição de pronto.** Consulta e confirmação seguras, PT e EN, verificação real por teclado em macOS e Windows. `cargo test -p tsuro`, `cargo fmt --check`, `cargo clippy`, nota de release e comparação com S-06.
-- **Minuta local da issue.** Publicação bilíngue e estado técnico no [índice de issues](../issues-publicadas.md). O texto publicado incorpora a avaliação técnica posterior.
+- **Rascunho de issue.** Publicação bilíngue e estado técnico no [índice de issues](../issues-publicadas.md). O texto publicado incorpora a avaliação técnica posterior.
   - Título: `feat(annot): pesquisar marcações pela paleta`
   - Labels: `enhancement`, `annotation`, `navigation`, `needs-triage`
   - Corpo: Adicionar escopo de marcações com dados versionados. Saltar por ID e preservar histórico. Tratar item removido e troca de documento. Não reconstruir toda a coleção por tecla.
@@ -114,7 +114,7 @@ Prioridades e WSJF são julgamentos propostos. O score usa valor, urgência ou r
 - **Dependências.** F-MARC-02 e S-06. Rótulos de F-NAV-02 são melhoria opcional, não bloqueio.
 - **Tamanho e prioridade.** P, Could, confiança baixa. Incógnitas de densidade, escala e benefício.
 - **Expressão temática.** Shirube, 標, baliza. Sem ícone novo. Traços na barra não dependem exclusivamente da cor e não viram alvos de 2 px. PT "Página com marcações". EN "Page with annotations." Dica e lista oferecem alternativa acessível.
-- **Minuta local da issue.** Publicação bilíngue e estado técnico no [índice de issues](../issues-publicadas.md). O texto publicado incorpora a avaliação técnica posterior.
+- **Rascunho de issue.** Publicação bilíngue e estado técnico no [índice de issues](../issues-publicadas.md). O texto publicado incorpora a avaliação técnica posterior.
   - Título: `feat(annot): avaliar indicadores de marcações no progresso`
   - Labels: `enhancement`, `annotation`, `ux`, `needs-triage`
   - Corpo: Comparar localização com e sem indicadores. Tratar agrupamento e alternativa por teclado. Adiar se aumentar ruído ou erros. Não criar outra barra.
@@ -147,7 +147,7 @@ Prioridades e WSJF são julgamentos propostos. O score usa valor, urgência ou r
 - **Tamanho e confiança.** G, confiança baixa. Incógnitas de persistência, contrastes, memória por tipo e compatibilidade externa.
 - **Prioridade sugerida.** Should. Valor 4, urgência 3, oportunidade 2, tamanho 4. WSJF = (4+3+2)/4 = 2,25.
 - **Definição de pronto.** Interoperabilidade aprovada com evidência, teclado e contraste verificados, PT e EN, nota de release. `cargo test -p tsuro`, `cargo fmt --check`, `cargo clippy` e aplicação real em macOS e Windows. Custo medido com S-06.
-- **Minuta local da issue.** Publicação bilíngue e estado técnico no [índice de issues](../issues-publicadas.md). O texto publicado incorpora a avaliação técnica posterior.
+- **Rascunho de issue.** Publicação bilíngue e estado técnico no [índice de issues](../issues-publicadas.md). O texto publicado incorpora a avaliação técnica posterior.
   - Título: `feat(annot): escolher cores e repetir a última escolha`
   - Labels: `enhancement`, `annotation`, `accessibility`, `needs-triage`
   - Corpo: Implementar pequeno conjunto nomeado. Guardar cor por marcação e separar preferência atual. Preservar desfazer e cor da cópia salva. Não impor significado semântico nem depender só do matiz.
@@ -165,7 +165,7 @@ Prioridades e WSJF são julgamentos propostos. O score usa valor, urgência ou r
 - **Dependências.** F-MARC-05, F-NAV-04 e S-06. Aprovar política de saída e preservação de seleção.
 - **Tamanho e prioridade.** M, Won't nesta primeira sequência, confiança baixa. Adiamento é recomendação de planejamento, não decisão previamente confirmada do usuário.
 - **Expressão temática.** Pincelada, nome interno em português. Indicador funcional explícito, sem ícone novo. PT "Marcação contínua ativa. Esc para sair." EN "Continuous annotation active. Esc to exit."
-- **Minuta local da issue.** Publicação bilíngue e estado técnico no [índice de issues](../issues-publicadas.md). O texto publicado incorpora a avaliação técnica posterior.
+- **Rascunho de issue.** Publicação bilíngue e estado técnico no [índice de issues](../issues-publicadas.md). O texto publicado incorpora a avaliação técnica posterior.
   - Título: `feat(annot): avaliar modo de marcação contínua`
   - Labels: `enhancement`, `annotation`, `ux`, `needs-triage`
   - Corpo: Testar ganho de ações e risco de marcação acidental. Comparar políticas de saída. Não comprometer release antes da validação. Aproveitar memória de cor sem obrigar o modo.
@@ -196,7 +196,7 @@ Prioridades e WSJF são julgamentos propostos. O score usa valor, urgência ou r
 - **Tamanho e confiança.** M, confiança média. Incógnitas de identidade, persistência e política de alternância.
 - **Prioridade sugerida.** Should. Valor 3, urgência 2, oportunidade 2, tamanho 2. WSJF = (3+2+2)/2 = 3,5.
 - **Definição de pronto.** Persistência sem perda por retenção, originais intactos, teclado, PT, EN e nota de release. `cargo test -p tsuro`, `cargo fmt --check`, `cargo clippy` e verificação real em macOS e Windows.
-- **Minuta local da issue.** Publicação bilíngue e estado técnico no [índice de issues](../issues-publicadas.md). O texto publicado incorpora a avaliação técnica posterior.
+- **Rascunho de issue.** Publicação bilíngue e estado técnico no [índice de issues](../issues-publicadas.md). O texto publicado incorpora a avaliação técnica posterior.
   - Título: `feat(annot): guardar marcadores pessoais de página`
   - Labels: `enhancement`, `annotation`, `navigation`, `needs-triage`
   - Corpo: Guardar marcadores locais independentes do histórico recente. Listar e saltar com teclado. Avisar sobre limite de portabilidade. Não modificar sumário, original ou assinaturas.
@@ -214,7 +214,7 @@ Prioridades e WSJF são julgamentos propostos. O score usa valor, urgência ou r
 - **Dependências.** Gerador existente e F-NAV-04 para descoberta. F-NAV-02 acrescenta rótulos quando disponível. F-MARC-02 permite exportar subconjunto depois. F-MARC-05 acrescenta cor depois. Nenhum desses incrementos bloqueia v1 de coleção inteira e índice físico.
 - **Tamanho e prioridade.** P, Should, confiança média. Incógnitas de escaping, caminhos e política de sobrescrita. Prioridade maior que a sugerida pelo especialista porque reutiliza uma capacidade existente sem exigir novo modelo de leitura.
 - **Expressão temática.** Sem codinome e sem ícone novo. PT "Exportar marcações" e "O arquivo já existe. Substituir?" EN "Export annotations" e "The file already exists. Replace it?"
-- **Minuta local da issue.** Publicação bilíngue e estado técnico no [índice de issues](../issues-publicadas.md). O texto publicado incorpora a avaliação técnica posterior.
+- **Rascunho de issue.** Publicação bilíngue e estado técnico no [índice de issues](../issues-publicadas.md). O texto publicado incorpora a avaliação técnica posterior.
   - Título: `feat(annot): exportar marcações para arquivo Markdown`
   - Labels: `enhancement`, `annotation`, `needs-triage`
   - Corpo: Reusar exportação textual existente. Escolher destino, confirmar sobrescrita e tratar cancelamento e erro. Preservar notas e origem. Adiar subconjuntos e metadados opcionais sem bloquear a v1.

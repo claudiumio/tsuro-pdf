@@ -36,7 +36,7 @@ O usuário decidiu explorar papel oriental mais adiante. Washi continua adiado. 
 - **Tamanho e confiança.** M, confiança baixa. Incógnitas de API, mecanismo de proteção, erros, saída criptografada e resíduos em memória.
 - **Prioridade sugerida.** Must no pacote de abertura, condicionado a S-05. Valor 4, urgência 4, oportunidade 3, tamanho 2. WSJF = (4+4+3)/2 = 5,5. A classificação não prova suporte ou estimativa.
 - **Definição de pronto.** Abertura real, cancelamento seguro e política de saídas protegidas validada em macOS e Windows. Textos PT e EN, nota de release, `cargo test -p tsuro`, `cargo fmt --check` e `cargo clippy`. Comparar abertura com S-06 e registrar limites de memória do segredo.
-- **Minuta local da issue.** Publicação bilíngue e estado técnico no [índice de issues](../issues-publicadas.md). O texto publicado incorpora a avaliação técnica posterior.
+- **Rascunho de issue.** Publicação bilíngue e estado técnico no [índice de issues](../issues-publicadas.md). O texto publicado incorpora a avaliação técnica posterior.
   - Título: `feat(file): abrir PDFs com senha sem persistir o segredo`
   - Labels: `enhancement`, `needs-triage`
   - Corpo: Revalidar abertura e S-05. Usar senha transitória, tratar tentativa e cancelamento sem perder sessão anterior. Definir proteção das saídas e recuperação. Não guardar senha nem reduzir proteção silenciosamente.
@@ -67,7 +67,7 @@ O usuário decidiu explorar papel oriental mais adiante. Washi continua adiado. 
 - **Tamanho e confiança.** GG, confiança baixa. Incógnitas de escritor, permissões de alteração, revisões, confiança e interoperabilidade.
 - **Prioridade sugerida.** Should condicionado a S-01. Valor 4, urgência 4, oportunidade 3, tamanho 5. WSJF = (4+4+3)/5 = 2,2. O risco prevalece sobre score e promessa do título.
 - **Definição de pronto.** Casos suportados e recusados publicados em documentação local. Evidência por revisão e erro de saída, não só PDF que abre. PT e EN, nota de release, `cargo test -p tsuro`, `cargo fmt --check`, `cargo clippy` e macOS e Windows. Testes do crate de assinatura conforme regras atualizadas, somente se autorizado modificar esse crate.
-- **Minuta local da issue.** Publicação bilíngue e estado técnico no [índice de issues](../issues-publicadas.md). O texto publicado incorpora a avaliação técnica posterior.
+- **Rascunho de issue.** Publicação bilíngue e estado técnico no [índice de issues](../issues-publicadas.md). O texto publicado incorpora a avaliação técnica posterior.
   - Título: `feat(file): avaliar salvamento de marcações em PDFs assinados`
   - Labels: `enhancement`, `needs-triage`
   - Corpo: Executar S-01 antes de compromisso. Separar bytes, revisões, alterações permitidas e confiança. Preservar original e não afirmar validade global por append incremental. Limitar, adiar ou recusar casos inconclusivos.
@@ -100,7 +100,7 @@ O usuário decidiu explorar papel oriental mais adiante. Washi continua adiado. 
 - **Tamanho e confiança.** G, confiança baixa. Incógnitas de API, fontes, drivers, memória e fidelidade.
 - **Prioridade sugerida.** Should condicionado ao spike. Valor 4, urgência 3, oportunidade 2, tamanho 4. WSJF = (4+3+2)/4 = 2,25.
 - **Definição de pronto.** Corpus, orçamento e resultados de qualidade documentados. Estados de preparação e spool corretos. PT e EN, nota de release, `cargo test -p tsuro`, `cargo fmt --check`, `cargo clippy`, macOS e Windows com cobertura de driver declarada. Não marcar impressão física validada se só foi inspecionado PDF de saída.
-- **Minuta local da issue.** Publicação bilíngue e estado técnico no [índice de issues](../issues-publicadas.md). O texto publicado incorpora a avaliação técnica posterior.
+- **Rascunho de issue.** Publicação bilíngue e estado técnico no [índice de issues](../issues-publicadas.md). O texto publicado incorpora a avaliação técnica posterior.
   - Título: `feat(print): limitar custo da preparação sem aumentar DPI`
   - Labels: `enhancement`, `print`, `needs-triage`
   - Corpo: Investigar memória agregada, preparação limitada e cancelamento por S-03. Manter 200 DPI no raster, sem seletor ou aumento de resolução. Preservação vetorial somente se viável e fiel. Fixar corpus e orçamento. Manter intervalo, escala, cópias e orientação. Diferenciar preparação, fila e impressão física.
@@ -131,7 +131,7 @@ O usuário decidiu explorar papel oriental mais adiante. Washi continua adiado. 
 - **Tamanho e confiança.** M, confiança média para omitir sessão, baixa para opção ampliada de anotações padrão. Incógnitas de motor, cache e política padrão.
 - **Prioridade sugerida.** Should. Valor 4, urgência 3, oportunidade 2, tamanho 2. WSJF = (4+3+2)/2 = 4,5. Estimativa da v1 limitada à sessão.
 - **Definição de pronto.** Prévia e saída coerentes nos três tipos de marcas, erros honestos e original preservado. PT e EN, nota de release, `cargo test -p tsuro`, `cargo fmt --check`, `cargo clippy`, macOS e Windows. Cobertura de impressão física declarada, não presumida.
-- **Minuta local da issue.** Publicação bilíngue e estado técnico no [índice de issues](../issues-publicadas.md). O texto publicado incorpora a avaliação técnica posterior.
+- **Rascunho de issue.** Publicação bilíngue e estado técnico no [índice de issues](../issues-publicadas.md). O texto publicado incorpora a avaliação técnica posterior.
   - Título: `feat(print): escolher inclusão de marcações da sessão`
   - Labels: `enhancement`, `ux`, `needs-triage`
   - Corpo: V1 omite ou inclui marcas da sessão. Explicar anotações padrão e conteúdo achatado separadamente. Compartilhar política entre prévia e saída. Não alterar original ou depender da impressão vetorial.
@@ -149,7 +149,7 @@ O usuário decidiu explorar papel oriental mais adiante. Washi continua adiado. 
 - **Dependências.** Dados semânticos existentes e impressão, ambos a revalidar. F-MARC-02, F-MARC-05 e F-NAV-02 são opcionais. V1 completa com posições físicas não espera lista, cores, labels ou impressão vetorial.
 - **Tamanho e prioridade.** M, Could, confiança baixa. Incógnitas de layout, fontes, paginação e privacidade.
 - **Expressão temática.** Sem codinome. Reusar marcação e impressora Ori. PT "Imprimir folha de marcações" e "Incluir notas". EN "Print annotation sheet" e "Include notes".
-- **Minuta local da issue.** Publicação bilíngue e estado técnico no [índice de issues](../issues-publicadas.md). O texto publicado incorpora a avaliação técnica posterior.
+- **Rascunho de issue.** Publicação bilíngue e estado técnico no [índice de issues](../issues-publicadas.md). O texto publicado incorpora a avaliação técnica posterior.
   - Título: `feat(print): avaliar folha separada de marcações`
   - Labels: `enhancement`, `needs-triage`
   - Corpo: Usar dados semânticos, origem e posição física. Notas opt-in e saída legível com paginação. Não bloquear pela lista de marcas ou labels. Sem layout de concorrente ou editor de relatórios.
@@ -167,7 +167,7 @@ O usuário decidiu explorar papel oriental mais adiante. Washi continua adiado. 
 - **Dependências.** S-05 rígida. Compartilha modelo com F-ARQ-01 sem exigir sua conclusão para documentar permissões de arquivos já abertos. Consumidores usam aviso mínimo e política de segurança sem esperar painel completo.
 - **Tamanho e prioridade.** M, Should, confiança baixa. Incógnitas de capacidade do motor e política para estado desconhecido.
 - **Expressão temática.** Sem codinome. Reusar cadeado Ori se disponível. PT "Permissões do documento" e "Não verificado pelo Tsuro". EN "Document permissions" e "Not verified by Tsuro".
-- **Minuta local da issue.** Publicação bilíngue e estado técnico no [índice de issues](../issues-publicadas.md). O texto publicado incorpora a avaliação técnica posterior.
+- **Rascunho de issue.** Publicação bilíngue e estado técnico no [índice de issues](../issues-publicadas.md). O texto publicado incorpora a avaliação técnica posterior.
   - Título: `feat(file): explicar permissões por ação`
   - Labels: `enhancement`, `needs-triage`
   - Corpo: Usar capacidades verificadas por S-05. Separar abertura, cópia, anotação e impressão. Mostrar desconhecido sem inferir autorização. Alinhar interface e despacho, sem remover restrições.
@@ -185,7 +185,7 @@ O usuário decidiu explorar papel oriental mais adiante. Washi continua adiado. 
 - **Dependências.** Revalidar painel e contrato de resultados. F-ARQ-02 compartilha linguagem, mas nenhuma função espera a outra. Autorização específica antes de tocar `crates/tsuro-sign`. Rede e dependências novas não são presumidas necessárias.
 - **Tamanho e prioridade.** P para texto com dados já disponíveis, G se exigir verificação nova. Should para clareza, confiança média na parte textual e baixa no acréscimo de capacidades.
 - **Expressão temática.** Selo é codinome em português. Reusar ícone do painel sem cor única que misture estados. PT "Integridade verificada nesta revisão" e "Confiança do certificado não verificada". EN "Integrity verified for this revision" e "Certificate trust not verified".
-- **Minuta local da issue.** Publicação bilíngue e estado técnico no [índice de issues](../issues-publicadas.md). O texto publicado incorpora a avaliação técnica posterior.
+- **Rascunho de issue.** Publicação bilíngue e estado técnico no [índice de issues](../issues-publicadas.md). O texto publicado incorpora a avaliação técnica posterior.
   - Título: `feat(file): separar integridade e confiança nas assinaturas`
   - Labels: `enhancement`, `ux`, `needs-triage`
   - Corpo: Revalidar dados exibidos pelo painel. Separar revisão, alteração e confiança. Nomear verificações ausentes. Não prometer validade jurídica ou ampliar criptografia sem autorização.
@@ -207,7 +207,7 @@ O usuário decidiu explorar papel oriental mais adiante. Washi continua adiado. 
 - **Riscos e premissas.** Tom ou textura pode diminuir contraste e falsificar cor. Comparar corpus e permitir desligar. Recoloração pode provocar piscar e custo de memória. Medir antes da decisão. Representação cultural superficial pode parecer identidade copiada. Usar material próprio e revisão linguística. Suposição, existe benefício que justifique exceção ao Kiri.
 - **Critérios para reabrir a decisão.** Autorização explícita do usuário para explorar, problema de leitura ou preferência a avaliar, corpus e método definidos. Depois do experimento, resultado favorável, custo aprovado e saída original preservada são condições para considerar mudança de princípio, não autorização automática. Resultado negativo mantém folha branca.
 - **Dependências.** S-08, S-06, revisão linguística e autorização de mudança de princípio antes de implementar exceção. Nenhuma função espera Washi. Não altera cópia, salvamento ou impressão nesta proposta.
-- **Minuta local da issue.** Publicação bilíngue e estado técnico no [índice de issues](../issues-publicadas.md). O texto publicado incorpora a avaliação técnica posterior.
+- **Rascunho de issue.** Publicação bilíngue e estado técnico no [índice de issues](../issues-publicadas.md). O texto publicado incorpora a avaliação técnica posterior.
   - Título: `feat(theme): registrar exploração futura de papel Washi`
   - Labels: `enhancement`, `ux`, `needs-triage`
   - Corpo: Manter folha branca agora. Explorar papel oriental só quando autorizado. Separar preferência de legibilidade, fidelidade e custo. Uma experiência favorável não aprova automaticamente mudança de princípio ou release.
@@ -238,7 +238,7 @@ O usuário decidiu explorar papel oriental mais adiante. Washi continua adiado. 
 - **Tamanho e confiança.** M, confiança média. Incógnitas de área útil, foco, Escape e ganho além do auto-hide.
 - **Prioridade sugerida.** Could. Valor 3, urgência 2, oportunidade 2, tamanho 2. WSJF = (3+2+2)/2 = 3,5.
 - **Definição de pronto.** Ganho e saída por teclado demonstrados, alertas visíveis, âncora preservada e custo documentado. PT e EN, nota de release, `cargo test -p tsuro`, `cargo fmt --check`, `cargo clippy`, macOS e Windows. Não aprovar só por screenshot sem verificar foco e geometria.
-- **Minuta local da issue.** Publicação bilíngue e estado técnico no [índice de issues](../issues-publicadas.md). O texto publicado incorpora a avaliação técnica posterior.
+- **Rascunho de issue.** Publicação bilíngue e estado técnico no [índice de issues](../issues-publicadas.md). O texto publicado incorpora a avaliação técnica posterior.
   - Título: `feat(ui): reduzir chrome com retorno seguro no modo foco`
   - Labels: `enhancement`, `ux`, `accessibility`, `needs-triage`
   - Corpo: Demonstrar incremento além do HUD auto-hide. Preservar âncora, controles focados e alertas. Oferecer saída por teclado. Começar sem persistência de modo oculto e medir recálculo.
@@ -256,7 +256,7 @@ O usuário decidiu explorar papel oriental mais adiante. Washi continua adiado. 
 - **Dependências.** S-04 favorável e S-06 para custo. F-AMB-02, F-NAV-04 e F-NAV-09 são opcionais, sem bloqueio circular.
 - **Tamanho e prioridade.** G, Could, confiança baixa. Incógnitas de geometria, ganho e mecanismo acessível.
 - **Expressão temática.** Ito, 糸, fio, codinome interno. Ori candidato com dois polígonos finos e vinco central, se ícone realmente necessário. PT "Régua de leitura". EN "Reading guide". Sem animação decorativa.
-- **Minuta local da issue.** Publicação bilíngue e estado técnico no [índice de issues](../issues-publicadas.md). O texto publicado incorpora a avaliação técnica posterior.
+- **Rascunho de issue.** Publicação bilíngue e estado técnico no [índice de issues](../issues-publicadas.md). O texto publicado incorpora a avaliação técnica posterior.
   - Título: `feat(read): avaliar guia opcional de linha`
   - Labels: `enhancement`, `accessibility`, `ux`, `needs-triage`
   - Corpo: Validar geometria em S-04 e ganho de leitura. Guia desligado por padrão, acessível por teclado e ausente de saídas. Não bloquear seleção e links nem prometer efeito clínico.
@@ -285,7 +285,7 @@ O usuário decidiu explorar papel oriental mais adiante. Washi continua adiado. 
 - **Como verificar a cada release.** Triagem de aproximadamente dois minutos, não auditoria completa. Revisar comandos novos contra missão. Conferir a matriz de evidências da release para rede, leitor padrão, exportação, senha e assinatura. Marcar cada cláusula como evidência disponível, não aplicável justificada ou pendente. Se faltar evidência de uma cláusula afetada, abrir pendência antes de aprovar. Testes de impressão física, privacidade e instalação seguem roteiro próprio e não cabem nessa triagem. Não salvar sobre fixtures nem tomar ausência de item na paleta como prova de ausência de código.
 - **Origem (evidência).** `codigo-e-usuarios.md § 3`, interface sobrecarregada e saídas inesperadas. `ui-ux.md § 7`, comportamentos a não trazer. `relatorio.md § 6`, fronteiras da missão.
 - **Expressão temática.** Pacto do Ma. Ma, 間, espaço ou intervalo, codinome sujeito a revisão. Tom direto, sem manifesto ornamental. Nenhum ícone novo. PT "Limites do Tsuro". EN "Tsuro boundaries".
-- **Minuta local da issue.** Publicação bilíngue e estado técnico no [índice de issues](../issues-publicadas.md). O texto publicado incorpora a avaliação técnica posterior.
+- **Rascunho de issue.** Publicação bilíngue e estado técnico no [índice de issues](../issues-publicadas.md). O texto publicado incorpora a avaliação técnica posterior.
   - Título: `docs(product): propor limites verificáveis do Tsuro`
   - Labels: `enhancement`, `documentation`, `needs-triage`
   - Corpo: Aprovar ou ajustar cláusulas antes de incorporá-las à governança. Triagem de release consulta evidências, não promete provar tudo em dois minutos. Preservar leitura local, saída sem marca do produto e limites do Kiri.

@@ -26,23 +26,34 @@ def gh(*args, stdin=None):
     return result.stdout.strip()
 
 
-def portuguese_acceptance(issue):
-    if 'custom_acceptance_pt' in issue:
-        return issue['custom_acceptance_pt']
+def section_of(issue):
     for source in sorted((ROOT / 'funcoes').glob('*.md')):
         pattern = rf'^### {re.escape(issue["id"])}\.[^\n]*\n(.*?)(?=^### |^## |\Z)'
         match = re.search(pattern, source.read_text(), re.M | re.S)
-        if not match:
-            continue
-        section = match[1]
-        checks = re.findall(r'^  - (Dado.*)$', section, re.M)
+        if match:
+            return match[1]
+    raise ValueError(f'No sheet for {issue["id"]}')
+
+
+def portuguese_acceptance(issue):
+    if 'custom_acceptance_pt' in issue:
+        return issue['custom_acceptance_pt']
+    section = section_of(issue)
+    checks = re.findall(r'^  - (Dado.*)$', section, re.M)
+    if checks:
+        return checks
+    for heading in ['Critério de saída', 'Critérios para reabrir a decisão']:
+        checks = re.findall(rf'^- \*\*{heading}\.\*\* (.*)$', section, re.M)
         if checks:
             return checks
-        for heading in ['Critério de saída', 'Critérios para reabrir a decisão']:
-            checks = re.findall(rf'^- \*\*{heading}\.\*\* (.*)$', section, re.M)
-            if checks:
-                return checks
     raise ValueError(f'No Portuguese criteria for {issue["id"]}')
+
+
+def conventional_title(issue):
+    found = re.findall(r'^  - Título: `((?:feat|docs|fix|refactor|chore)\([\w-]+\): .+)`$', section_of(issue), re.M)
+    if len(found) != 1:
+        raise ValueError(f'No single Conventional Commits title for {issue["id"]}')
+    return f'{found[0]} [{issue["id"]}]'
 
 
 def render(issue):
@@ -111,7 +122,7 @@ Avaliação técnica estática de {DATA['date']}, commit `{DATA['baseline']}`. R
 
 {references}
 '''
-    return f'[{issue["id"]}] {issue["en"]} / {issue["pt"]}', body
+    return conventional_title(issue), body
 
 
 def main():
@@ -135,15 +146,19 @@ def main():
         assert len(title) <= 256
         if args.publish or args.verify:
             assert set(issue['labels']) <= labels, issue['id']
-            matches = [item for item in remote if item['title'].startswith(f'[{issue["id"]}] ')]
+            matches = [item for item in remote if f'[{issue["id"]}]' in item['title']]
             if len(matches) > 1:
                 raise ValueError(f'Duplicate roadmap ID {issue["id"]}')
             if matches:
                 item = matches[0]
-                assert item['title'] == title and item['body'] == body, f'Remote content differs for {issue["id"]}'
-                assert item['state'] == 'OPEN', f'Existing issue is not open for {issue["id"]}'
+                assert item['body'] == body, f'Remote content differs for {issue["id"]}'
+                # Titles published before the Conventional Commits rule keep
+                # the roadmap prefix. They are matched by ID, so publishing
+                # does not duplicate them.
+                assert item['title'] == title or item['title'].startswith(f'[{issue["id"]}] '), item['title']
+                assert item['state'] in ('OPEN', 'CLOSED'), f'Unknown state for {issue["id"]}'
                 assert set(issue['labels']) <= {label['name'] for label in item['labels']}
-                print(json.dumps({'id': issue['id'], 'number': item['number'], 'url': item['url'], 'result': 'verified'}, ensure_ascii=False), flush=True)
+                print(json.dumps({'id': issue['id'], 'number': item['number'], 'url': item['url'], 'state': item['state'], 'result': 'verified'}, ensure_ascii=False), flush=True)
             elif args.verify:
                 raise ValueError(f'Missing remote issue {issue["id"]}')
             else:
