@@ -374,7 +374,8 @@ fn tip<'a>(
         content,
         container(
             text(label)
-                .size(11)
+                .size(kiri::text_style(kiri::TextKind::Subheadline, false).size)
+                .line_height(kiri::text_style(kiri::TextKind::Subheadline, false).line_height)
                 .font(crate::font::inter(font::Weight::Medium)),
         )
         .padding(Padding::from([3, 6]))
@@ -395,7 +396,8 @@ fn tip_owned<'a>(
         content,
         container(
             text(label)
-                .size(11)
+                .size(kiri::text_style(kiri::TextKind::Subheadline, false).size)
+                .line_height(kiri::text_style(kiri::TextKind::Subheadline, false).line_height)
                 .font(crate::font::inter(font::Weight::Medium)),
         )
         .padding(Padding::from([3, 6]))
@@ -474,11 +476,29 @@ fn toolbar_frame(t: Tokens, content: Element<'_, Message>) -> Element<'_, Messag
     container(content)
         .width(Length::Fill)
         .height(Length::Fixed(bar_height()))
+        .align_y(Alignment::Center)
         .padding(Padding::from([0, 8]))
         .style(move |_| container::Style {
             background: Some(Background::Color(t.chrome)),
             ..container::Style::default()
         })
+        .into()
+}
+
+/// Texto do chrome num estilo nomeado da escala (spec §2): tamanho,
+/// entrelinha e peso saem de `kiri::text_style`, nunca de literais aqui.
+fn styled<'a>(
+    content: impl iced::widget::text::IntoFragment<'a>,
+    kind: kiri::TextKind,
+    emphasized: bool,
+    color: Color,
+) -> Element<'a, Message> {
+    let style = kiri::text_style(kind, emphasized);
+    text(content)
+        .size(style.size)
+        .line_height(style.line_height)
+        .font(style.font())
+        .color(color)
         .into()
 }
 
@@ -561,6 +581,7 @@ fn topbar(session: &Session, t: Tokens) -> Element<'_, Message> {
     };
     if let Some(ready) = doc {
         let n = ready.page_count().max(1);
+        let body = kiri::text_style(kiri::TextKind::Body, false);
         // Pílula do documento: dot (marcas da sessão ainda não salvas) + nome do
         // arquivo com elipse no meio. Nada de tamanho/data: só o que o estado tem.
         let name = ready
@@ -580,17 +601,26 @@ fn topbar(session: &Session, t: Tokens) -> Element<'_, Message> {
         }
         let doc_pill = tip_owned(
             t,
-            container(doc_row.push(text(middle_truncate(&name, 24)).size(13).color(t.ink)))
-                .padding(Padding {
-                    top: 4.0,
-                    right: 8.0,
-                    bottom: 4.0,
-                    left: 8.0,
-                })
-                .style(kiri::bar_doc_style(t)),
+            container(
+                doc_row.push(
+                    text(middle_truncate(&name, 24))
+                        .size(body.size)
+                        .line_height(body.line_height)
+                        .color(t.ink),
+                ),
+            )
+            .padding(Padding {
+                top: 4.0,
+                right: 8.0,
+                bottom: 4.0,
+                left: 8.0,
+            })
+            .style(kiri::bar_doc_style(t)),
             identity_tip(ready.source.path()),
         );
-        let pill = container(
+        // Busca (zona final, spec §5): campo próprio, 24 de altura, raio
+        // pílula. A navegação (contador + ‹ ›) fica dentro do campo.
+        let search = container(
             row![
                 tip(
                     t,
@@ -612,34 +642,46 @@ fn topbar(session: &Session, t: Tokens) -> Element<'_, Message> {
                 .on_submit(Message::SearchSubmit)
                 .style(kiri::bar_input_style(t))
                 .padding([4, 8])
-                .size(12)
-                .width(Length::Fixed(140.0)),
+                .size(body.size)
+                .line_height(body.line_height)
+                .width(Length::Fixed(150.0)),
                 search_nav(ready, t),
-                kiri::vsep(t),
-                row![
-                    tip(
-                        t,
-                        text_input(t.lang.pick("Página", "Page"), ready.page_input())
-                            .id(page_input_id())
-                            .on_input(Message::PageInput)
-                            .on_submit(Message::PageSubmit)
-                            .style(kiri::bar_input_style(t))
-                            .font(iced::Font::MONOSPACE)
-                            .size(12)
-                            .padding([4, 6])
-                            .width(Length::Fixed(30.0)),
-                        t.lang.pick(
-                            "Ir para página (Enter confirma)",
-                            "Go to page (Enter confirms)"
-                        ),
-                    ),
-                    text(format!("/{n}"))
-                        .size(12)
+            ]
+            .spacing(4)
+            .align_y(Alignment::Center),
+        )
+        .height(Length::Fixed(kiri::control_height(
+            kiri::ControlHeight::Regular,
+        )))
+        .padding(Padding::from([0, 10]))
+        .style(kiri::search_field_style(t));
+
+        // Página + ‹ › (zona central): o campo e o segmento na mesma pílula.
+        let pager = container(
+            row![
+                tip(
+                    t,
+                    text_input(t.lang.pick("Página", "Page"), ready.page_input())
+                        .id(page_input_id())
+                        .on_input(Message::PageInput)
+                        .on_submit(Message::PageSubmit)
+                        .style(kiri::bar_input_style(t))
                         .font(iced::Font::MONOSPACE)
-                        .color(t.muted),
-                ]
-                .spacing(2)
-                .align_y(Alignment::Center),
+                        .size(body.size)
+                        .line_height(body.line_height)
+                        .padding([4, 6])
+                        .width(Length::Fixed(30.0)),
+                    t.lang.pick(
+                        "Ir para página (Enter confirma)",
+                        "Go to page (Enter confirms)"
+                    ),
+                ),
+                text(format!("/{n}"))
+                    .size(body.size)
+                    .line_height(body.line_height)
+                    .font(iced::Font::MONOSPACE)
+                    .color(t.muted),
+                Space::with_width(Length::Fixed(4.0)),
                 container(
                     row![
                         tip(
@@ -667,17 +709,15 @@ fn topbar(session: &Session, t: Tokens) -> Element<'_, Message> {
                 .padding(2)
                 .style(kiri::seg_style(t)),
             ]
-            .spacing(6)
+            .spacing(2)
             .align_y(Alignment::Center),
         )
-        .padding(Padding {
-            top: 2.0,
-            right: 6.0,
-            bottom: 2.0,
-            left: 10.0,
-        })
-        .style(kiri::pill_style(t))
-        .max_width(520.0);
+        // 24 do controle + 2 de padding em cima e embaixo do segmento ‹ ›.
+        .height(Length::Fixed(
+            kiri::control_height(kiri::ControlHeight::Regular) + 4.0,
+        ))
+        .padding(Padding::from([0, 10]))
+        .style(kiri::pill_style(t));
         let current = ready.zoom_step_factor();
         let out = Zoom::Manual(ZoomFactor::new(current / 1.1));
         let into = Zoom::Manual(ZoomFactor::new(current * 1.1));
@@ -693,11 +733,12 @@ fn topbar(session: &Session, t: Tokens) -> Element<'_, Message> {
                     t,
                     container(
                         text(format!("{}%", (current * 100.0).round() as i32))
-                            .size(12)
+                            .size(body.size)
+                            .line_height(body.line_height)
                             .font(iced::Font::MONOSPACE)
                             .color(t.muted),
                     )
-                    .padding(Padding::from([0, 4])),
+                    .padding(Padding::from([0, 6])),
                     t.lang.pick("Zoom atual", "Current zoom"),
                 ),
                 tip(
@@ -786,14 +827,16 @@ fn topbar(session: &Session, t: Tokens) -> Element<'_, Message> {
 
         // Barra de anotar na cara (seleção viva): ⋯ é fuga, não casa. Os atalhos
         // H/U/S/N já vivem em `keyboard_message`; aqui só o rótulo da tecla.
+        // Três zonas (spec §5): início (Início, Abrir, título), centro
+        // (página, zoom, anotar), fim (busca, painéis, ⋯).
         let mut bar = row![
             home_button(t, Message::GoHome),
             open_button(t),
             kiri::vsep(t),
             doc_pill,
             Space::with_width(Length::Fill),
-            pill,
-            Space::with_width(Length::Fill),
+            pager,
+            zoom_seg,
         ]
         .spacing(6)
         .align_y(Alignment::Center);
@@ -870,9 +913,15 @@ fn topbar(session: &Session, t: Tokens) -> Element<'_, Message> {
             )
             .padding(2)
             .style(kiri::bar_mark_style(t));
-            bar = bar.push(mark_seg).push(kiri::vsep(t));
+            bar = bar
+                .push(Space::with_width(Length::Fixed(6.0)))
+                .push(mark_seg);
         }
-        bar = bar.push(zoom_seg).push(kiri::vsep(t)).push(right);
+        bar = bar
+            .push(Space::with_width(Length::Fill))
+            .push(search)
+            .push(kiri::vsep(t))
+            .push(right);
 
         return toolbar_frame(t, bar.into());
     }
@@ -2409,7 +2458,7 @@ fn progress(ready: &Ready, t: Tokens) -> Element<'static, Message> {
         .width(Length::Fill)
         .height(Length::Fixed(kiri::PROGRESS_HEIGHT))
         .style(move |_| container::Style {
-            background: Some(Background::Color(t.surface)),
+            background: Some(Background::Color(t.track)),
             ..container::Style::default()
         })
         .into()
@@ -2855,35 +2904,38 @@ fn disk_stale_row(ready: &Ready, t: Tokens) -> Element<'static, Message> {
     .into()
 }
 
-/// Faixa de abas sob a toolbar (issue #40): uma pílula por documento, com o
-/// nome e o × dentro. A ativa tem fundo `accent_bg`. Só existe com 2+ abas ou
-/// com o Início por cima delas (aí nenhuma fica destacada: clicar volta para ela).
+/// Faixa de abas sob a toolbar (issue #40, spec §5): altura 26, raio 9, gap 4.
+/// A aba ativa leva `fill_1` e peso 600; as demais são transparentes com texto
+/// `label_2`. Só existe com 2+ abas ou com o Início por cima delas.
 fn tab_strip(tabs: &Tabs, t: Tokens) -> Element<'_, Message> {
-    // Padding vertical de 4px: os 9px dos botões-ícone somavam ~35px numa faixa
-    // de 30px e o texto sumia.
     let mut strip = row![].spacing(4).align_y(Alignment::Center);
     for (index, doc) in tabs.docs().iter().enumerate() {
         let label = short_name(doc.source.path());
         let active = tabs.home().is_none() && index == tabs.active_index();
-        let mut name_text = text(label).size(13);
-        if active {
-            // Aba ativa com peso 600 (spec §5).
-            name_text = name_text.font(crate::font::inter(font::Weight::Semibold));
-        }
         let name = tip_owned(
             t,
-            button(name_text)
-                .padding(Padding::from([3, 10]))
-                .style(kiri::ibtn_style(t, false))
-                .on_press(Message::SelectTab(index)),
+            button(styled(
+                label,
+                kiri::TextKind::Body,
+                active,
+                if active { t.ink } else { t.muted },
+            ))
+            .padding(Padding::from([4, 8]))
+            .style(kiri::ibtn_style(t, false))
+            .on_press(Message::SelectTab(index)),
             identity_tip(doc.source.path()),
         );
         let close = tip(
             t,
-            button(text("×").size(14).color(t.muted))
-                .padding(Padding::from([3, 7]))
-                .style(kiri::ibtn_style(t, false))
-                .on_press(Message::CloseTab(index)),
+            button(
+                text("×")
+                    .size(kiri::text_style(kiri::TextKind::Body, false).size)
+                    .line_height(kiri::text_style(kiri::TextKind::Body, false).line_height)
+                    .color(if active { t.muted } else { t.faint }),
+            )
+            .padding(Padding::from([4, 6]))
+            .style(kiri::ibtn_style(t, false))
+            .on_press(Message::CloseTab(index)),
             if cfg!(target_os = "macos") {
                 t.lang.pick("Fechar aba (Cmd+W)", "Close tab (Cmd+W)")
             } else {
@@ -2918,13 +2970,16 @@ fn short_name(path: &std::path::Path) -> String {
     middle_truncate(&name, 24)
 }
 
-/// Painel de navegação (Stitch sidebar): cabeçalho `Navegação`, controle
-/// segmentado Páginas | Sumário | Marcações e a lista da aba escolhida.
+/// Painel de navegação (spec §5): cabeçalho de seção 11/14 w700 `label_3`,
+/// controle segmentado de 24 px e a lista da aba escolhida. Largura 256 e
+/// padding 14/16 do kit; o cartão flutuante fica (decisão D-6).
 fn pages_panel(ready: &Ready, t: Tokens) -> Element<'_, Message> {
-    let mut col = column![text(t.lang.pick("Navegação", "Navigation"))
-        .size(11)
-        .font(crate::font::inter(font::Weight::Bold))
-        .color(t.muted)]
+    let mut col = column![styled(
+        t.lang.pick("Navegação", "Navigation"),
+        kiri::TextKind::Section,
+        false,
+        t.faint,
+    )]
     .spacing(8);
     col = col.push(panel_tabs(ready, t));
     col = match ready.panel {
@@ -2935,7 +2990,12 @@ fn pages_panel(ready: &Ready, t: Tokens) -> Element<'_, Message> {
     container(col.width(Length::Fill).height(Length::Fill))
         .width(Length::Fixed(PAGES_PANEL_W))
         .height(Length::Fill)
-        .padding(6)
+        .padding(Padding {
+            top: 14.0,
+            right: 16.0,
+            bottom: 14.0,
+            left: 16.0,
+        })
         .style(kiri::panel_bg_style(t))
         .into()
 }
@@ -2945,21 +3005,31 @@ fn pages_panel(ready: &Ready, t: Tokens) -> Element<'_, Message> {
 fn panel_tabs(ready: &Ready, t: Tokens) -> Element<'_, Message> {
     // Três abas em partes iguais cortavam "Marcações"/"Annotations" (~45px de
     // texto por aba). Cada aba recebe partes pelo tamanho do rótulo: no painel
-    // de 256px sobram 240px úteis, ~8,7px por caractere (23 caracteres por
-    // conjunto de rótulos, PT e EN).
+    // de 256px sobram 224px úteis, ~8,7px por caractere.
     let seg = |label: &'static str, active: bool, tab: Option<PanelTab>| {
         button(
-            text(label)
-                .size(12)
-                .wrapping(text::Wrapping::None)
+            container(styled(label, kiri::TextKind::Body, active, t.ink))
                 .width(Length::Fill)
                 .align_x(Alignment::Center),
         )
         .width(Length::FillPortion(label.chars().count() as u16))
-        .height(Length::Fixed(24.0))
+        .height(Length::Fixed(kiri::control_height(
+            kiri::ControlHeight::Regular,
+        )))
         .padding(Padding::from([0, 4]))
         .style(kiri::panel_seg_style(t, active))
         .on_press(Message::SetPanelTab(tab))
+    };
+    // Separador de 1×14 entre segmentos (spec §5).
+    let sep = || -> Element<'static, Message> {
+        container(Space::new(Length::Fixed(1.0), Length::Fixed(14.0)))
+            .width(Length::Fixed(1.0))
+            .height(Length::Fixed(14.0))
+            .style(move |_| container::Style {
+                background: Some(Background::Color(t.line)),
+                ..container::Style::default()
+            })
+            .into()
     };
     let mut tabs = row![seg(
         t.lang.pick("Páginas", "Pages"),
@@ -2967,13 +3037,13 @@ fn panel_tabs(ready: &Ready, t: Tokens) -> Element<'_, Message> {
         None
     )];
     if ready.outline.is_some() {
-        tabs = tabs.push(seg(
+        tabs = tabs.push(sep()).push(seg(
             t.lang.pick("Sumário", "Outline"),
             ready.panel == Some(PanelTab::Outline),
             Some(PanelTab::Outline),
         ));
     }
-    tabs = tabs.push(seg(
+    tabs = tabs.push(sep()).push(seg(
         t.lang.pick("Marcações", "Annotations"),
         ready.panel == Some(PanelTab::Annotations),
         Some(PanelTab::Annotations),
@@ -3005,19 +3075,19 @@ fn outline_tab(ready: &Ready, t: Tokens) -> Element<'_, Message> {
             Space::with_width(Length::Fixed(24.0)).into()
         };
         let label = format!("{} · {}", outline_title(title), page.index() + 1);
-        let entry = control_active(
-            t,
-            button(
-                text(label)
-                    .size(12)
-                    .color(if is_active { t.accent } else { t.ink }),
-            )
-            .width(Length::Fill)
-            .padding(Padding::from([4, 6]))
-            .style(kiri::panel_toc_item_style(t, is_active))
-            .on_press(Message::OutlineJump(page)),
-            is_focus,
-        );
+        let body = kiri::text_style(kiri::TextKind::Body, false);
+        let entry = button(
+            text(label)
+                .size(body.size)
+                .line_height(body.line_height)
+                .wrapping(text::Wrapping::None)
+                .color(if is_active { t.accent } else { t.ink }),
+        )
+        .width(Length::Fill)
+        .height(Length::Fixed(kiri::SIDEBAR_ITEM_HEIGHT))
+        .padding(Padding::from([0, 8]))
+        .style(kiri::ibtn_style(t, is_focus))
+        .on_press(Message::OutlineJump(page));
         col = col.push(
             row![
                 Space::with_width(Length::Fixed(depth as f32 * 12.0)),
@@ -3062,6 +3132,8 @@ const ANNOT_ROW_CHARS: usize = 36;
 /// nota), com busca por trecho e nota. Sem marcações, diz como criar uma; não
 /// promete anotações externas, que a v1 não importa.
 fn annotations_tab(ready: &Ready, t: Tokens) -> Element<'_, Message> {
+    let body = kiri::text_style(kiri::TextKind::Body, false);
+    let small = kiri::text_style(kiri::TextKind::Subheadline, false);
     let search = text_input(
         t.lang
             .pick("Buscar em trechos e notas", "Search excerpts and notes"),
@@ -3071,17 +3143,19 @@ fn annotations_tab(ready: &Ready, t: Tokens) -> Element<'_, Message> {
     // iced captura o Enter num text_input focado: sem isto, ↓ + Enter não salta.
     .on_submit(Message::PanelKey(PanelKey::Activate))
     .style(kiri::bar_input_style(t))
-    .padding([6, 8])
-    .size(12)
+    .padding([4, 8])
+    .size(body.size)
+    .line_height(body.line_height)
     .width(Length::Fill);
     let mut col = column![
         text(
             t.lang
                 .pick("Marcações desta sessão", "Marks from this session")
         )
-        .size(11)
-        .color(t.muted),
-        search,
+        .size(small.size)
+        .line_height(small.line_height)
+        .color(t.faint),
+        search
     ]
     .spacing(8);
     if ready.annotations.is_empty() {
