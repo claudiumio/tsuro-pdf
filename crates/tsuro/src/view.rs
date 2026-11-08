@@ -370,13 +370,14 @@ fn tip<'a>(
     content: impl Into<Element<'a, Message>>,
     label: &'static str,
 ) -> Element<'a, Message> {
+    let style = kiri::tooltip_text_style();
     tooltip::Tooltip::new(
         content,
         container(
             text(label)
-                .size(kiri::text_style(kiri::TextKind::Subheadline, false).size)
-                .line_height(kiri::text_style(kiri::TextKind::Subheadline, false).line_height)
-                .font(crate::font::inter(font::Weight::Medium)),
+                .size(style.size)
+                .line_height(style.line_height)
+                .font(style.font()),
         )
         .padding(Padding::from([3, 6]))
         .style(kiri::tooltip_style(t)),
@@ -392,13 +393,14 @@ fn tip_owned<'a>(
     content: impl Into<Element<'a, Message>>,
     label: String,
 ) -> Element<'a, Message> {
+    let style = kiri::tooltip_text_style();
     tooltip::Tooltip::new(
         content,
         container(
             text(label)
-                .size(kiri::text_style(kiri::TextKind::Subheadline, false).size)
-                .line_height(kiri::text_style(kiri::TextKind::Subheadline, false).line_height)
-                .font(crate::font::inter(font::Weight::Medium)),
+                .size(style.size)
+                .line_height(style.line_height)
+                .font(style.font()),
         )
         .padding(Padding::from([3, 6]))
         .style(kiri::tooltip_style(t)),
@@ -1233,9 +1235,16 @@ fn menu_item(
     active: bool,
 ) -> Element<'static, Message> {
     let hint = crate::session::shortcut_hint(&message);
-    let mut content = row![kiri::ori_icon(icon, 16.0), text(label.into()).size(13)]
-        .spacing(8)
-        .align_y(Alignment::Center);
+    let body = kiri::text_style(kiri::TextKind::Body, false);
+    let mut content = row![
+        kiri::ori_icon(icon, 16.0),
+        text(label.into())
+            .size(body.size)
+            .line_height(body.line_height)
+            .font(crate::font::inter(font::Weight::Medium)),
+    ]
+    .spacing(8)
+    .align_y(Alignment::Center);
     if let Some(hint) = hint {
         content = content
             .push(Space::with_width(Length::Fill))
@@ -1243,7 +1252,8 @@ fn menu_item(
     }
     button(content)
         .width(Length::Fill)
-        .padding(Padding::from([4, 10]))
+        .height(Length::Fixed(kiri::MENU_ITEM_HEIGHT))
+        .padding(Padding::from([0, 10]))
         .style(kiri::menu_row_style(t, active))
         .on_press(message)
         .into()
@@ -1252,31 +1262,43 @@ fn menu_item(
 /// Linha de recente no grupo Recentes: sem ícone, recuada para marcar que é
 /// documento (filho do grupo), não comando do Arquivo.
 fn menu_recent(t: Tokens, label: String, message: Message) -> Element<'static, Message> {
-    button(text(label).size(13))
-        .width(Length::Fill)
-        .padding(Padding {
-            top: 4.0,
-            right: 10.0,
-            bottom: 4.0,
-            left: 34.0,
-        })
-        .style(kiri::menu_row_style(t, false))
-        .on_press(message)
-        .into()
+    let body = kiri::text_style(kiri::TextKind::Body, false);
+    button(
+        text(label)
+            .size(body.size)
+            .line_height(body.line_height)
+            .font(crate::font::inter(font::Weight::Medium)),
+    )
+    .width(Length::Fill)
+    .height(Length::Fixed(kiri::MENU_ITEM_HEIGHT))
+    .padding(Padding {
+        top: 0.0,
+        right: 10.0,
+        bottom: 0.0,
+        left: 34.0,
+    })
+    .style(kiri::menu_row_style(t, false))
+    .on_press(message)
+    .into()
 }
 
 /// Linha desabilitada do menu (sem ação): rótulo `muted`, alinhado aos demais.
 fn menu_disabled(t: Tokens, label: &'static str) -> Element<'static, Message> {
+    let body = kiri::text_style(kiri::TextKind::Body, false);
     container(
         row![
             Space::with_width(Length::Fixed(16.0)),
-            text(label).size(13).color(t.muted),
+            text(label)
+                .size(body.size)
+                .line_height(body.line_height)
+                .color(t.muted),
         ]
         .spacing(8)
         .align_y(Alignment::Center),
     )
     .width(Length::Fill)
-    .padding(Padding::from([4, 10]))
+    .height(Length::Fixed(kiri::MENU_ITEM_HEIGHT))
+    .padding(Padding::from([0, 10]))
     .into()
 }
 
