@@ -1,0 +1,110 @@
+<!doctype html>
+<html lang="pt-BR">
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>C · Pílula de comando (ícones compactos) — Tsuro</title>
+<style>
+:root{--paper:#fafaf8;--ink:#1c1c1a;--line:#e2e0d8;--muted:#6f6c64;--accent:#1d4ed8;--ctl:#d4d1c8}
+*{box-sizing:border-box}body{font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",system-ui,sans-serif;background:var(--paper);color:var(--ink);max-width:980px;margin:0 auto;padding:32px 20px 64px;line-height:1.55}
+a{color:var(--accent)}.eyebrow{font-size:12px;letter-spacing:.12em;text-transform:uppercase;color:var(--muted);margin:0}
+h1{font-size:28px;margin:6px 0 8px}h2{font-size:18px;margin:28px 0 8px}p,li{max-width:70ch}
+.back{font-size:14px}
+.mac{border:1px solid var(--ctl);border-radius:12px;overflow:hidden;background:#fff;box-shadow:0 16px 48px rgba(0,0,0,.12);margin-top:16px}
+.titlebar{display:flex;align-items:center;gap:8px;padding:10px 14px;background:linear-gradient(#f2f1ec,#e9e8e2);border-bottom:1px solid var(--line)}
+.tl{display:flex;gap:7px}.tl i{width:12px;height:12px;border-radius:50%;display:block}
+.r{background:#ff5f57}.y{background:#febc2e}.g{background:#28c840}
+.doctitle{flex:1;text-align:center;color:var(--muted);font-size:12.5px}
+.topbar{display:flex;align-items:center;gap:6px;padding:8px 12px;border-bottom:1px solid var(--line);background:#f4f3ef}
+.open{border:1px solid transparent;background:transparent;border-radius:8px;padding:7px 10px;font-size:13px;color:var(--ink);white-space:nowrap}
+.open:hover{background:#e9e7e1}
+.ibtn{width:32px;height:32px;flex:none;border:1px solid transparent;background:transparent;border-radius:8px;display:inline-flex;align-items:center;justify-content:center;color:#3a3833}
+.ibtn:hover{background:#e9e7e1;border-color:var(--ctl)}
+.ibtn svg{width:17px;height:17px}
+.zoomlbl{font-size:12.5px;color:var(--muted);min-width:42px;text-align:center}
+.vsep{width:1px;height:20px;background:var(--ctl);margin:0 4px}
+.pillwrap{flex:1;display:flex;justify-content:center}
+.pillbox{width:min(400px,100%);position:relative}
+.pill{display:flex;align-items:center;gap:8px;background:#fff;border:1px solid var(--ctl);border-radius:99px;padding:6px 6px 6px 14px;font-size:13px;box-shadow:0 2px 8px rgba(0,0,0,.06)}
+.pill svg{width:15px;height:15px;color:var(--muted);flex:none}
+.pill input{border:0;outline:0;flex:1;font-size:13px;background:transparent;min-width:0}
+.pill .mini{display:flex;gap:2px;align-items:center}
+.pill .mini .ibtn{width:26px;height:26px}.pill .mini .ibtn svg{width:14px;height:14px}
+.count{font-size:11.5px;color:var(--muted);white-space:nowrap;padding-right:6px}
+.suggest{position:absolute;top:calc(100% + 6px);width:100%;background:#fff;border:1px solid var(--line);border-radius:10px;box-shadow:0 12px 32px rgba(0,0,0,.14);font-size:13px;overflow:hidden;z-index:2}
+.suggest div{padding:8px 14px;display:flex;justify-content:space-between;gap:8px}
+.suggest div.sel{background:#eef2ff}.suggest span{color:var(--muted);font-size:12px}
+.doc{background:#e9e7e1;display:flex;justify-content:center;padding:26px 30px}
+.page{background:#fff;width:100%;max-width:440px;box-shadow:0 3px 14px rgba(0,0,0,.14);padding:34px 36px;font-family:Georgia,serif;color:#222;max-height:360px;overflow:hidden}
+.page h5{font-size:12px;letter-spacing:.08em;margin:0 0 4px;color:#555}
+.page h4{font-size:17px;margin:0 0 10px}
+.page p{font-size:11.5px;line-height:1.65;margin:0 0 8px}
+mark{background:#fde68a;border-radius:2px;padding:0 1px}
+.rowline .ibtn{width:28px;height:28px}.rowline .ibtn svg{width:15px;height:15px}
+ul{padding-left:20px}
+.verdict{border-left:3px solid #2e7d32;padding:4px 0 4px 14px;margin-top:16px;font-size:14px}
+table{border-collapse:collapse;font-size:13.5px;margin-top:10px;background:#fff}
+th,td{border:1px solid var(--line);padding:6px 10px;text-align:left}th{background:#f4f3ef}
+</style>
+<p class="back"><a href="index.html">← todas as direções</a></p>
+<p class="eyebrow">Direção C · aposta de identidade — refinada com ícones compactos</p>
+<h1>Pílula de comando</h1>
+<p>Uma pílula central onde <strong>buscar e ir para a página falam a mesma língua</strong>, cercada de botões-ícone de 32px em vez de botões-texto. Só o <b>Abrir</b> continua texto — é a ação nº1 de quem não é técnico e não pode virar enigma. Abaixo, buscando “contrato” no <b>contrato-assinado.pdf</b>.</p>
+<div class="mac">
+<div class="titlebar"><span class="tl"><i class="r"></i><i class="y"></i><i class="g"></i></span><span class="doctitle">contrato-assinado.pdf</span><span style="width:52px"></span></div>
+<div class="topbar">
+<button class="open" title="Abrir PDF…">Abrir</button>
+<div class="pillwrap"><div class="pillbox">
+<div class="pill"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><circle cx="11" cy="11" r="7"/><path d="m20 20-3.5-3.5"/></svg><input value="contrato"><span class="count">12</span><span class="mini"><span class="ibtn" title="Ocorrência anterior"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="m15 18-6-6 6-6"/></svg></span><span class="ibtn" title="Próxima ocorrência"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="m9 18 6-6-6-6"/></svg></span></span></div>
+<div class="suggest"><div class="sel"><b>Ir para a página 12</b><span>página</span></div><div>“contrato” na página 12 <span>busca · 3 de 12</span></div><div>Assinaturas do documento <span>ação</span></div></div>
+</div></div>
+<span class="ibtn" title="Diminuir zoom"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><path d="M5 12h14"/></svg></span><span class="zoomlbl">128%</span><span class="ibtn" title="Aumentar zoom"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><path d="M12 5v14M5 12h14"/></svg></span>
+<span class="vsep"></span>
+<span class="ibtn" title="Ajustar à largura"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M8 3H3v5M16 3h5v5M8 21H3v-5M16 21h5v-5"/></svg></span>
+<span class="ibtn" title="Ajustar página inteira"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M8 3H5a2 2 0 0 0-2 2v3M16 3h3a2 2 0 0 1 2 2v3M16 21h3a2 2 0 0 0 2-2v-3M8 21H5a2 2 0 0 1-2-2v-3"/></svg></span>
+<span class="ibtn" title="Ver assinaturas (1)"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 22s8-3.5 8-10V5l-8-3-8 3v7c0 6.5 8 10 8 10z"/><path d="m9 12 2 2 4-4"/></svg></span>
+</div>
+<div class="doc"><div class="page">
+<h5>CONTRATO DE PRESTAÇÃO DE SERVIÇOS</h5>
+<h4>Cláusula 4ª — Do prazo</h4>
+<p>O <mark>contrato</mark> vigorará pelo prazo de 12 (doze) meses, contados da assinatura, renovável por igual período mediante aditivo <mark>contratual</mark> expresso.</p>
+<p>Findo o prazo, o <mark>contrato</mark> prorroga-se automaticamente, salvo manifestação contrária de qualquer das partes.</p>
+</div></div>
+<div class="rowline">
+<span class="ibtn" title="Página anterior"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="m15 18-6-6 6-6"/></svg></span>
+<span>Página 3 de 42</span>
+<span class="ibtn" title="Próxima página"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="m9 18 6-6-6-6"/></svg></span>
+<span style="flex:1"></span>
+<span class="ibtn" title="Fechar documento"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><path d="M18 6 6 18M6 6l12 12"/></svg></span>
+</div>
+</div>
+<div class="verdict"><strong>Veredito (segunda opinião):</strong> apoio com condições — ícone puro sem texto derruba descobribilidade para não-técnicos; por isso Abrir segue texto, todo ícone tem tooltip em pt-BR e nome acessível, e a área de clique (36–44px) é maior que o visual (28–32px). Se um teste com 2–3 usuários tropeçar num ícone, ele volta a ícone+texto.</div>
+<h2>Mapa botão → ícone (Lucide, ISC)</h2>
+<table>
+<tr><th>Botão atual</th><th>Ícone</th><th>Tooltip</th></tr>
+<tr><td>Abrir</td><td>— (mantém texto)</td><td>Abrir PDF…</td></tr>
+<tr><td>Anterior / Próxima</td><td>chevron-left / chevron-right</td><td>Página anterior / próxima</td></tr>
+<tr><td>− / +</td><td>minus / plus</td><td>Diminuir / aumentar zoom</td></tr>
+<tr><td>Ajustar à largura</td><td>move-horizontal</td><td>Ajustar à largura</td></tr>
+<tr><td>Página</td><td>maximize-2</td><td>Ajustar página inteira</td></tr>
+<tr><td>Assinaturas</td><td>shield-check</td><td>Ver assinaturas</td></tr>
+<tr><td>Fechar</td><td>x</td><td>Fechar documento</td></tr>
+<tr><td>Copiar (c/ seleção)</td><td>copy</td><td>Copiar seleção</td></tr>
+</table>
+<h2>Revisão impecável (resumo)</h2>
+<ul>
+<li><strong>Bloqueador resolvido:</strong> antes havia dois primários competindo (Abrir preto sólido + pílula). Agora a pílula é o único elemento saturado; Abrir virou ghost — hierarquia com um vencedor.</li>
+<li><strong>Importante:</strong> área de clique ≥36px (zoom e página anterior/próxima miram 40–44px por uso repetido) mesmo com visual de 28–32px; no iced, isso é <code>Button::padding</code>, não botão maior.</li>
+<li><strong>Importante:</strong> leitor de tela não lê glifo — cada botão-ícone precisa de descrição acessível + tooltip imediata; foco de teclado visível.</li>
+<li><strong>Nitpick:</strong> um único peso de traço (Lucide 2px, round caps) em todo o conjunto; nada de misturar estilos.</li>
+</ul>
+<h2>O que reaproveitar</h2>
+<ul>
+<li><strong>Lucide</strong> (licença ISC — pode vendorizar os SVGs em <code>crates/tsuro/assets/icons/</code>): um campo, múltiplas intenções, como Arc/Raycast/VS Code quick-open.</li>
+<li><strong>Readest</strong> — paleta como “válvula de escape” dos comandos (<a href="https://www.readest.com/docs/getting-started">Getting started</a>); <strong>Evince</strong> — busca inline com contador, sem modal.</li>
+</ul>
+<h2>Viabilidade no iced (verificado no workspace)</h2>
+<ul>
+<li>iced <strong>0.13.1</strong> (lockfile); <code>iced_widget::svg</code> e <code>tooltip</code> <strong>existem</strong> nessa versão (conferido no registry local) — falta só habilitar a feature <code>"svg"</code> no <code>crates/tsuro/Cargo.toml</code> (puxa resvg) e trocar cada <code>button("texto")</code> por <code>button(svg(handle))</code> + <code>tooltip</code>.</li>
+<li>Nenhum IO/render novo no caminho de abrir: ícones são handles estáticos carregados uma vez — risco zero para a missão.</li>
+</ul>
+</html>

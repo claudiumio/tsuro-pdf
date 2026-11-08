@@ -1,0 +1,93 @@
+<!doctype html>
+<html lang="pt-BR" data-theme="dark">
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>E · Kiri — Tsuro</title>
+<style>
+:root,[data-theme="dark"]{
+  --bg:#181818;--surface:#222222;--chrome:#1a1a1a;--elevated:#262626;
+  --ink:#ececea;--muted:#9a9890;--line:#333331;
+  --accent:#4db8b0;--accent-bg:#1e3331;--ok:#5cb85c;
+  --pill-bg:#262626;--pill-border:#333331;--page-bg:#ffffff;--page-ink:#222222;
+  --mark:#fde68a;--hover:#2a2a28;--seg:#262626;--progress-track:#262626;
+  --shadow-page:0 1px 0 #333331,0 8px 24px #000000;--shadow-mac:0 16px 48px #000000;
+}
+[data-theme="light"]{
+  --bg:#f4f3f0;--surface:#e8e6e0;--chrome:#eeede9;--elevated:#ffffff;
+  --ink:#1a1a18;--muted:#6b6860;--line:#d4d2cc;--accent:#2a6f6a;--accent-bg:#e4f0ef;
+  --pill-bg:#ffffff;--pill-border:#d4d2cc;--hover:#e4e2dc;--seg:#e8e6e0;--progress-track:#e0ded8;
+  --shadow-page:0 1px 0 #d4d2cc,0 8px 24px rgba(0,0,0,.08);--shadow-mac:0 16px 48px rgba(0,0,0,.12);
+}
+*{box-sizing:border-box}
+body{font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",system-ui,sans-serif;background:var(--bg);color:var(--ink);max-width:1040px;margin:0 auto;padding:32px 20px 72px;line-height:1.55}
+a{color:var(--accent)}.eyebrow{font-size:12px;letter-spacing:.12em;text-transform:uppercase;color:var(--muted);margin:0}
+h1{font-size:28px;margin:6px 0 8px}h2{font-size:18px;margin:28px 0 8px}
+.mac{border:1px solid var(--line);border-radius:12px;overflow:hidden;background:var(--chrome);box-shadow:var(--shadow-mac);margin-top:16px}
+.titlebar{display:flex;align-items:center;gap:8px;padding:9px 14px;background:var(--chrome);border-bottom:1px solid var(--line);font-size:12px}
+.tl{display:flex;gap:7px}.tl i{width:11px;height:11px;border-radius:50%;display:block}
+.r{background:#ff5f57}.y{background:#febc2e}.g{background:#28c840}
+.doctitle{flex:1;text-align:center;color:var(--muted);font-size:12px}
+.chrome{display:flex;align-items:center;gap:4px;padding:4px 8px;min-height:36px;border-bottom:1px solid var(--line);background:var(--chrome)}
+.ibtn{width:36px;height:36px;border:none;background:transparent;border-radius:8px;display:inline-flex;align-items:center;justify-content:center;color:var(--ink);cursor:pointer;position:relative}
+.ibtn:hover{background:var(--hover)}.ibtn.on{background:var(--accent-bg);color:var(--accent)}
+.ibtn img,.ibtn .ori{width:16px;height:16px;display:block}
+.dot{position:absolute;top:7px;right:7px;width:7px;height:7px;border-radius:50%;background:var(--ok);border:2px solid var(--chrome)}
+.vsep{width:1px;height:18px;background:var(--line);margin:0 2px}
+.pillwrap{flex:1;display:flex;justify-content:center;max-width:520px;margin:0 auto}
+.pill{display:flex;align-items:center;gap:8px;width:100%;background:var(--pill-bg);border:1px solid var(--pill-border);border-radius:99px;padding:4px 6px 4px 12px;font-size:13px}
+.pill svg{width:15px;height:15px;color:var(--muted)}.pill input{border:0;outline:0;flex:1;font-size:13px;background:transparent;color:var(--ink)}
+.pill .pg{font-size:12px;color:var(--muted);padding:0 6px;font-variant-numeric:tabular-nums}.pill .pg b{color:var(--ink)}
+.seg{display:flex;background:var(--seg);border-radius:99px;padding:2px}.seg .ibtn{width:30px;height:30px;border-radius:99px}
+.canvas{background:var(--surface);display:flex;justify-content:center;padding:28px 24px 32px;min-height:380px}
+.page{background:var(--page-bg);max-width:420px;width:100%;box-shadow:var(--shadow-page);padding:32px 34px;font-family:Georgia,serif;color:var(--page-ink)}
+.page p{font-size:11.5px;line-height:1.65}mark{background:var(--mark);padding:0 1px}
+.progress{height:2px;background:var(--progress-track)}.progress i{display:block;height:100%;width:7%;background:var(--accent)}
+.panel{width:220px;border-left:1px solid var(--line);background:var(--bg);padding:12px 14px;font-size:13px}
+.layout-row{display:flex}.layout-row .canvas{flex:1}
+table{border-collapse:collapse;width:100%;font-size:13px;margin-top:10px;background:var(--elevated)}
+th,td{border:1px solid var(--line);padding:7px 10px;text-align:left}th{background:var(--chrome)}
+.verdict{border-left:3px solid var(--accent);padding:4px 0 4px 14px;margin-top:18px}
+.tag{display:inline-block;font-size:11px;border:1px solid var(--line);border-radius:99px;padding:1px 9px;color:var(--muted)}
+.name-box{border:1px solid var(--line);border-radius:12px;background:var(--elevated);padding:16px 18px;margin:16px 0;font-size:14px}
+.name-box strong{color:var(--accent)}
+.theme-bar{display:flex;align-items:center;gap:10px;margin:16px 0;font-size:14px;color:var(--muted)}
+.theme-bar button{border:1px solid var(--line);background:var(--elevated);color:var(--ink);border-radius:8px;padding:6px 14px;cursor:pointer}
+.theme-bar button.on{border-color:var(--accent);color:var(--accent);background:var(--accent-bg)}
+</style>
+<p><a href="index.html">← todas as direções</a></p>
+<p class="eyebrow">Direção E · Kiri · recomendada</p>
+<h1>O documento é a interface</h1>
+<div class="name-box"><strong>Kiri</strong> (きり) — chrome fino, documento em evidência. <strong>Ori</strong> (折) — ícones origami como o tsuru do logo. Dark padrão; light opt-in. Cores sólidas.</div>
+<div class="theme-bar"><span>Tema:</span><button type="button" class="on" id="btn-dark" onclick="setTheme('dark')">Escuro (padrão)</button><button type="button" id="btn-light" onclick="setTheme('light')">Claro</button></div>
+<h2>Mockup</h2>
+<div class="mac">
+<div class="titlebar"><span class="tl"><i class="r"></i><i class="y"></i><i class="g"></i></span><span class="doctitle">contrato-assinado.pdf</span></div>
+<div class="chrome">
+<button class="ibtn" title="Abrir"><img class="ori" src="ori/folder-open.svg" alt=""></button>
+<span class="vsep"></span>
+<div class="pillwrap"><div class="pill"><img class="ori" src="ori/search.svg" alt="" style="width:15px;height:15px"><input value="contrato"><span class="pg"><b>3</b>/42</span><div class="seg"><button class="ibtn"><img class="ori" src="ori/chevron-left.svg" alt=""></button><button class="ibtn"><img class="ori" src="ori/chevron-right.svg" alt=""></button></div></div></div>
+<span class="vsep"></span>
+<div class="seg"><button class="ibtn"><img class="ori" src="ori/minus.svg" alt=""></button><button class="ibtn"><img class="ori" src="ori/fit-width.svg" alt=""></button><button class="ibtn"><img class="ori" src="ori/plus.svg" alt=""></button></div>
+<span class="vsep"></span>
+<button class="ibtn"><img class="ori" src="ori/pages.svg" alt=""></button>
+<button class="ibtn on"><img class="ori" src="ori/shield.svg" alt=""><span class="dot"></span></button>
+<button class="ibtn"><img class="ori" src="ori/more.svg" alt=""></button>
+</div>
+<div class="layout-row"><div class="canvas"><div class="page"><p>O presente <mark>contrato</mark> tem por objeto a prestação de serviços de leitura e verificação de documentos digitais.</p></div></div><aside class="panel">Assinaturas<br>Maria Silva — Íntegra</aside></div>
+<div class="progress"><i></i></div>
+</div>
+<h2>Pilares do Kiri</h2>
+<table>
+<tr><th>Pilar</th><th>No app</th></tr>
+<tr><td>Document-first</td><td>Folha branca no palco</td></tr>
+<tr><td>Chrome quieto</td><td>36px, cores chapadas</td></tr>
+<tr><td>Pílula central</td><td>Busca + 3/42 + navegação</td></tr>
+<tr><td>Ícones Ori</td><td>Origami tsuru — <a href="ori-icons.html">galeria</a></td></tr>
+<tr><td>Estado sem texto</td><td>Dots no escudo e na busca</td></tr>
+</table>
+<p style="font-size:13px;color:var(--muted)">Ícones <a href="ori-icons.html">Ori</a> substituem Lucide no chrome Kiri.</p>
+<div class="verdict"><strong>Veredito:</strong> <span class="tag">recomendada</span> Spec: <a href="kiri-spec.md">kiri-spec.md</a></div>
+<script>
+function setTheme(t){document.documentElement.dataset.theme=t;document.getElementById('btn-dark').classList.toggle('on',t==='dark');document.getElementById('btn-light').classList.toggle('on',t==='light');}
+</script>
+</html>

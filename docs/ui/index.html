@@ -1,0 +1,42 @@
+<!doctype html>
+<html lang="pt-BR">
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Tsuro — direções de UI</title>
+<style>
+:root{--paper:#fafaf8;--ink:#1c1c1a;--line:#e2e0d8;--muted:#6f6c64;--accent:#1d4ed8}
+*{box-sizing:border-box}body{font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",system-ui,sans-serif;background:var(--paper);color:var(--ink);max-width:980px;margin:0 auto;padding:32px 20px 64px;line-height:1.55}
+a{color:var(--accent)}.eyebrow{font-size:12px;letter-spacing:.12em;text-transform:uppercase;color:var(--muted);margin:0}
+h1{font-size:32px;margin:6px 0 8px}h2{font-size:20px;margin:32px 0 8px}.lede{font-size:17px;max-width:62ch}
+.cards{display:grid;grid-template-columns:1fr 1fr;gap:16px;margin-top:24px}
+.card{border:1px solid var(--line);border-radius:12px;background:#fff;padding:18px;text-decoration:none;color:inherit;display:block}
+.card:hover{border-color:var(--accent)}.card h3{margin:0 0 4px;font-size:17px}.card p{margin:0;font-size:14px;color:var(--muted)}
+.card .tag{display:inline-block;font-size:12px;border:1px solid var(--line);border-radius:99px;padding:1px 10px;margin-bottom:10px;color:var(--muted)}
+table{border-collapse:collapse;width:100%;font-size:14px;margin-top:12px;background:#fff}
+th,td{border:1px solid var(--line);padding:8px 10px;text-align:left;vertical-align:top}th{background:#f4f3ef}
+.rec{border-left:3px solid var(--accent);padding:4px 0 4px 14px;margin-top:20px}
+.mission{border:1px solid var(--line);border-radius:12px;background:#fff;padding:16px 18px;margin-top:16px}
+@media(max-width:640px){.cards{grid-template-columns:1fr}}
+</style>
+<p class="eyebrow">Tsuro · research de interface</p>
+<h1>Cinco direções, uma missão</h1>
+<p class="lede">Missão: <strong>abrir e ler qualquer PDF sem travar</strong>. Completo = ler sem travar. Sem anotação, sem suíte — e os controles ficam <strong>na barra</strong>, não em atalhos. Cada direção abaixo é um HTML clicável com mockup, o que reaproveitar de leitores existentes, riscos para a missão e viabilidade no iced.</p>
+<div class="mission"><strong>Estado atual (ponto de partida):</strong> barra única com Abrir · busca · zoom · painéis · statusbar com navegação de página. Abrir também por arrastar o arquivo.</div>
+<div class="cards">
+<a class="card" href="a-barra-unica.html"><span class="tag">A · evolução direta</span><h3>Uma barra, nada mais</h3><p>Sumatra + Evince: uma fileira de 44px, campo de página editável, painel de assinaturas sob botão.</p></a>
+<a class="card" href="b-papel-primeiro.html"><span class="tag">B · modo opcional</span><h3>Papel em primeiro</h3><p>Readest + Folio: chrome some, fica só a página e um fiapo de progresso; revela no hover da borda.</p></a>
+<a class="card" href="c-pilula-comando.html"><span class="tag">C · aposta de identidade</span><h3>Pílula de comando</h3><p>Arc + paleta de comando, tudo clicável: buscar e “ir para a página” moram na mesma pílula central.</p></a>
+<a class="card" href="d-mesa-leitura.html"><span class="tag">D · quando crescer</span><h3>Mesa de leitura</h3><p>Okular + Preview: trilho fino de ícones à esquerda, página no centro, assinaturas sob demanda à direita.</p></a>
+<div class="card"><a href="e-kiri.html"><span class="tag">E · recomendada</span><h3>Kiri</h3></a><p>Document-first: barra 36px, dark padrão, cores sólidas. Ícones <a href="ori-icons.html">Ori</a> (origami tsuru).</p></div>
+</div>
+<h2>Comparativo rápido</h2>
+<table>
+<tr><th></th><th>A · barra única</th><th>B · papel em primeiro</th><th>C · pílula</th><th>D · mesa</th><th>E · Kiri</th></tr>
+<tr><th>Risco de travar</th><td>Nenhum</td><td>Baixo</td><td>Baixo</td><td>Médio sem miniaturas</td><td><strong>Nenhum</strong></td></tr>
+<tr><th>Carga cognitiva</th><td>Média</td><td>Baixa (modo foco)</td><td>Baixa</td><td>Média</td><td><strong>Muito baixa</strong></td></tr>
+<tr><th>Descobribilidade</th><td>Alta</td><td>Baixa</td><td>Alta na pílula</td><td>Alta</td><td>Alta (tooltips)</td></tr>
+<tr><th>Custo iced</th><td>Baixo</td><td>Médio</td><td>Baixo</td><td>Médio</td><td>Médio — fundir statusbar</td></tr>
+<tr><th>Quando</th><td>Base</td><td>Modo foco depois</td><td>Evolução</td><td>2+ painéis</td><td><strong>Próximo chrome</strong></td></tr>
+</table>
+<div class="rec"><strong>Recomendação:</strong> implementar <a href="e-kiri.html">E · Kiri</a> — document-first, dark mode padrão, cores sólidas (sem gradiente), barra 36px, pílula central, light opt-in no menu. Spec: <a href="kiri-spec.md">kiri-spec.md</a>. A e C são degraus; B = modo foco opt-in; D se o trilho lateral fizer sentido depois.</div>
+</html>
