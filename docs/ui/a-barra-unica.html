@@ -1,0 +1,75 @@
+<!doctype html>
+<html lang="pt-BR">
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>A · Uma barra, nada mais — Tsuro</title>
+<style>
+:root{--paper:#fafaf8;--ink:#1c1c1a;--line:#e2e0d8;--muted:#6f6c64;--accent:#1d4ed8}
+*{box-sizing:border-box}body{font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",system-ui,sans-serif;background:var(--paper);color:var(--ink);max-width:980px;margin:0 auto;padding:32px 20px 64px;line-height:1.55}
+a{color:var(--accent)}.eyebrow{font-size:12px;letter-spacing:.12em;text-transform:uppercase;color:var(--muted);margin:0}
+h1{font-size:28px;margin:6px 0 8px}h2{font-size:18px;margin:28px 0 8px}p,li{max-width:70ch}
+.back{font-size:14px}
+.mac{border:1px solid #d4d1c8;border-radius:12px;overflow:hidden;background:#fff;box-shadow:0 16px 48px rgba(0,0,0,.12);margin-top:16px}
+.titlebar{display:flex;align-items:center;gap:8px;padding:10px 14px;background:linear-gradient(#f2f1ec,#e9e8e2);border-bottom:1px solid var(--line);font-size:13px}
+.tl{display:flex;gap:7px}.tl i{width:12px;height:12px;border-radius:50%;display:block}
+.r{background:#ff5f57}.y{background:#febc2e}.g{background:#28c840}
+.doctitle{flex:1;text-align:center;color:var(--muted);font-size:12.5px}
+.bar{display:flex;gap:8px;align-items:center;padding:8px 12px;border-bottom:1px solid var(--line);background:#f4f3ef;flex-wrap:wrap}
+.btn{border:1px solid #d4d1c8;background:#fff;border-radius:8px;padding:6px 11px;font-size:13px;white-space:nowrap;box-shadow:0 1px 0 rgba(0,0,0,.04)}
+.btn.primary{background:var(--ink);color:#fff;border-color:var(--ink)}
+.lbl{font-size:13px;color:var(--muted);white-space:nowrap}
+.pagefield{width:78px;border:1px solid #d4d1c8;border-radius:8px;padding:6px 8px;font-size:13px;text-align:center;background:#fff}
+.search{border:1px solid #d4d1c8;border-radius:8px;padding:6px 10px;font-size:13px;width:190px;background:#fff}
+.sep{width:1px;height:22px;background:var(--line)}
+.body{display:flex;min-height:380px}
+.doc{flex:3;padding:26px 34px;background:#e9e7e1;display:flex;justify-content:center}
+.page{background:#fff;width:100%;max-width:430px;box-shadow:0 3px 14px rgba(0,0,0,.14);padding:34px 36px;font-family:Georgia,"Times New Roman",serif;color:#222;max-height:420px;overflow:hidden}
+.page h5{font-size:13px;letter-spacing:.06em;margin:0 0 4px;font-family:inherit}
+.page h4{font-size:16px;margin:0 0 10px}
+.page p{font-size:11.5px;line-height:1.65;margin:0 0 8px;font-family:inherit}
+.page .cl{font-size:11.5px;font-weight:bold;margin:10px 0 4px}
+.page .sigline{margin-top:14px;border-top:1px solid #999;padding-top:6px;font-size:10.5px;color:#444;font-family:inherit}
+mark{background:#fde68a;border-radius:2px;padding:0 1px}
+.side{flex:1;border-left:1px solid var(--line);padding:14px;background:#fafaf8;font-size:13px;min-width:170px}
+.side h4{margin:0 0 8px;font-size:13px}.sig{border:1px solid var(--line);border-radius:8px;background:#fff;padding:8px 10px;margin-bottom:8px}
+.sig b{display:block;font-size:13px}.sig span{font-size:12px;color:#2e7d32}
+.note{font-size:13px;color:var(--muted);border:1px dashed var(--line);border-radius:8px;padding:8px 12px;margin-top:12px}
+ul{padding-left:20px}
+</style>
+<p class="back"><a href="index.html">← todas as direções</a></p>
+<p class="eyebrow">Direção A · evolução direta</p>
+<h1>Uma barra, nada mais</h1>
+<p>A barra atual, arrumada numa fileira de ~44px no espírito <strong>SumatraPDF + Evince</strong>: abrir e fechar à esquerda, navegação e zoom no meio, busca à direita, assinaturas atrás de um botão em vez de um painel permanente. Abaixo, como ficaria com o <b>contrato-assinado.pdf</b> aberto — busca por “contrato” com 12 ocorrências e o painel de assinaturas revelado.</p>
+<div class="mac">
+<div class="titlebar"><span class="tl"><i class="r"></i><i class="y"></i><i class="g"></i></span><span class="doctitle">contrato-assinado.pdf</span><span style="width:52px"></span></div>
+<div class="bar">
+<span class="btn primary">Abrir</span><span class="btn">‹</span><input class="pagefield" value="3 / 42"><span class="btn">›</span>
+<span class="sep"></span>
+<span class="btn" title="Ajustar à largura">Largura</span><span class="btn" title="Encaixar página inteira">Página</span><span class="btn">−</span><span class="lbl">128%</span><span class="btn">+</span>
+<span class="sep"></span>
+<input class="search" value="contrato"><span class="lbl">12 ocorrências</span><span class="btn">Assinaturas · 1</span>
+</div>
+<div class="body">
+<div class="doc"><div class="page">
+<h5>CONTRATO DE PRESTAÇÃO DE SERVIÇOS</h5>
+<h4>Cláusula 3ª — Do objeto</h4>
+<p>O presente <mark>contrato</mark> tem por objeto a prestação de serviços de leitura e verificação de documentos digitais, incluindo a conferência de assinaturas eletrônicas apostas ao presente instrumento.</p>
+<p class="cl">Cláusula 4ª — Do prazo</p>
+<p>O <mark>contrato</mark> vigorará pelo prazo de 12 (doze) meses, contados da assinatura, renovável por igual período mediante aditivo <mark>contratual</mark> expresso.</p>
+<div class="sigline">Assinado digitalmente por <b>Maria Silva</b> · ICP-Brasil · 12/08/2026</div>
+</div></div>
+<div class="side"><h4>Assinaturas</h4><div class="sig"><b>Maria Silva</b><span>✓ Íntegra (sem confiança pública)</span></div><p style="font-size:12px;color:var(--muted)">Painel abre pelo botão; fechado, a página ganha a largura.</p></div>
+</div>
+</div>
+<div class="note">Detalhe: o campo “3 / 42” é editável — digitar <b>17 + Enter</b> pula para a página (padrão Evince). “Largura” e “Página” viram nomes curtos; o tooltip mostra o nome completo.</div>
+<h2>O que reaproveitar</h2>
+<ul>
+<li><strong>SumatraPDF</strong> — toolbar presa de uma fileira, modos pinned/overlay/hidden (<a href="https://www.sumatrapdfreader.org/docs/Customize-toolbar">Customize toolbar</a>).</li>
+<li><strong>Evince</strong> — header bar compacta com página/busca/zoom/menu; campo de página com salto direto (<a href="https://help.gnome.org/evince/headerbar.html">Header bar</a>).</li>
+<li><strong>Progressive disclosure</strong> — só navegação + zoom + busca visíveis; resto vai para “···” quando existir.</li>
+</ul>
+<h2>Riscos para a missão</h2>
+<ul><li><strong>Nenhum.</strong> Mesmos widgets do iced, só reagrupados. Nenhum render, parse ou IO novo no caminho de abrir.</li></ul>
+<h2>Viabilidade no iced</h2>
+<ul><li>Trivial: o <code>toolbar()</code> atual já é um <code>row!</code> — grupos com separadores, “Página N / total” vira <code>text_input</code>, painel vira condicional a um bool.</li></ul>
+</html>

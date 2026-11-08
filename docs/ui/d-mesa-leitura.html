@@ -1,0 +1,75 @@
+<!doctype html>
+<html lang="pt-BR">
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>D · Mesa de leitura — Tsuro</title>
+<style>
+:root{--paper:#fafaf8;--ink:#1c1c1a;--line:#e2e0d8;--muted:#6f6c64;--accent:#1d4ed8}
+*{box-sizing:border-box}body{font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",system-ui,sans-serif;background:var(--paper);color:var(--ink);max-width:980px;margin:0 auto;padding:32px 20px 64px;line-height:1.55}
+a{color:var(--accent)}.eyebrow{font-size:12px;letter-spacing:.12em;text-transform:uppercase;color:var(--muted);margin:0}
+h1{font-size:28px;margin:6px 0 8px}h2{font-size:18px;margin:28px 0 8px}p,li{max-width:70ch}
+.back{font-size:14px}
+.mac{border:1px solid #d4d1c8;border-radius:12px;overflow:hidden;background:#fff;box-shadow:0 16px 48px rgba(0,0,0,.12);margin-top:16px}
+.titlebar{display:flex;align-items:center;gap:8px;padding:10px 14px;background:linear-gradient(#f2f1ec,#e9e8e2);border-bottom:1px solid var(--line);font-size:13px}
+.tl{display:flex;gap:7px}.tl i{width:12px;height:12px;border-radius:50%;display:block}
+.r{background:#ff5f57}.y{background:#febc2e}.g{background:#28c840}
+.doctitle{flex:1;text-align:center;color:var(--muted);font-size:12.5px}
+.bar{display:flex;gap:8px;align-items:center;padding:8px 12px;border-bottom:1px solid var(--line);background:#f4f3ef;font-size:13px}
+.btn{border:1px solid #d4d1c8;background:#fff;border-radius:8px;padding:6px 11px;font-size:13px;white-space:nowrap}
+.main{display:flex;min-height:360px}
+.rail{width:56px;border-right:1px solid var(--line);background:#f4f3ef;display:flex;flex-direction:column;align-items:center;gap:6px;padding:10px 0}
+.tool{width:38px;height:38px;border-radius:10px;border:1px solid transparent;background:transparent;font-size:16px;display:flex;align-items:center;justify-content:center}
+.tool.on{background:#fff;border-color:#d4d1c8;box-shadow:0 1px 0 rgba(0,0,0,.04)}
+.tool small{font-size:9px;display:block}
+.doc{flex:1;padding:24px 30px;background:#e9e7e1;display:flex;justify-content:center}
+.page{background:#fff;width:100%;max-width:400px;box-shadow:0 3px 14px rgba(0,0,0,.14);padding:30px 32px;font-family:Georgia,serif;color:#222;max-height:380px;overflow:hidden}
+.page h5{font-size:12px;letter-spacing:.08em;margin:0 0 4px;color:#555}
+.page h4{font-size:16px;margin:0 0 10px}
+.page p{font-size:11.5px;line-height:1.65;margin:0 0 8px}
+.page .sigline{margin-top:14px;border-top:1px solid #999;padding-top:6px;font-size:10.5px;color:#444}
+.side{width:210px;border-left:1px solid var(--line);padding:14px;background:#fafaf8;font-size:13px}
+.side h4{margin:0 0 8px;font-size:13px}.sig{border:1px solid var(--line);border-radius:8px;background:#fff;padding:8px 10px;margin-bottom:8px}
+.sig b{display:block;font-size:13px}.sig span{font-size:12px;color:#2e7d32}
+.empty{display:flex;flex-direction:column;align-items:center;justify-content:center;gap:10px;padding:48px 20px;text-align:center;flex:1;background:#fff}
+.empty img{width:130px}.empty p{color:var(--muted);font-size:14px;margin:0}
+.cap{font-size:13px;color:var(--muted);margin:8px 0 0}
+ul{padding-left:20px}
+.no{border:1px solid #e5c07b;background:#fdf6e7;border-radius:8px;padding:10px 14px;font-size:14px;margin-top:12px}
+</style>
+<p class="back"><a href="index.html">← todas as direções</a></p>
+<p class="eyebrow">Direção D · quando crescer</p>
+<h1>Mesa de leitura</h1>
+<p>Trilho fino à esquerda no espírito <strong>Okular + Preview</strong>: cada ferramenta é um ícone que abre seu painel sob demanda. Abaixo, o <b>contrato-assinado.pdf</b> com o painel de assinaturas aberto — e o estado vazio, onde o tsuru de três dobras recebe o arquivo arrastado.</p>
+<div class="mac">
+<div class="titlebar"><span class="tl"><i class="r"></i><i class="y"></i><i class="g"></i></span><span class="doctitle">contrato-assinado.pdf</span><span style="width:52px"></span></div>
+<div class="bar"><span class="btn">‹</span><span>3 / 42</span><span class="btn">›</span><span style="flex:1"></span><span class="btn">−</span><span style="color:var(--muted)">128%</span><span class="btn">+</span></div>
+<div class="main">
+<div class="rail"><span class="tool" title="Abrir">⤴</span><span class="tool" title="Páginas">▤</span><span class="tool" title="Buscar">⌕</span><span class="tool on" title="Assinaturas">✒</span></div>
+<div class="doc"><div class="page">
+<h5>CONTRATO DE PRESTAÇÃO DE SERVIÇOS</h5>
+<h4>Cláusula 3ª — Do objeto</h4>
+<p>O presente contrato tem por objeto a prestação de serviços de leitura e verificação de documentos digitais, incluindo a conferência de assinaturas eletrônicas.</p>
+<div class="sigline">Assinado digitalmente por <b>Maria Silva</b> · ICP-Brasil · 12/08/2026</div>
+</div></div>
+<div class="side"><h4>Assinaturas</h4><div class="sig"><b>Maria Silva</b><span>✓ Íntegra (sem confiança pública)</span></div></div>
+</div>
+</div>
+<p class="cap">Estado vazio — nenhum documento aberto:</p>
+<div class="mac">
+<div class="titlebar"><span class="tl"><i class="r"></i><i class="y"></i><i class="g"></i></span><span class="doctitle">Tsuro</span><span style="width:52px"></span></div>
+<div class="main"><div class="rail"><span class="tool on" title="Abrir">⤴</span><span class="tool" title="Páginas">▤</span><span class="tool" title="Buscar">⌕</span><span class="tool" title="Assinaturas">✒</span></div>
+<div class="empty"><img src="../../public/tsuro-mark.png" alt="Marca Tsuro — tsuru de três dobras"><p><strong style="color:var(--ink)">Arraste um PDF para cá</strong><br>ou use Abrir no trilho</p></div>
+</div>
+</div>
+<div class="no"><strong>Proibido nesta direção:</strong> grade de miniaturas. Miniatura = N renders fora da página visível = o caminho mais curto para travar. Se um dia existir “páginas”, que seja <strong>lista virtualizada de números</strong>, nunca bitmaps.</div>
+<h2>O que reaproveitar</h2>
+<ul>
+<li><strong>Okular</strong> — sidebar sob demanda, capacidades profundas atrás de overflow (<a href="https://docs.kde.org/stable_kf6/en/okular/okular/okular.pdf">manual</a>).</li>
+<li><strong>macOS Preview</strong> — toggle de sidebar que devolve a largura à página.</li>
+<li><strong>Estado vazio como marca</strong> — o tsuru recebendo o drop, sem custo de render.</li>
+</ul>
+<h2>Riscos para a missão</h2>
+<ul><li>Trilho + painéis comem largura em janela pequena; painel nunca passa de 1/4 e fecha devolvendo espaço.</li></ul>
+<h2>Viabilidade no iced</h2>
+<ul><li>Fácil: <code>row![trilho, página, painel?]</code> com painel condicional. Só faz sentido com 2+ painéis — hoje só há assinaturas.</li></ul>
+</html>
