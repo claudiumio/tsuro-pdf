@@ -180,6 +180,14 @@ Regra: a estrutura (zonas, hierarquia, escala relativa) é uma só; mudam fonte,
 
 Cada fase: `cargo test -p tsuro`, `cargo fmt --check`, clippy sem aviso novo, e conferência visual no app antes do PR.
 
+**Estado (2026-11-02).** Fase 1 e fase 2 implementadas. A fase 2 migrou o chrome
+para os papéis semânticos (`Roles`), a escala tipográfica (`TextKind`), a faixa
+de abas 26/raio 9 com a ativa em `fill_1` e peso 600, a sidebar 256 com padding
+14/16 e item de 32, o segmentado de 24 com separadores de 1×14 e a busca como
+campo próprio de 24 na zona final da barra (início: Início/Abrir/título;
+centro: página, zoom, anotar; fim: busca, painéis, ⋯). A barra unificada nativa
+do macOS (D-3) fica para a fase 4, porque exige AppKit.
+
 ## 10. Decisões para o Junior
 
 Ratificadas em 2026-11-01: D-1 a D-6 aprovadas com os valores finais abaixo.
