@@ -536,6 +536,10 @@ pub const SIDEBAR_ITEM_HEIGHT: f32 = 32.0;
 /// linha de recente e a desabilitada não divergirem do item com ícone.
 pub const MENU_ITEM_HEIGHT: f32 = 24.0;
 
+/// Largura fixa de um título da barra de menu (spec §5). Fixa porque o card do
+/// menu precisa saber onde abrir sem medir texto.
+pub const MENU_TITLE_WIDTH: f32 = 64.0;
+
 /// Altura da barra de progresso entre a toolbar e o conteúdo.
 pub const PROGRESS_HEIGHT: f32 = 6.0;
 
@@ -827,6 +831,33 @@ pub fn menu_row_style(
         button::Style {
             background: Some(Background::Color(background)),
             text_color: if active { tokens.accent } else { tokens.ink },
+            border: Border {
+                radius: radius(Radius::Item).into(),
+                ..Border::default()
+            },
+            shadow: Shadow::default(),
+        }
+    }
+}
+
+/// Título da barra de menu: sem fundo fechado, `hover` no mouse e `accent_bg`
+/// quando o menu está aberto — o mesmo par das linhas do menu.
+pub fn menu_title_style(
+    tokens: Tokens,
+    open: bool,
+) -> impl Fn(&iced::Theme, button::Status) -> button::Style {
+    move |_theme, status| {
+        let background = if open {
+            tokens.accent_bg
+        } else {
+            match status {
+                button::Status::Hovered | button::Status::Pressed => tokens.hover,
+                _ => Color::TRANSPARENT,
+            }
+        };
+        button::Style {
+            background: Some(Background::Color(background)),
+            text_color: if open { tokens.accent } else { tokens.ink },
             border: Border {
                 radius: radius(Radius::Item).into(),
                 ..Border::default()

@@ -1974,8 +1974,9 @@ pub struct Ready {
     pub theme: Theme,
     /// Idioma da interface — sobrevive a `begin_open`/`finish_open`/`close_document`.
     pub lang: Lang,
-    /// Menu ⋯ aberto. Só existe em `Ready`; zera ao trocar de documento.
-    pub overflow_open: bool,
+    /// Menu da barra aberto (`None` = todos fechados). Só existe em `Ready`;
+    /// zera ao trocar de documento.
+    pub open_menu: Option<MenuId>,
     /// Grupo Recentes expandido no ⋯; colapsado por padrão. Só existe em
     /// `Ready`; zera ao trocar de documento.
     pub recents_expanded: bool,
@@ -2520,6 +2521,34 @@ fn render_key(page: PageNo, scale: Scale, rotation: u8) -> (u32, u16, u8) {
     (page.index(), scale.key(), rotation & 3)
 }
 
+/// Menu da barra de título. Cada variante abre a sua coluna de itens, e uma
+/// aberta por vez.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum MenuId {
+    File,
+    Edit,
+    View,
+    Go,
+    Help,
+}
+
+impl MenuId {
+    /// Os títulos na ordem em que aparecem na barra. A posição também decide
+    /// onde o popover abre (ver `view::menu_left`).
+    pub const ALL: [MenuId; 5] = [
+        MenuId::File,
+        MenuId::Edit,
+        MenuId::View,
+        MenuId::Go,
+        MenuId::Help,
+    ];
+
+    /// Índice na barra, de zero à esquerda.
+    pub fn index(self) -> usize {
+        Self::ALL.iter().position(|id| *id == self).unwrap_or(0)
+    }
+}
+
 #[derive(Debug, Clone)]
 pub enum Message {
     PickFile,
@@ -2665,7 +2694,10 @@ pub enum Message {
     },
     ToggleSignatures,
     TogglePages,
-    ToggleOverflow,
+    /// Abre o menu da barra, ou fecha se já for o dele. Abrir um fecha o outro.
+    ToggleMenu(MenuId),
+    /// Fecha qualquer menu da barra (fundo, Esc, ou ação escolhida).
+    CloseMenu,
     /// Expande/colapsa o grupo Recentes no ⋯ (colapsado por padrão).
     ToggleRecents,
     /// Ajuda → Sobre: cartão com nome/versão; fundo e Esc fecham.
@@ -3287,7 +3319,7 @@ impl Session {
             Message::SetZoom(zoom) => {
                 let follow = if let Session::Ready(ready) = self {
                     ready.zoom = zoom;
-                    ready.overflow_open = false;
+                    ready.open_menu = None;
                     ready.bump_render_gen();
                     ready.save_position();
                     nav_follow(ready)
@@ -3308,7 +3340,7 @@ impl Session {
             Message::RotateView => {
                 let follow = if let Session::Ready(ready) = self {
                     ready.view_rotation = (ready.view_rotation + 1) & 3;
-                    ready.overflow_open = false;
+                    ready.open_menu = None;
                     ready.bump_render_gen();
                     nav_follow(ready)
                 } else {
@@ -3487,7 +3519,7 @@ impl Session {
             }
             Message::CopySelection => {
                 if let Session::Ready(ready) = self {
-                    ready.overflow_open = false;
+                    ready.open_menu = None;
                     if let Some(text) = ready.selection_plain_text() {
                         return clipboard::write(text);
                     }
@@ -3496,7 +3528,7 @@ impl Session {
             }
             Message::CopyAnnotations => {
                 if let Session::Ready(ready) = self {
-                    ready.overflow_open = false;
+                    ready.open_menu = None;
                     if !ready.annotations.is_empty() {
                         if let Some(md) = annotations_markdown(
                             &doc_file_name(ready.source.path()),
@@ -3520,7 +3552,7 @@ impl Session {
             }
             Message::ExportAnnotations => {
                 if let Session::Ready(ready) = self {
-                    ready.overflow_open = false;
+                    ready.open_menu = None;
                     if !ready.annotations.is_empty() {
                         // O diálogo nativo já pede confirmação para substituir.
                         let dest = rfd::FileDialog::new()
@@ -3542,7 +3574,7 @@ impl Session {
             }
             Message::Annotate(kind) => {
                 if let Session::Ready(ready) = self {
-                    ready.overflow_open = false;
+                    ready.open_menu = None;
                     if kind == AnnotKind::Note {
                         // Nota: abre o rascunho da seleção e mantém a
                         // seleção (âncora do draft); sem seleção ignora.
@@ -3568,7 +3600,7 @@ impl Session {
             }
             Message::DeleteSelectedAnnot => {
                 if let Session::Ready(ready) = self {
-                    ready.overflow_open = false;
+                    ready.open_menu = None;
                     if ready.note_draft.is_none() {
                         if let Some(id) = ready.selected_annot {
                             ready.remove_annotation(id);
@@ -3579,14 +3611,14 @@ impl Session {
             }
             Message::AnnotUndo => {
                 if let Session::Ready(ready) = self {
-                    ready.overflow_open = false;
+                    ready.open_menu = None;
                     ready.annot_undo_once();
                 }
                 Task::none()
             }
             Message::AnnotRedo => {
                 if let Session::Ready(ready) = self {
-                    ready.overflow_open = false;
+                    ready.open_menu = None;
                     ready.annot_redo_once();
                 }
                 Task::none()
@@ -3694,9 +3726,18 @@ impl Session {
                 }
                 Task::batch(tasks)
             }
-            Message::ToggleOverflow => {
+            Message::ToggleMenu(id) => {
                 if let Session::Ready(ready) = self {
-                    ready.overflow_open = !ready.overflow_open;
+                    ready.open_menu = match ready.open_menu {
+                        Some(open) if open == id => None,
+                        _ => Some(id),
+                    };
+                }
+                Task::none()
+            }
+            Message::CloseMenu => {
+                if let Session::Ready(ready) = self {
+                    ready.open_menu = None;
                 }
                 Task::none()
             }
@@ -3855,7 +3896,7 @@ impl Session {
                 let Session::Ready(ready) = self else {
                     return Task::none();
                 };
-                ready.overflow_open = false;
+                ready.open_menu = None;
                 ready.print_status = None;
                 ready.print_dialog = Some(PrintDialog::fresh(
                     ready.page_count(),
@@ -3920,7 +3961,7 @@ impl Session {
                     // documento assinado.
                     ready.note_drag = None;
                     ready.save_warning = false;
-                    ready.overflow_open = false;
+                    ready.open_menu = None;
                     ready.about_open = false;
                     // Enviando: ignora (Esc) para não perder o resultado na volta.
                     if ready
@@ -4171,7 +4212,7 @@ impl Session {
                 let Session::Ready(ready) = self else {
                     return Task::none();
                 };
-                ready.overflow_open = false;
+                ready.open_menu = None;
                 ready.save_status = None;
                 if ready.annotations.is_empty() {
                     ready.save_status = Some(
@@ -4309,7 +4350,7 @@ impl Session {
             Message::SetViewMode(mode) => {
                 let follow = if let Session::Ready(ready) = self {
                     ready.view_mode = mode;
-                    ready.overflow_open = false;
+                    ready.open_menu = None;
                     ready.save_position();
                     nav_follow(ready)
                 } else {
@@ -4501,7 +4542,7 @@ impl Session {
                 ready.outline_cursor = None;
                 ready.outline_load_issued = false;
                 ready.pages_scroll_y = 0.0;
-                ready.overflow_open = false;
+                ready.open_menu = None;
                 ready.restore_position();
                 ready.sync_page_input();
                 ready.render_gen = 1;
@@ -4576,7 +4617,7 @@ impl Session {
         let Session::Ready(tabs) = self else {
             return self.close_document();
         };
-        tabs.overflow_open = false;
+        tabs.open_menu = None;
         tabs.palette = None;
         if tabs.home.is_none() {
             tabs.home = Some(EmptyState {
@@ -4767,7 +4808,7 @@ impl Session {
         };
         tabs.select(index);
         let ready = tabs.active_mut();
-        ready.overflow_open = false;
+        ready.open_menu = None;
         if ready.annotations.is_empty() {
             ready.save_status = Some(
                 ready
@@ -4966,7 +5007,7 @@ impl Session {
 
     fn close_overflow(&mut self) {
         if let Session::Ready(ready) = self {
-            ready.overflow_open = false;
+            ready.open_menu = None;
         }
     }
 
@@ -5048,7 +5089,7 @@ impl Session {
             return Task::none();
         };
         if let Session::Ready(tabs) = self {
-            tabs.overflow_open = false;
+            tabs.open_menu = None;
         }
         if let Some(slot) = self.palette_slot() {
             *slot = Some(PaletteState::fresh(context));
@@ -5362,7 +5403,7 @@ impl Session {
         let follow = if let Session::Ready(ready) = self {
             let current = ready.zoom_step_factor();
             ready.zoom = Zoom::Manual(ZoomFactor::new(current * factor));
-            ready.overflow_open = false;
+            ready.open_menu = None;
             ready.bump_render_gen();
             ready.save_position();
             nav_follow(ready)
@@ -7485,7 +7526,7 @@ impl Document {
             render_scale: 1.0,
             theme: Theme::Dark,
             lang: Lang::Pt,
-            overflow_open: false,
+            open_menu: None,
             recents_expanded: false,
             about_open: false,
             print_dialog: None,
@@ -9147,8 +9188,8 @@ mod tests {
         let mut session = Session::Ready(Tabs::single(ready));
         assert_window_shape_kept(&mut session, Message::HudTick);
         assert!(!hud(&session).visible());
-        assert_window_shape_kept(&mut session, Message::ToggleOverflow);
-        assert_window_shape_kept(&mut session, Message::ToggleOverflow);
+        assert_window_shape_kept(&mut session, Message::ToggleMenu(MenuId::File));
+        assert_window_shape_kept(&mut session, Message::ToggleMenu(MenuId::File));
         assert_window_shape_kept(&mut session, Message::ToggleAbout);
         assert_window_shape_kept(&mut session, Message::ClosePrintDialog);
     }
@@ -9569,12 +9610,12 @@ mod tests {
             return;
         };
         let mut session = Session::Ready(Tabs::single(ready));
-        apply(&mut session, Message::ToggleOverflow);
+        apply(&mut session, Message::ToggleMenu(MenuId::File));
         apply(&mut session, Message::ToggleAbout);
         match &session {
             Session::Ready(r) => {
                 assert!(r.about_open);
-                assert!(!r.overflow_open, "Sobre fecha o ⋯");
+                assert!(r.open_menu.is_none(), "Sobre fecha o ⋯");
             }
             _ => unreachable!(),
         }
@@ -9592,12 +9633,12 @@ mod tests {
             return;
         };
         let mut session = Session::Ready(Tabs::single(ready));
-        apply(&mut session, Message::ToggleOverflow);
+        apply(&mut session, Message::ToggleMenu(MenuId::File));
         apply(&mut session, Message::SetDefaultReader);
         match &session {
             Session::Ready(r) => {
                 assert!(r.about_open);
-                assert!(!r.overflow_open, "Sobre fecha o ⋯");
+                assert!(r.open_menu.is_none(), "Sobre fecha o ⋯");
             }
             _ => unreachable!(),
         }
@@ -9607,12 +9648,12 @@ mod tests {
     fn toggle_settings_opens_closes_and_starts_checking() {
         let ready = sample_ready().expect("settings regression requires fixture and Pdfium");
         let mut session = Session::Ready(Tabs::single(ready));
-        apply(&mut session, Message::ToggleOverflow);
+        apply(&mut session, Message::ToggleMenu(MenuId::File));
         apply(&mut session, Message::ToggleSettings);
         match &session {
             Session::Ready(r) => {
                 assert!(r.settings.open);
-                assert!(!r.overflow_open, "Configurações fecha o ⋯");
+                assert!(r.open_menu.is_none(), "Configurações fecha o ⋯");
                 assert!(!r.about_open);
                 assert_eq!(r.settings.update, UpdateState::Checking);
             }
@@ -10340,12 +10381,12 @@ mod tests {
         ready
             .annotations
             .push(fake_annot(1, 0, 0, 3, AnnotKind::Highlight, ""));
-        ready.overflow_open = true;
+        ready.open_menu = Some(MenuId::File);
         let mut session = Session::Ready(Tabs::single(ready));
         apply(&mut session, Message::CopyAnnotations);
         match &session {
             Session::Ready(ready) => {
-                assert!(!ready.overflow_open);
+                assert!(ready.open_menu.is_none());
                 assert_eq!(
                     ready.save_status.as_deref(),
                     Some("Destaques copiados como Markdown.")
@@ -10357,12 +10398,12 @@ mod tests {
         let Some(mut ready) = sample_ready() else {
             return;
         };
-        ready.overflow_open = true;
+        ready.open_menu = Some(MenuId::File);
         let mut session = Session::Ready(Tabs::single(ready));
         apply(&mut session, Message::CopyAnnotations);
         match &session {
             Session::Ready(ready) => {
-                assert!(!ready.overflow_open);
+                assert!(ready.open_menu.is_none());
                 assert!(ready.save_status.is_none());
             }
             _ => unreachable!(),
@@ -13505,24 +13546,65 @@ mod tests {
             panic!("expected Ready");
         };
         assert_eq!(r.theme, Theme::Light);
-        assert!(!r.overflow_open);
-        apply(&mut session, Message::ToggleOverflow);
+        assert!(r.open_menu.is_none());
+        apply(&mut session, Message::ToggleMenu(MenuId::File));
         let Session::Ready(r) = &session else {
             panic!("expected Ready");
         };
-        assert!(r.overflow_open);
+        assert!(r.open_menu.is_some());
         apply(&mut session, Message::SetZoom(Zoom::Width));
         let Session::Ready(r) = &session else {
             panic!("expected Ready");
         };
-        assert!(!r.overflow_open);
+        assert!(r.open_menu.is_none());
         apply(&mut session, Message::Close);
         match &session {
             Session::Empty(empty) => assert_eq!(empty.theme, Theme::Light),
             other => panic!("expected Empty, got {other:?}"),
         }
-        apply(&mut session, Message::ToggleOverflow);
+        apply(&mut session, Message::ToggleMenu(MenuId::File));
         assert!(matches!(session, Session::Empty(_)));
+    }
+
+    #[test]
+    fn menu_opens_one_at_a_time_and_closes_on_escape() {
+        let ready = sample_ready().expect("menu regression requires fixture and Pdfium");
+        let mut session = Session::Ready(Tabs::single(ready));
+
+        apply(&mut session, Message::ToggleMenu(MenuId::File));
+        let Session::Ready(r) = &session else {
+            unreachable!()
+        };
+        assert_eq!(r.open_menu, Some(MenuId::File), "Arquivo abre");
+
+        apply(&mut session, Message::ToggleMenu(MenuId::View));
+        let Session::Ready(r) = &session else {
+            unreachable!()
+        };
+        assert_eq!(
+            r.open_menu,
+            Some(MenuId::View),
+            "abrir outro fecha o primeiro"
+        );
+
+        apply(&mut session, Message::ToggleMenu(MenuId::View));
+        let Session::Ready(r) = &session else {
+            unreachable!()
+        };
+        assert_eq!(r.open_menu, None, "clicar no mesmo título fecha");
+
+        apply(&mut session, Message::ToggleMenu(MenuId::Help));
+        apply(&mut session, Message::ClosePrintDialog);
+        let Session::Ready(r) = &session else {
+            unreachable!()
+        };
+        assert_eq!(r.open_menu, None, "Esc fecha o menu");
+    }
+
+    #[test]
+    fn menu_ids_keep_the_bar_order() {
+        let order: Vec<usize> = MenuId::ALL.iter().map(|id| id.index()).collect();
+        assert_eq!(order, vec![0, 1, 2, 3, 4]);
     }
 
     #[test]
@@ -13589,7 +13671,7 @@ mod tests {
         let Some(mut ready) = sample_ready() else {
             return None;
         };
-        ready.overflow_open = true;
+        ready.open_menu = Some(MenuId::File);
         ready.print_status = Some("status antigo".into());
         let mut session = Session::Ready(Tabs::single(ready));
         apply(&mut session, Message::OpenPrintDialog);
@@ -13635,7 +13717,7 @@ mod tests {
         let Session::Ready(ready) = &session else {
             panic!("expected Ready, got {session:?}");
         };
-        assert!(!ready.overflow_open);
+        assert!(ready.open_menu.is_none());
         assert!(ready.print_status.is_none());
         let dialog = dialog(&session);
         assert!(!dialog.printers_loading);
@@ -15106,7 +15188,7 @@ mod tests {
         let Some(mut ready) = sample_ready() else {
             return;
         };
-        ready.overflow_open = true;
+        ready.open_menu = Some(MenuId::File);
         let mut session = Session::Ready(Tabs::single(ready));
         apply(&mut session, Message::OpenPalette);
         match &session {
@@ -15120,7 +15202,7 @@ mod tests {
                     .items()
                     .iter()
                     .all(|item| matches!(item, PaletteItem::Action { .. })));
-                assert!(!tabs.overflow_open);
+                assert!(tabs.open_menu.is_none());
             }
             other => panic!("esperava Ready, veio {other:?}"),
         }

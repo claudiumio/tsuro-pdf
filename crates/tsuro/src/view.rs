@@ -21,11 +21,11 @@ use crate::search::Search;
 #[cfg(target_os = "macos")]
 use crate::session::PermissionsState;
 use crate::session::{
-    display_pt, display_rect, marker_side, page_pt_at, AnnotKind, AnnotationRow, Message, NavCmd,
-    NoteDraft, OpenSource, PaletteItem, PaletteState, PanelKey, PanelTab, PrintDialog, RangeMode,
-    Ready, RecoveryState, Session, SettingsPanel, Tabs, UpdateState, ViewMode, Zoom, ZoomFactor,
-    ANNOT_ROW, DOC_GAP, DOC_PAD_BOTTOM, DOC_PAD_TOP, DOC_PAD_X, PAGES_PANEL_W, SIG_PANEL_W,
-    THUMB_ROW,
+    display_pt, display_rect, marker_side, page_pt_at, AnnotKind, AnnotationRow, MenuId, Message,
+    NavCmd, NoteDraft, OpenSource, PaletteItem, PaletteState, PanelKey, PanelTab, PrintDialog,
+    RangeMode, Ready, RecoveryState, Session, SettingsPanel, Tabs, UpdateState, ViewMode, Zoom,
+    ZoomFactor, ANNOT_ROW, DOC_GAP, DOC_PAD_BOTTOM, DOC_PAD_TOP, DOC_PAD_X, PAGES_PANEL_W,
+    SIG_PANEL_W, THUMB_ROW,
 };
 
 /// Altura da faixa de ferramentas (spec §5, caso expandido): título nativo
@@ -188,9 +188,9 @@ pub fn chrome(session: &Session, theme: Theme, lang: Lang) -> Element<'_, Messag
     } else if tabs.settings.open {
         // Configurações (Ajuda): abre por cima do Sobre; fundo e Esc fecham.
         settings_layer(&tabs.settings, t)
-    } else if tabs.overflow_open {
-        // Overlay visual: só os botões capturam clique, o resto atravessa.
-        overflow_layer(tabs, t)
+    } else if let Some(menu) = tabs.open_menu {
+        // Menu da barra: fundo fecha, card abre sob o título escolhido.
+        menu_layer(tabs, menu, t)
     } else if tabs.home().is_none() && tabs.selection_bar_pos().is_some() {
         // Mini-toolbar da seleção (issue #51): sem dim nem captura — só os
         // quatro botões recebem clique, o resto atravessa para a folha. Os
@@ -829,17 +829,13 @@ fn topbar(session: &Session, t: Tokens) -> Element<'_, Message> {
         if let Some(badge) = update_badge(t, &session.settings().update) {
             right = right.push(badge);
         }
-        right = right.push(tip(
-            t,
-            bar_button(t, "more", ready.overflow_open).on_press(Message::ToggleOverflow),
-            t.lang.pick("Mais opções", "More options"),
-        ));
 
-        // Barra de anotar na cara (seleção viva): ⋯ é fuga, não casa. Os atalhos
-        // H/U/S/N já vivem em `keyboard_message`; aqui só o rótulo da tecla.
-        // Três zonas (spec §5): início (Início, Abrir, título), centro
-        // (página, zoom, anotar), fim (busca, painéis, ⋯).
+        // Os menus vivem na barra (`menu_bar`); o ⋯ antigo virou redundante.
+        // Três zonas (spec §5): início (menus, Início, Abrir, título), centro
+        // (página, zoom, anotar), fim (busca, painéis).
         let mut bar = row![
+            menu_bar(t, ready.open_menu),
+            kiri::vsep(t),
             home_button(t, Message::GoHome),
             open_button(t),
             kiri::vsep(t),
@@ -954,7 +950,7 @@ fn topbar(session: &Session, t: Tokens) -> Element<'_, Message> {
 }
 
 /// Camada do menu ⋯: fundo fecha ao clicar, menu no canto.
-fn overflow_layer(tabs: &Tabs, t: Tokens) -> Element<'_, Message> {
+fn menu_layer(tabs: &Tabs, menu: MenuId, t: Tokens) -> Element<'_, Message> {
     let dim = container(Space::with_width(Length::Fill))
         .width(Length::Fill)
         .height(Length::Fill)
@@ -968,91 +964,144 @@ fn overflow_layer(tabs: &Tabs, t: Tokens) -> Element<'_, Message> {
     } else {
         chrome_height() - 4.0
     };
-    let card = container(overflow_menu(tabs, tabs.settings.theme_pref, t))
+    // O scrim começa abaixo da barra: os títulos continuam clicáveis, para
+    // trocar de menu direto em vez de fechar e abrir de novo.
+    let scrim = column![
+        Space::with_height(Length::Fixed(top)),
+        mouse_area(dim).on_press(Message::CloseMenu),
+    ]
+    .width(Length::Fill)
+    .height(Length::Fill);
+    let card = container(menu_items(menu, tabs, tabs.settings.theme_pref, t))
         .width(Length::Fill)
         .height(Length::Fill)
-        .align_x(Alignment::End)
+        .align_x(Alignment::Start)
         .align_y(Alignment::Start)
         .padding(Padding {
             top,
-            right: 8.0,
+            right: 0.0,
             bottom: 0.0,
-            left: 0.0,
+            left: menu_left(menu),
         });
-    stack![mouse_area(dim).on_press(Message::ToggleOverflow), card].into()
+    stack![scrim, card].into()
 }
 
-/// Menu ⋯ (#42): grupos Arquivo/Editar/Ver/Ir/Ajuda com dicas de atalho.
-/// Recentes na mesma lista da tela vazia; Sobre abre o cartão de versão.
-fn overflow_menu(ready: &Ready, pref: ThemePref, t: Tokens) -> Element<'_, Message> {
-    let mut items = column![].spacing(2).width(Length::Fill);
-    items = items.push(section_title(t.lang.pick("Arquivo", "File"), t));
-    items = items.push(menu_item(
-        t,
-        "folder-open",
-        t.lang.pick("Abrir…", "Open…"),
-        Message::PickFile,
-        false,
-    ));
-    items = items.push(menu_item(
-        t,
-        "folder",
-        if ready.recents_expanded {
-            t.lang.pick("Recentes ▼", "Recent ▼")
-        } else {
-            t.lang.pick("Recentes ▶", "Recent ▶")
-        },
-        Message::ToggleRecents,
-        false,
-    ));
-    if ready.recents_expanded {
-        let recents: Vec<_> = ready.recents().iter().take(5).collect();
-        if recents.is_empty() {
-            items = items.push(menu_disabled(
-                t,
-                t.lang.pick("Nenhum arquivo recente", "No recent files"),
-            ));
-        } else {
-            for path in recents {
-                items = items.push(menu_recent(
-                    t,
-                    recent_label(path),
-                    Message::OpenRecent(path.clone()),
-                ));
-            }
-        }
+/// Borda esquerda do card: a mesma do título na barra. Repete o respiro da
+/// raiz (4), o da moldura da barra (8) e a faixa dos semáforos nativos.
+fn menu_left(menu: MenuId) -> f32 {
+    4.0 + 8.0
+        + kiri::Metrics::current().traffic_lights()
+        + menu.index() as f32 * kiri::MENU_TITLE_WIDTH
+}
+
+/// Títulos dos menus na faixa (spec §5). Cada um abre a sua coluna; o ativo
+/// fica com `accent_bg`, como o item escolhido do menu.
+fn menu_bar(t: Tokens, open: Option<MenuId>) -> Element<'static, Message> {
+    let body = kiri::text_style(kiri::TextKind::Body, false);
+    let mut titles = row![].spacing(2).align_y(Alignment::Center);
+    for id in MenuId::ALL {
+        let is_open = open == Some(id);
+        let (pt, en) = menu_label(id);
+        titles = titles.push(
+            button(
+                text(t.lang.pick(pt, en))
+                    .size(body.size)
+                    .line_height(body.line_height)
+                    .font(crate::font::inter(font::Weight::Medium))
+                    .wrapping(text::Wrapping::None),
+            )
+            .width(Length::Fixed(kiri::MENU_TITLE_WIDTH))
+            .height(Length::Fixed(kiri::MENU_ITEM_HEIGHT))
+            .padding(Padding::from([0, 0]))
+            .style(kiri::menu_title_style(t, is_open))
+            .on_press(Message::ToggleMenu(id)),
+        );
     }
-    items = items.push(menu_item(
-        t,
-        "print",
-        t.lang.pick("Imprimir", "Print"),
-        Message::OpenPrintDialog,
-        false,
-    ));
-    if !ready.annotations.is_empty() {
+    titles.into()
+}
+
+/// Rótulo do título de menu nos dois idiomas do app.
+fn menu_label(id: MenuId) -> (&'static str, &'static str) {
+    match id {
+        MenuId::File => ("Arquivo", "File"),
+        MenuId::Edit => ("Editar", "Edit"),
+        MenuId::View => ("Ver", "View"),
+        MenuId::Go => ("Ir", "Go"),
+        MenuId::Help => ("Ajuda", "Help"),
+    }
+}
+
+/// Coluna de um menu: os itens daquela seção, com dica de atalho à direita.
+/// Recentes na mesma lista da tela vazia; Sobre abre o cartão de versão.
+fn menu_items(menu: MenuId, ready: &Ready, pref: ThemePref, t: Tokens) -> Element<'_, Message> {
+    let mut items = column![].spacing(2).width(Length::Fill);
+    if menu == MenuId::File {
         items = items.push(menu_item(
             t,
-            "save",
-            t.lang
-                .pick("Salvar cópia com marcações…", "Save copy with marks…"),
-            Message::SaveCopyRequested,
+            "folder-open",
+            t.lang.pick("Abrir…", "Open…"),
+            Message::PickFile,
+            false,
+        ));
+        items = items.push(menu_item(
+            t,
+            "folder",
+            if ready.recents_expanded {
+                t.lang.pick("Recentes ▼", "Recent ▼")
+            } else {
+                t.lang.pick("Recentes ▶", "Recent ▶")
+            },
+            Message::ToggleRecents,
+            false,
+        ));
+        if ready.recents_expanded {
+            let recents: Vec<_> = ready.recents().iter().take(5).collect();
+            if recents.is_empty() {
+                items = items.push(menu_disabled(
+                    t,
+                    t.lang.pick("Nenhum arquivo recente", "No recent files"),
+                ));
+            } else {
+                for path in recents {
+                    items = items.push(menu_recent(
+                        t,
+                        recent_label(path),
+                        Message::OpenRecent(path.clone()),
+                    ));
+                }
+            }
+        }
+        items = items.push(menu_item(
+            t,
+            "print",
+            t.lang.pick("Imprimir", "Print"),
+            Message::OpenPrintDialog,
+            false,
+        ));
+        if !ready.annotations.is_empty() {
+            items = items.push(menu_item(
+                t,
+                "save",
+                t.lang
+                    .pick("Salvar cópia com marcações…", "Save copy with marks…"),
+                Message::SaveCopyRequested,
+                false,
+            ));
+        }
+        items = items.push(menu_item(
+            t,
+            "x",
+            t.lang.pick("Fechar documento", "Close document"),
+            Message::CloseTabActive,
             false,
         ));
     }
-    items = items.push(menu_item(
-        t,
-        "x",
-        t.lang.pick("Fechar documento", "Close document"),
-        Message::CloseTabActive,
-        false,
-    ));
     let can_edit = ready.selection_plain_text().is_some()
         || !ready.annotations.is_empty()
         || ready.can_annot_undo()
         || ready.can_annot_redo()
         || ready.selected_annot().is_some();
-    if can_edit {
-        items = items.push(section_title(t.lang.pick("Editar", "Edit"), t));
+    if menu == MenuId::Edit && can_edit {
         if ready.selection_plain_text().is_some() {
             items = items.push(menu_item(
                 t,
@@ -1109,61 +1158,61 @@ fn overflow_menu(ready: &Ready, pref: ThemePref, t: Tokens) -> Element<'_, Messa
             ));
         }
     }
-    items = items.push(section_title(t.lang.pick("Ver", "View"), t));
-    items = items.push(menu_item(
-        t,
-        "fit-page",
-        t.lang.pick("Ajustar página inteira", "Fit page"),
-        Message::SetZoom(Zoom::Page),
-        false,
-    ));
-    items = items.push(menu_item(
-        t,
-        "rotate",
-        t.lang.pick("Girar vista (90°)", "Rotate view (90°)"),
-        Message::RotateView,
-        false,
-    ));
-    let single = ready.view_mode == ViewMode::Single;
-    items = items.push(menu_item(
-        t,
-        "page-single",
-        t.lang.pick("Página única", "Single page"),
-        Message::SetViewMode(ViewMode::Single),
-        single,
-    ));
-    items = items.push(menu_item(
-        t,
-        "continuous",
-        t.lang.pick("Rolagem contínua", "Continuous scroll"),
-        Message::SetViewMode(ViewMode::Continuous),
-        !single,
-    ));
-    items = items.push(
-        row![
-            menu_theme_button(
-                t,
-                t.lang.pick("Sistema", "System"),
-                ThemePref::System,
-                pref == ThemePref::System
-            ),
-            menu_theme_button(
-                t,
-                t.lang.pick("Escuro", "Dark"),
-                ThemePref::Dark,
-                pref == ThemePref::Dark
-            ),
-            menu_theme_button(
-                t,
-                t.lang.pick("Claro", "Light"),
-                ThemePref::Light,
-                pref == ThemePref::Light
-            ),
-        ]
-        .spacing(4),
-    );
-    if ready.can_history_back() || ready.can_history_forward() {
-        items = items.push(section_title(t.lang.pick("Ir", "Go"), t));
+    if menu == MenuId::View {
+        items = items.push(menu_item(
+            t,
+            "fit-page",
+            t.lang.pick("Ajustar página inteira", "Fit page"),
+            Message::SetZoom(Zoom::Page),
+            false,
+        ));
+        items = items.push(menu_item(
+            t,
+            "rotate",
+            t.lang.pick("Girar vista (90°)", "Rotate view (90°)"),
+            Message::RotateView,
+            false,
+        ));
+        let single = ready.view_mode == ViewMode::Single;
+        items = items.push(menu_item(
+            t,
+            "page-single",
+            t.lang.pick("Página única", "Single page"),
+            Message::SetViewMode(ViewMode::Single),
+            single,
+        ));
+        items = items.push(menu_item(
+            t,
+            "continuous",
+            t.lang.pick("Rolagem contínua", "Continuous scroll"),
+            Message::SetViewMode(ViewMode::Continuous),
+            !single,
+        ));
+        items = items.push(
+            row![
+                menu_theme_button(
+                    t,
+                    t.lang.pick("Sistema", "System"),
+                    ThemePref::System,
+                    pref == ThemePref::System
+                ),
+                menu_theme_button(
+                    t,
+                    t.lang.pick("Escuro", "Dark"),
+                    ThemePref::Dark,
+                    pref == ThemePref::Dark
+                ),
+                menu_theme_button(
+                    t,
+                    t.lang.pick("Claro", "Light"),
+                    ThemePref::Light,
+                    pref == ThemePref::Light
+                ),
+            ]
+            .spacing(4),
+        );
+    }
+    if menu == MenuId::Go && (ready.can_history_back() || ready.can_history_forward()) {
         if ready.can_history_back() {
             items = items.push(menu_item(
                 t,
@@ -1183,29 +1232,30 @@ fn overflow_menu(ready: &Ready, pref: ThemePref, t: Tokens) -> Element<'_, Messa
             ));
         }
     }
-    items = items.push(section_title(t.lang.pick("Ajuda", "Help"), t));
-    items = items.push(menu_item(
-        t,
-        "more",
-        t.lang.pick("Configurações", "Settings"),
-        Message::ToggleSettings,
-        false,
-    ));
-    items = items.push(menu_item(
-        t,
-        "home",
-        t.lang
-            .pick("Definir como leitor padrão…", "Set as default reader…"),
-        Message::SetDefaultReader,
-        false,
-    ));
-    items = items.push(menu_item(
-        t,
-        "file-text",
-        t.lang.pick("Sobre o Tsuro PDF", "About Tsuro PDF"),
-        Message::ToggleAbout,
-        false,
-    ));
+    if menu == MenuId::Help {
+        items = items.push(menu_item(
+            t,
+            "more",
+            t.lang.pick("Configurações", "Settings"),
+            Message::ToggleSettings,
+            false,
+        ));
+        items = items.push(menu_item(
+            t,
+            "home",
+            t.lang
+                .pick("Definir como leitor padrão…", "Set as default reader…"),
+            Message::SetDefaultReader,
+            false,
+        ));
+        items = items.push(menu_item(
+            t,
+            "file-text",
+            t.lang.pick("Sobre o Tsuro PDF", "About Tsuro PDF"),
+            Message::ToggleAbout,
+            false,
+        ));
+    }
     container(scrollable(items))
         .width(Length::Fixed(300.0))
         // Altura máxima com rolagem interna: com muitos recentes o menu
