@@ -1241,7 +1241,8 @@ fn menu_item(
         text(label.into())
             .size(body.size)
             .line_height(body.line_height)
-            .font(crate::font::inter(font::Weight::Medium)),
+            .font(crate::font::inter(font::Weight::Medium))
+            .wrapping(text::Wrapping::None),
     ]
     .spacing(8)
     .align_y(Alignment::Center);
@@ -1260,14 +1261,17 @@ fn menu_item(
 }
 
 /// Linha de recente no grupo Recentes: sem ícone, recuada para marcar que é
-/// documento (filho do grupo), não comando do Arquivo.
+/// documento (filho do grupo), não comando do Arquivo. A linha tem 24 fixos,
+/// então o rótulo não quebra: 30 caracteres largos passariam de duas linhas e
+/// a segunda cairia sobre a linha seguinte.
 fn menu_recent(t: Tokens, label: String, message: Message) -> Element<'static, Message> {
     let body = kiri::text_style(kiri::TextKind::Body, false);
     button(
         text(label)
             .size(body.size)
             .line_height(body.line_height)
-            .font(crate::font::inter(font::Weight::Medium)),
+            .font(crate::font::inter(font::Weight::Medium))
+            .wrapping(text::Wrapping::None),
     )
     .width(Length::Fill)
     .height(Length::Fixed(kiri::MENU_ITEM_HEIGHT))
@@ -1291,7 +1295,9 @@ fn menu_disabled(t: Tokens, label: &'static str) -> Element<'static, Message> {
             text(label)
                 .size(body.size)
                 .line_height(body.line_height)
-                .color(t.muted),
+                .font(crate::font::inter(font::Weight::Medium))
+                .color(t.muted)
+                .wrapping(text::Wrapping::None),
         ]
         .spacing(8)
         .align_y(Alignment::Center),
