@@ -3,6 +3,8 @@ use std::path::PathBuf;
 use tsuro::{boot, Session};
 
 #[cfg(target_os = "macos")]
+mod macos_menu;
+#[cfg(target_os = "macos")]
 mod native_open;
 
 fn main() -> iced::Result {
@@ -31,6 +33,7 @@ fn run(session: Session) -> iced::Result {
         objc2::MainThreadMarker::new().expect("macOS app must run on the main thread");
     let (bridge, events) = Bridge::install(main_thread);
     let (session, task) = boot(session);
+    let menu = crate::macos_menu::install(main_thread, session.lang());
     let result = iced::application("TsuroPDF", Desktop::update, Desktop::view)
         .subscription(Desktop::subscription)
         .default_font(tsuro::font::INTER)
@@ -47,7 +50,7 @@ fn run(session: Session) -> iced::Result {
         .exit_on_close_request(false)
         .run_with(move || {
             (
-                Desktop::new(session, events),
+                Desktop::new(session, events, menu),
                 task.map(native_open::Message::Session),
             )
         });
