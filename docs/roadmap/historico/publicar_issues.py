@@ -4,8 +4,9 @@ import re
 import subprocess
 from pathlib import Path
 
-ROOT = Path(__file__).resolve().parents[1]
-DATA = json.loads((ROOT / 'issues-specs.json').read_text())
+HERE = Path(__file__).resolve().parent
+SPECS = HERE.parent
+DATA = json.loads((HERE / 'issues-specs.json').read_text())
 REPO = DATA['repository']
 CATEGORIES = {
     'investigar': ('Investigation first', 'Investigar primeiro'),
@@ -27,7 +28,7 @@ def gh(*args, stdin=None):
 
 
 def section_of(issue):
-    for source in sorted((ROOT / 'funcoes').glob('*.md')):
+    for source in sorted((SPECS / 'funcoes').glob('*.md')):
         pattern = rf'^### {re.escape(issue["id"])}\.[^\n]*\n(.*?)(?=^### |^## |\Z)'
         match = re.search(pattern, source.read_text(), re.M | re.S)
         if match:

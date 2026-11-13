@@ -13,7 +13,7 @@ Este documento ordena trabalho futuro. Em 13 de outubro de 2026, o usuário auto
 5. Registre decisões de produto e autorizações específicas antes das mudanças que dependem delas.
 6. Implemente uma unidade pequena e verifique seu comportamento. Não deixe a verificação só para o fim da fase.
 
-As fichas revisadas prevalecem sobre este roadmap em requisitos e critérios. O protocolo 05 prevalece sobre o briefing anterior. O [snapshot técnico](./_insumos/01-estado-do-produto-2026-10-13.md) é histórico. A [avaliação técnica](./avaliacao-tecnica.html) confrontou os contratos principais com o código no commit `f6540e9`. O backlog GitHub foi consultado novamente para a [publicação bilíngue](./issues-publicadas.md). Não inferir ausência de uma função de uma busca antiga.
+As fichas revisadas prevalecem sobre este roadmap em requisitos e critérios. O protocolo 05 prevalece sobre o briefing anterior. O [snapshot técnico](./_insumos/01-estado-do-produto-2026-10-13.md) é histórico. A [avaliação técnica](./historico/avaliacao-tecnica.html) confrontou os contratos principais com o código no commit `f6540e9`. O backlog GitHub foi consultado novamente para a [publicação bilíngue](./issues-publicadas.md). Não inferir ausência de uma função de uma busca antiga.
 
 A primeira sequência recomendada é revalidar e medir, definir o contrato mínimo de recuperação e tratar o risco de perder marcações. A exportação simples é um incremento independente que pode sair antes, se o mantenedor decidir aproveitar seu menor escopo. Não exige que o diário inteiro esteja pronto.
 
@@ -320,9 +320,9 @@ Uma release parcial só é candidata se a unidade for segura e sua cobertura est
 - [Modelo das fichas](./_insumos/03-modelo-de-funcao.md) e [catálogo de candidatas](./_insumos/04-catalogo-de-candidatas.md) preservam tipos e IDs.
 - [Briefing anterior](./_insumos/00-briefing-po-pm.md) e [glossário temático](./_insumos/02-glossario-tematico.md) são insumos, não aprovações.
 - [Pesquisa geral](../research/engenharia-reversa-pdf/relatorio.md), [UI e UX](../research/engenharia-reversa-pdf/ui-ux.md) e [código e pedidos de usuários](../research/engenharia-reversa-pdf/codigo-e-usuarios.md) fundamentam inspiração sem cópia.
-- [Registro de retomada](./retomada-todo.md) identifica delegações, revisões e verificação documental.
-- [Relatório de verificação documental](./verificacao-documental.md) registra apenas o que o coordenador conferiu nesta entrega.
+- [Registro de retomada](./historico/retomada-todo.md) identifica delegações, revisões e verificação documental.
+- [Relatório de verificação documental](./historico/verificacao-documental.md) registra apenas o que o coordenador conferiu nesta entrega.
 
-As 28 fichas e este roadmap são documentos revisados. A avaliação técnica posterior leu os caminhos principais de abertura, recuperação, histórico, exportação, impressão e assinaturas. Nenhuma função foi implementada nesta retomada. Não há benchmark, spike executado, validação entre motores, impressão física ou suíte do aplicativo executada. O verificador antigo `_insumos/verificar_entrega.py` não foi executado. As checagens documentais e a leitura estática não provam comportamento do produto.
+As 28 fichas e este roadmap são documentos revisados. A avaliação técnica posterior leu os caminhos principais de abertura, recuperação, histórico, exportação, impressão e assinaturas. Nenhuma função foi implementada nesta retomada. Não há benchmark, spike executado, validação entre motores, impressão física ou suíte do aplicativo executada. O verificador antigo `historico/verificar_entrega.py` não foi executado. As checagens documentais e a leitura estática não provam comportamento do produto.
 
 As [28 issues bilíngues](./issues-publicadas.md), #128 a #155, foram publicadas e verificadas no GitHub em 13 de outubro de 2026, conforme autorização do usuário. Títulos, corpos, labels e estado aberto foram conferidos contra as especificações. #44 e #127 foram consultadas e não são equivalentes às candidatas. Nenhuma issue preexistente foi alterada, fechada ou reaberta. Nenhum PR ou commit foi criado. Implementação futura depende de pedido explícito, começando pela unidade e gates aplicáveis, não por todas as 28 funções de uma vez.

@@ -39,7 +39,7 @@ Aumento de DPI e seletor de resolução foram excluídos. F-ARQ-03 investiga mem
 
 ## Fontes e reprodução
 
-`issues-specs.json` guarda títulos, estados, escopo bilíngue, critérios em inglês, gates e referências da linha de base. As fichas em `funcoes/` fornecem critérios em português, exceto os recortes explicitamente revisados no manifesto.
+`historico/issues-specs.json` guarda títulos, estados, escopo bilíngue, critérios em inglês, gates e referências da linha de base. As fichas em `funcoes/` fornecem critérios em português, exceto os recortes explicitamente revisados no manifesto.
 
 `_insumos/publicar_issues.py` gera corpos e valida idiomas e labels. Sem flags, somente valida. Com um ID, mostra o corpo. `--publish` exige exatamente um ID, consulta todos os estados e recusa duplicata ou divergência antes de criar. `--verify` compara títulos, corpos, labels e estado aberto com o remoto. O script não altera arquivos locais nem fecha ou reabre issues.
 

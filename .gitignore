@@ -30,3 +30,6 @@ pdfium.dll
 *.njsproj
 *.sln
 *.sw?
+
+# Python tooling under docs/
+__pycache__/

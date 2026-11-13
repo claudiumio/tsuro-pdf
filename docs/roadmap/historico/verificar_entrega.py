@@ -14,7 +14,7 @@ import os
 import re
 import sys
 
-ROOT = "/Users/claudio/leitor-pdf-opensource"
+ROOT = os.path.abspath(os.path.join(os.path.dirname(__file__), '..', '..', '..'))
 CAT = os.path.join(ROOT, "docs/roadmap/_insumos/04-catalogo-de-candidatas.md")
 
 REQ = {
