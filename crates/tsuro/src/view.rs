@@ -203,91 +203,32 @@ pub fn chrome(session: &Session, theme: Theme, lang: Lang) -> Element<'_, Messag
     stack![main, hud_layer, overlay].into()
 }
 
-/// Botão-ícone da pílula do HUD: Ori + tooltip, no tamanho dos segmentos.
-fn hud_icon(
-    file: &str,
-    label: &'static str,
-    t: Tokens,
-    message: Message,
-) -> Element<'static, Message> {
-    tip(
-        t,
-        control_seg(t, button(seg_icon(file))).on_press(message),
-        label,
-    )
-}
-
 /// HUD flutuante (Stitch §Floating Action Pill): pílula 36px centrada a 24px do
-/// rodapé, sobre o canvas. Só os botões capturam clique — o resto atravessa.
+/// rodapé, sobre o canvas. Página e zoom vivem na barra, então aqui fica só o
+/// estado de Modo Anotação. Só a pílula captura clique, o resto atravessa.
 fn hud(ready: &Ready, t: Tokens) -> Element<'_, Message> {
-    let n = ready.page_count().max(1);
-    let page = ready.visible.index() + 1;
-    let current = ready.zoom_step_factor();
-    let out = Zoom::Manual(ZoomFactor::new(current / 1.1));
-    let into = Zoom::Manual(ZoomFactor::new(current * 1.1));
-    let mono = |s: String, color: Color| text(s).size(12).font(iced::Font::MONOSPACE).color(color);
-    let mut pill = row![
-        hud_icon(
-            "chevron-left",
-            t.lang.pick("Página anterior", "Previous page"),
-            t,
-            Message::Nav(NavCmd::Previous)
-        ),
-        mono(page.to_string(), t.ink),
-        mono("/".to_string(), t.muted),
-        mono(n.to_string(), t.muted),
-        hud_icon(
-            "chevron-right",
-            t.lang.pick("Próxima página", "Next page"),
-            t,
-            Message::Nav(NavCmd::Next)
-        ),
-        kiri::vsep(t),
-        hud_icon(
-            "fit-width",
-            t.lang.pick("Ajustar à largura", "Fit width"),
-            t,
-            Message::SetZoom(Zoom::Width)
-        ),
-        hud_icon(
-            "minus",
-            t.lang.pick("Diminuir zoom (-)", "Zoom out (-)"),
-            t,
-            Message::SetZoom(out)
-        ),
-        mono(format!("{}%", (current * 100.0).round() as i32), t.ink),
-        hud_icon(
-            "plus",
-            t.lang.pick("Aumentar zoom (+)", "Zoom in (+)"),
-            t,
-            Message::SetZoom(into)
-        ),
-    ]
-    .spacing(2)
-    .align_y(Alignment::Center);
-    // Modo Anotação: só com seleção viva ou marcações na sessão.
-    if ready.selection_plain_text().is_some() || !ready.annotations.is_empty() {
-        pill = pill.push(kiri::vsep(t)).push(
-            row![
-                container(Space::with_width(Length::Fixed(7.0)))
-                    .width(Length::Fixed(7.0))
-                    .height(Length::Fixed(7.0))
-                    .style(move |_| container::Style {
-                        background: Some(Background::Color(t.accent)),
-                        border: Border {
-                            radius: 99.0.into(),
-                            ..Border::default()
-                        },
-                        ..container::Style::default()
-                    }),
-                text(t.lang.pick("Modo Anotação", "Annotation mode"))
-                    .size(11)
-                    .color(t.accent),
-            ]
-            .spacing(6)
-            .align_y(Alignment::Center),
-        );
+    // Sem seleção e sem marcações não há nada a dizer: nada de pílula vazia.
+    if ready.selection_plain_text().is_none() && ready.annotations.is_empty() {
+        return Space::new(Length::Shrink, Length::Shrink).into();
     }
+    let pill = row![
+        container(Space::with_width(Length::Fixed(7.0)))
+            .width(Length::Fixed(7.0))
+            .height(Length::Fixed(7.0))
+            .style(move |_| container::Style {
+                background: Some(Background::Color(t.accent)),
+                border: Border {
+                    radius: 99.0.into(),
+                    ..Border::default()
+                },
+                ..container::Style::default()
+            }),
+        text(t.lang.pick("Modo Anotação", "Annotation mode"))
+            .size(11)
+            .color(t.accent),
+    ]
+    .spacing(6)
+    .align_y(Alignment::Center);
     // Cursor sobre a pílula a segura na tela (não some embaixo da mão).
     container(
         mouse_area(
