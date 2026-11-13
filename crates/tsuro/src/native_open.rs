@@ -178,6 +178,7 @@ impl Desktop {
         if !self.menu_applied {
             self.menu_applied = true;
             self.menu.apply();
+            crate::macos_window::disable_titlebar_double_click_zoom();
         }
         let task = match message {
             Message::Session(message) => self.session.update(message).map(Message::Session),

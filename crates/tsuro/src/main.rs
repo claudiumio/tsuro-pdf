@@ -5,6 +5,8 @@ use tsuro::{boot, Session};
 #[cfg(target_os = "macos")]
 mod macos_menu;
 #[cfg(target_os = "macos")]
+mod macos_window;
+#[cfg(target_os = "macos")]
 mod native_open;
 
 fn main() -> iced::Result {
