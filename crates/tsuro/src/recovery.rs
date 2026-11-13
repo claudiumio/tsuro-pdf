@@ -1,4 +1,4 @@
-//! Diário de recuperação de marcações (#128, `docs/roadmap/investigacao-f-marc-01.md`).
+//! Diário de recuperação de marcações (#128).
 //!
 //! Cada aba grava um snapshot completo das marcações em
 //! `<dir>/<instância>.journal`, com o anterior em `.prev`, e segura um lock
