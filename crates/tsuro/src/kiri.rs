@@ -143,6 +143,17 @@ pub fn text_style(kind: TextKind, emphasized: bool) -> TextStyle {
     }
 }
 
+/// Dica (tooltip) de ícone (spec §5): 11/13 w500, altura 19 com padding 6/3.
+/// Fica fora da escala `TextKind` porque a combinação 11/13 não existe na
+/// tabela do kit; Subheadline é 11/14.
+pub fn tooltip_text_style() -> TextStyle {
+    TextStyle {
+        size: 11.0,
+        line_height: iced::Pixels(13.0),
+        weight: 500,
+    }
+}
+
 impl TextStyle {
     /// iced font for the numeric weight (spec §2): 400 Regular, 500 Medium,
     /// 600 SemiBold, 700 Bold — all embedded Inter faces.
@@ -497,6 +508,11 @@ impl Metrics {
 /// Item de navegação da sidebar (spec §5): 32 de altura, raio 8, padding 14 à
 /// esquerda, ícone 16 e texto 13/16.
 pub const SIDEBAR_ITEM_HEIGHT: f32 = 32.0;
+
+/// Linha do menu ⋯ (spec §5): 24 de altura, raio 8. O ícone de 16 mais o
+/// padding de 4 em cima e embaixo dá exatamente 24; a altura é fixada para a
+/// linha de recente e a desabilitada não divergirem do item com ícone.
+pub const MENU_ITEM_HEIGHT: f32 = 24.0;
 
 /// Altura da barra de progresso entre a toolbar e o conteúdo.
 pub const PROGRESS_HEIGHT: f32 = 6.0;
@@ -1381,6 +1397,20 @@ mod tests {
             assert_ne!(t.mark_current, t.mark);
             assert_ne!(t.mark_current, t.page);
         }
+    }
+
+    #[test]
+    fn tooltip_text_is_eleven_over_thirteen_medium() {
+        let style = tooltip_text_style();
+        assert_eq!(style.size, 11.0);
+        assert_eq!(style.line_height, iced::Pixels(13.0));
+        assert_eq!(style.weight, 500);
+        assert_eq!(style.font(), crate::font::inter(iced::font::Weight::Medium));
+    }
+
+    #[test]
+    fn menu_item_height_is_twenty_four() {
+        assert_eq!(MENU_ITEM_HEIGHT, 24.0);
     }
 
     #[test]
