@@ -25,6 +25,7 @@ fn run(session: Session) -> iced::Result {
 #[cfg(target_os = "macos")]
 fn run(session: Session) -> iced::Result {
     use crate::native_open::{Bridge, Desktop};
+    use iced::window::settings::PlatformSpecific;
 
     let main_thread =
         objc2::MainThreadMarker::new().expect("macOS app must run on the main thread");
@@ -33,6 +34,16 @@ fn run(session: Session) -> iced::Result {
     let result = iced::application("TsuroPDF", Desktop::update, Desktop::view)
         .subscription(Desktop::subscription)
         .default_font(tsuro::font::INTER)
+        .window(iced::window::Settings {
+            // Barra unificada (spec §5): o conteúdo sobe sob a barra de título,
+            // o título nativo some e os semáforos continuam os do sistema.
+            platform_specific: PlatformSpecific {
+                title_hidden: true,
+                titlebar_transparent: true,
+                fullsize_content_view: true,
+            },
+            ..iced::window::Settings::default()
+        })
         .exit_on_close_request(false)
         .run_with(move || {
             (
