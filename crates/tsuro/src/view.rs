@@ -689,6 +689,10 @@ fn topbar(session: &Session, t: Tokens) -> Element<'_, Message> {
         .style(kiri::search_field_style(t));
 
         // Página + ‹ › (zona central): o campo e o segmento na mesma pílula.
+        // Página + ‹ › (zona central): o campo, o total e o segmento na mesma
+        // pílula. As larguras saem do número de páginas do documento, então o
+        // par "N / M" fica centrado em qualquer contagem (1/2, 9/120).
+        let (field_w, total_w) = pager_widths(n);
         let pager = container(
             row![
                 tip(
@@ -701,18 +705,23 @@ fn topbar(session: &Session, t: Tokens) -> Element<'_, Message> {
                         .font(iced::Font::MONOSPACE)
                         .size(body.size)
                         .line_height(body.line_height)
-                        .padding([4, 6])
-                        .width(Length::Fixed(30.0)),
+                        .align_x(Alignment::Center)
+                        .padding([4, 4])
+                        .width(Length::Fixed(field_w)),
                     t.lang.pick(
                         "Ir para página (Enter confirma)",
                         "Go to page (Enter confirms)"
                     ),
                 ),
-                text(format!("/{n}"))
-                    .size(body.size)
-                    .line_height(body.line_height)
-                    .font(iced::Font::MONOSPACE)
-                    .color(t.muted),
+                container(
+                    text(format!("/{n}"))
+                        .size(body.size)
+                        .line_height(body.line_height)
+                        .font(iced::Font::MONOSPACE)
+                        .color(t.muted),
+                )
+                .width(Length::Fixed(total_w))
+                .align_x(Alignment::Center),
                 Space::with_width(Length::Fixed(4.0)),
                 container(
                     row![
@@ -4455,10 +4464,37 @@ fn failed<'a>(source: &'a OpenSource, message: &'a str, t: Tokens) -> Element<'a
     .into()
 }
 
+/// Larguras do indicador de página: o campo com o número atual e a caixa do
+/// total `/N`. As duas crescem com o número de dígitos do documento, então o
+/// par fica centrado e com o mesmo peso visual em 2 ou em 900 páginas.
+fn pager_widths(pages: u32) -> (f32, f32) {
+    // Um dígito mono na escala do corpo (13 px) mede cerca de 8 px.
+    const DIGIT: f32 = 8.0;
+    let digits = pages.to_string().len();
+    // O campo aceita digitar até o número de dígitos do documento, com um
+    // mínimo de dois para o texto não encostar na borda.
+    let field_digits = digits.max(2) as f32;
+    // O total mostra "/" mais todos os dígitos.
+    let total_digits = (digits + 1) as f32;
+    (DIGIT * field_digits + 12.0, DIGIT * total_digits + 6.0)
+}
+
 #[cfg(test)]
 mod tests {
-    use super::{outline_title, sweep_x, LOADING_BAR_W, LOADING_SEG_W, LOADING_STEPS};
+    use super::{
+        outline_title, pager_widths, sweep_x, LOADING_BAR_W, LOADING_SEG_W, LOADING_STEPS,
+    };
     use crate::i18n::Lang;
+
+    #[test]
+    fn pager_widths_fit_the_document_page_count() {
+        // Dois dígitos no campo e "/2" no total.
+        assert_eq!(pager_widths(2), (28.0, 22.0));
+        // Documento de três dígitos: o par cresce junto.
+        assert_eq!(pager_widths(120), (36.0, 38.0));
+        assert!(pager_widths(900).1 > pager_widths(9).1);
+        assert!(pager_widths(900).0 >= pager_widths(9).0);
+    }
 
     #[test]
     fn opening_sweep_stays_inside_the_track() {
