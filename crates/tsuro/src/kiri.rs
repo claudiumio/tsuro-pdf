@@ -489,9 +489,31 @@ impl Metrics {
         Self::for_platform(platform())
     }
 
-    /// Faixa de ferramentas: o botão mais 16 de respiro (28 → 44 no macOS).
+    /// Barra de título unificada (spec §5): no macOS o conteúdo sobe por baixo
+    /// dos semáforos. Nas outras plataformas a barra nativa do sistema fica
+    /// acima e a nossa faixa começa abaixo dela, então elas não unificam.
+    pub fn unified_title(self) -> bool {
+        self.platform == Platform::MacOs
+    }
+
+    /// Faixa reservada aos semáforos nativos: três botões de 12 a partir de 20,
+    /// mais 16 de respiro até o primeiro item da barra.
+    pub fn traffic_lights(self) -> f32 {
+        if self.unified_title() {
+            78.0
+        } else {
+            0.0
+        }
+    }
+
+    /// Faixa de ferramentas: 52 na barra unificada (spec §5), senão o botão
+    /// mais 16 de respiro (28 → 44 no macOS fora dela).
     pub fn bar_height(self) -> f32 {
-        self.button + 16.0
+        if self.unified_title() {
+            52.0
+        } else {
+            self.button + 16.0
+        }
     }
 
     /// Faixa de abas: o controle mais 2 (24 → 26 no macOS).
@@ -1272,16 +1294,22 @@ mod tests {
     fn platform_metrics_follow_the_spec_table() {
         let mac = Metrics::for_platform(Platform::MacOs);
         assert_eq!((mac.control, mac.button), (24.0, 28.0));
-        assert_eq!((mac.bar_height(), mac.tab_strip_height()), (44.0, 26.0));
-        assert_eq!(mac.icon(), 16.0);
+        assert_eq!((mac.bar_height(), mac.tab_strip_height()), (52.0, 26.0));
+        assert_eq!((mac.icon(), mac.traffic_lights()), (16.0, 78.0));
+        assert!(mac.unified_title());
 
         let win = Metrics::for_platform(Platform::Windows);
         assert_eq!((win.control, win.button), (32.0, 32.0));
         assert_eq!((win.bar_height(), win.tab_strip_height()), (48.0, 34.0));
+        assert_eq!((win.unified_title(), win.traffic_lights()), (false, 0.0));
 
         let linux = Metrics::for_platform(Platform::Linux);
         assert_eq!((linux.control, linux.button), (34.0, 34.0));
         assert_eq!((linux.bar_height(), linux.tab_strip_height()), (50.0, 36.0));
+        assert_eq!(
+            (linux.unified_title(), linux.traffic_lights()),
+            (false, 0.0)
+        );
     }
 
     /// O controle nunca é menor que o ícone: o padding do segmento sai da

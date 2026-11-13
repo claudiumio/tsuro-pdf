@@ -180,13 +180,23 @@ Regra: a estrutura (zonas, hierarquia, escala relativa) é uma só; mudam fonte,
 
 Cada fase: `cargo test -p tsuro`, `cargo fmt --check`, clippy sem aviso novo, e conferência visual no app antes do PR.
 
-**Estado (2026-11-02).** Fase 1 e fase 2 implementadas. A fase 2 migrou o chrome
-para os papéis semânticos (`Roles`), a escala tipográfica (`TextKind`), a faixa
-de abas 26/raio 9 com a ativa em `fill_1` e peso 600, a sidebar 256 com padding
-14/16 e item de 32, o segmentado de 24 com separadores de 1×14 e a busca como
-campo próprio de 24 na zona final da barra (início: Início/Abrir/título;
-centro: página, zoom, anotar; fim: busca, painéis, ⋯). A barra unificada nativa
-do macOS (D-3) fica para a fase 4, porque exige AppKit.
+**Estado (2026-11-13).** Fases 1 a 3 implementadas, e a fase 4 começou pela barra
+unificada. A fase 2 migrou o chrome para os papéis semânticos (`Roles`), a escala
+tipográfica (`TextKind`), a faixa de abas 26/raio 9 com a ativa em `fill_1` e peso
+600, a sidebar 256 com padding 14/16 e item de 32, o segmentado de 24 com
+separadores de 1×14 e a busca como campo próprio de 24 na zona final da barra
+(início: Início/Abrir/título; centro: página, zoom, anotar; fim: busca, painéis,
+⋯). A fase 3 trouxe a linha de menu de 24 e a dica 11/13 de 19 de altura; o menu
+já estava no raio 12, o popover no 20, a folha no 26, o scrim em 0,475 linear
+(que mede 25% na tela) e o progresso em 6.
+
+A barra unificada (fase 4) não precisou de AppKit: o `iced` 0.13 expõe
+`title_hidden`, `titlebar_transparent` e `fullsize_content_view` no
+`PlatformSpecific` do macOS. Com eles a faixa cresce para 52 e reserva 78 à
+esquerda para os semáforos nativos (`Metrics::unified_title` e
+`Metrics::traffic_lights`). Falta da fase 4: a barra de menu nativa via `muda`
+(0.19.3 já no lockfile) e o comportamento de título nas plataformas Windows e
+Linux, onde a barra nativa continua acima da nossa faixa.
 
 ## 10. Decisões para o Junior
 

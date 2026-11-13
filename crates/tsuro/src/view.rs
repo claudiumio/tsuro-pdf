@@ -475,11 +475,19 @@ fn settings_button(t: Tokens, open: bool) -> Element<'static, Message> {
 
 /// Moldura da toolbar Kiri: `bar_height()`, fundo `chrome`, respiro horizontal 8px.
 fn toolbar_frame(t: Tokens, content: Element<'_, Message>) -> Element<'_, Message> {
+    // Barra unificada (spec §5): o conteúdo corre sob os semáforos nativos, então
+    // a faixa deles fica reservada à esquerda. Nas outras plataformas é 0.
+    let metrics = kiri::Metrics::current();
     container(content)
         .width(Length::Fill)
         .height(Length::Fixed(bar_height()))
         .align_y(Alignment::Center)
-        .padding(Padding::from([0, 8]))
+        .padding(Padding {
+            top: 0.0,
+            right: 8.0,
+            bottom: 0.0,
+            left: 8.0 + metrics.traffic_lights(),
+        })
         .style(move |_| container::Style {
             background: Some(Background::Color(t.chrome)),
             ..container::Style::default()
