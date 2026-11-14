@@ -6143,8 +6143,9 @@ impl Ready {
     }
 
     /// Altura útil do painel: a janela menos o chrome menos o respiro da
-    /// moldura (`CHROME_PAD`, espelha `chrome()` em view.rs). A faixa de abas
-    /// já vem descontada no `WindowMetrics`.
+    /// moldura (`CHROME_PAD`, espelha `chrome()` em view.rs). O chrome do
+    /// estado (barra, progresso, faixa de abas) já vem descontado no
+    /// `WindowMetrics`.
     pub(crate) fn doc_content_height(&self) -> f32 {
         (self.viewport.height - CHROME_PAD).max(1.0)
     }
