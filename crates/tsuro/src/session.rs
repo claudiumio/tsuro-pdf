@@ -2574,6 +2574,8 @@ pub enum Message {
     CloseSave,
     /// O SO pediu para fechar a janela.
     CloseWindow(window::Id),
+    /// Arrasta a janela: press na faixa vazia da barra (`view::drag_region`).
+    DragWindow,
     /// Troca a aba ativa (clique na faixa de abas).
     SelectTab(usize),
     /// Aba seguinte (`+1`) ou anterior (`-1`) — Ctrl+Tab / Ctrl+Shift+Tab.
@@ -3237,6 +3239,9 @@ impl Session {
             }
             Message::CloseSave => self.close_save(),
             Message::CloseWindow(id) => self.request_quit(id),
+            // O arrasto é do shell da plataforma: no macOS o AppKit precisa do
+            // evento corrente, que só existe dentro do próprio `update`.
+            Message::DragWindow => Task::none(),
             Message::SelectTab(index) => self.select_tab(index),
             Message::CycleTab(step) => self.cycle_tab(step),
             Message::Nav(cmd) => {

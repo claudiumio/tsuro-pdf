@@ -178,9 +178,13 @@ impl Desktop {
         if !self.menu_applied {
             self.menu_applied = true;
             self.menu.apply();
-            crate::macos_window::disable_titlebar_double_click_zoom();
+            crate::macos_window::install();
         }
         let task = match message {
+            Message::Session(SessionMessage::DragWindow) => {
+                crate::macos_window::begin_drag();
+                Task::none()
+            }
             Message::Session(message) => self.session.update(message).map(Message::Session),
             Message::Menu(message) => self.session.update(message).map(Message::Session),
             Message::Documents(paths) => {

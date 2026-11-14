@@ -473,12 +473,25 @@ fn settings_button(t: Tokens, open: bool) -> Element<'static, Message> {
     )
 }
 
+/// Faixa de arrasto da janela: o fundo da barra, atrás dos controles. O AppKit
+/// não arrasta mais por conta própria (`macos_window`), então este é o caminho
+/// para mover a janela pela barra — e ele não pega clique de controle.
+fn drag_region() -> Element<'static, Message> {
+    mouse_area(
+        container(Space::new(Length::Fill, Length::Fill))
+            .width(Length::Fill)
+            .height(Length::Fill),
+    )
+    .on_press(Message::DragWindow)
+    .into()
+}
+
 /// Moldura da toolbar Kiri: `bar_height()`, fundo `chrome`, respiro horizontal 8px.
 fn toolbar_frame(t: Tokens, content: Element<'_, Message>) -> Element<'_, Message> {
     // Barra unificada (spec §5): o conteúdo corre sob os semáforos nativos, então
     // a faixa deles fica reservada à esquerda. Nas outras plataformas é 0.
     let metrics = kiri::Metrics::current();
-    container(content)
+    let frame = container(content)
         .width(Length::Fill)
         .height(Length::Fixed(bar_height()))
         .align_y(Alignment::Center)
@@ -491,8 +504,17 @@ fn toolbar_frame(t: Tokens, content: Element<'_, Message>) -> Element<'_, Messag
         .style(move |_| container::Style {
             background: Some(Background::Color(t.chrome)),
             ..container::Style::default()
-        })
-        .into()
+        });
+    // Só a barra unificada precisa do arrasto explícito: nas outras plataformas
+    // a barra de título nativa fica acima e a nossa faixa não arrasta nada.
+    if metrics.unified_title() {
+        stack![drag_region(), frame]
+            .width(Length::Fill)
+            .height(Length::Fixed(bar_height()))
+            .into()
+    } else {
+        frame.into()
+    }
 }
 
 /// Texto do chrome num estilo nomeado da escala (spec §2): tamanho,
