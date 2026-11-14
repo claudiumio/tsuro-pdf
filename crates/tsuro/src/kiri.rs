@@ -508,23 +508,29 @@ impl Metrics {
         }
     }
 
-    /// Faixa de ferramentas: na barra unificada é o botão mais 2 de respiro em
-    /// cima e embaixo (28 → 32), que põe o centro dos controles a 16 px do topo
-    /// — a mesma altura do centro dos semáforos nativos (medido a 15,5), então
-    /// a barra inteira lê como uma linha só. Nas outras plataformas a barra
-    /// nativa fica acima, e a faixa é o botão mais 16.
+    /// Faixa de ferramentas: na barra unificada é o botão mais o respiro de
+    /// cima e o de baixo (28 + 4 + 10 → 42). O respiro de cima põe o centro dos
+    /// controles a 18 px do topo, perto do centro dos semáforos nativos (15,5);
+    /// o de baixo separa a linha do progresso e do painel. Nas outras
+    /// plataformas a barra nativa fica acima, e a faixa é o botão mais 16.
     pub fn bar_height(self) -> f32 {
         if self.unified_title() {
-            self.button + 2.0 * self.bar_respiro()
+            self.button + self.bar_air_top() + self.bar_air_bottom()
         } else {
             self.button + 16.0
         }
     }
 
-    /// Respiro acima e abaixo dos controles na barra unificada: 2 px, a faixa
-    /// vazia onde o clique arrasta a janela em vez de acertar um controle.
-    pub fn bar_respiro(self) -> f32 {
-        2.0
+    /// Respiro entre a borda de cima da janela e os controles, na barra
+    /// unificada: a faixa vazia onde o clique arrasta a janela.
+    pub fn bar_air_top(self) -> f32 {
+        4.0
+    }
+
+    /// Respiro abaixo dos controles. É maior que o de cima porque separa a
+    /// linha do progresso e do painel, que antes encostavam nela.
+    pub fn bar_air_bottom(self) -> f32 {
+        10.0
     }
 
     /// Faixa de abas: o controle mais 2 (24 → 26 no macOS).
@@ -549,6 +555,10 @@ pub const MENU_ITEM_HEIGHT: f32 = 24.0;
 
 /// Altura da barra de progresso entre a toolbar e o conteúdo.
 pub const PROGRESS_HEIGHT: f32 = 6.0;
+
+/// Respiro entre o chrome (barra e progresso) e o painel do documento, para a
+/// página não encostar na barra de progresso.
+pub const CHROME_GAP: f32 = 6.0;
 
 #[allow(unused_imports)]
 pub(crate) use ori;
@@ -1305,7 +1315,7 @@ mod tests {
     fn platform_metrics_follow_the_spec_table() {
         let mac = Metrics::for_platform(Platform::MacOs);
         assert_eq!((mac.control, mac.button), (24.0, 28.0));
-        assert_eq!((mac.bar_height(), mac.tab_strip_height()), (32.0, 26.0));
+        assert_eq!((mac.bar_height(), mac.tab_strip_height()), (42.0, 26.0));
         assert_eq!((mac.icon(), mac.traffic_lights()), (16.0, 68.0));
         assert!(mac.unified_title());
 
@@ -1323,18 +1333,26 @@ mod tests {
         );
     }
 
-    /// A linha de controles fica na altura dos semáforos nativos: o centro da
-    /// faixa em 16 casa com o centro medido do sistema (15,5), e sobram 2 px de
-    /// respiro em cima e embaixo, que é a faixa onde a janela arrasta.
+    /// A barra dá respiro acima e abaixo da linha de controles sem perder a
+    /// relação com os semáforos nativos (centro medido em 15,5): o centro fica
+    /// logo abaixo deles, e o respiro de baixo é o maior dos dois.
     #[test]
-    fn unified_bar_puts_the_controls_on_the_traffic_lights_line() {
+    fn unified_bar_gives_air_around_the_controls_line() {
         let mac = Metrics::for_platform(Platform::MacOs);
-        let center = mac.bar_height() / 2.0;
+        let center = mac.bar_air_top() + mac.button / 2.0;
         assert!(
-            (center - 15.5).abs() <= 0.5,
-            "centro dos controles em {center} não casa com os semáforos em 15,5"
+            (center - 15.5).abs() <= 4.0,
+            "centro dos controles em {center} saiu da linha dos semáforos (15,5)"
         );
-        assert_eq!((mac.bar_height() - mac.button) / 2.0, 2.0);
+        assert!(mac.bar_air_top() >= 3.0, "sem respiro acima dos controles");
+        assert!(
+            mac.bar_air_bottom() > mac.bar_air_top(),
+            "o respiro de baixo é o que separa a linha do progresso"
+        );
+        assert_eq!(
+            mac.bar_height(),
+            mac.button + mac.bar_air_top() + mac.bar_air_bottom()
+        );
     }
 
     /// O controle nunca é menor que o ícone: o padding do segmento sai da

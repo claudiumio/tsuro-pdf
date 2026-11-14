@@ -44,9 +44,10 @@ fn frame_top() -> f32 {
     }
 }
 
-/// Altura do chrome Kiri: respiro de cima + toolbar + progresso + respiro de 4.
+/// Altura do chrome Kiri: respiro de cima + toolbar + progresso + respiro até o
+/// painel + o respiro de 4 da moldura embaixo.
 pub fn chrome_height() -> f32 {
-    frame_top() + bar_height() + kiri::PROGRESS_HEIGHT + 4.0
+    frame_top() + bar_height() + kiri::PROGRESS_HEIGHT + kiri::CHROME_GAP + 4.0
 }
 
 /// Onde o chrome termina e o conteúdo começa: abaixo da barra (e das abas).
@@ -130,6 +131,8 @@ pub fn chrome(session: &Session, theme: Theme, lang: Lang) -> Element<'_, Messag
             col = col.push(tab_strip(tabs, t));
         }
     }
+    // Respiro entre o chrome e o painel: a página não encosta no progresso.
+    col = col.push(Space::with_height(Length::Fixed(kiri::CHROME_GAP)));
     col = col.push(body);
     let main: Element<'_, Message> = container(
         col.spacing(0)
@@ -463,14 +466,19 @@ fn toolbar_frame(t: Tokens, content: Element<'_, Message>) -> Element<'_, Messag
     // Barra unificada (spec §5): o conteúdo corre sob os semáforos nativos, então
     // a faixa deles fica reservada à esquerda. Nas outras plataformas é 0.
     let metrics = kiri::Metrics::current();
+    let unified = metrics.unified_title();
     let frame: Element<'_, Message> = container(content)
         .width(Length::Fill)
         .height(Length::Fixed(bar_height()))
         .align_y(Alignment::Center)
         .padding(Padding {
-            top: 0.0,
+            top: if unified { metrics.bar_air_top() } else { 0.0 },
             right: 8.0,
-            bottom: 0.0,
+            bottom: if unified {
+                metrics.bar_air_bottom()
+            } else {
+                0.0
+            },
             left: 8.0 + metrics.traffic_lights(),
         })
         .style(move |_| container::Style {
@@ -478,10 +486,10 @@ fn toolbar_frame(t: Tokens, content: Element<'_, Message>) -> Element<'_, Messag
             ..container::Style::default()
         })
         .into();
-    if metrics.unified_title() {
-        // Duas faixas vazias arrastam a janela: a fileira acima dos controles
-        // (os 2 px de respiro) e a área dos semáforos, à esquerda, onde nada
-        // nosso é desenhado. O resto da barra pertence aos controles.
+    if unified {
+        // As faixas vazias arrastam a janela: a fileira de cima, a de baixo e a
+        // área dos semáforos, à esquerda, onde nada nosso é desenhado. O resto
+        // da barra pertence aos controles.
         let band = |w: Length, h: Length| -> Element<'_, Message> {
             mouse_area(
                 container(Space::new(Length::Fill, Length::Fill))
@@ -491,10 +499,15 @@ fn toolbar_frame(t: Tokens, content: Element<'_, Message>) -> Element<'_, Messag
             .on_press(Message::DragWindow)
             .into()
         };
+        let bottom = container(band(Length::Fill, Length::Fixed(metrics.bar_air_bottom())))
+            .width(Length::Fill)
+            .height(Length::Fill)
+            .align_y(Alignment::End);
         stack![
             frame,
             band(Length::Fixed(metrics.traffic_lights()), Length::Fill),
-            band(Length::Fill, Length::Fixed(metrics.bar_respiro())),
+            band(Length::Fill, Length::Fixed(metrics.bar_air_top())),
+            bottom,
         ]
         .width(Length::Fill)
         .height(Length::Fixed(bar_height()))

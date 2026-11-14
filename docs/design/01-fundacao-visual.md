@@ -67,7 +67,7 @@ Papéis semânticos, não nomes de cor `[HIG]`. Valores do kit `[kit]`.
 
 ### Janela e barra de título
 - Janela: raio 16, hairline de 1 px, sombra acima.
-- **Título unificado** (barra + título na mesma faixa): altura **32** (botão 28 + 2 de respiro em cima e embaixo, que põe os controles na linha dos semáforos), padding 16 à esquerda, gap 8 `[kit]`. Compacto: **40**, padding 13/8. Expandido: título 33 + barra 44.
+- **Título unificado** (barra + título na mesma faixa): altura **42** (botão 28 + 4 de respiro em cima + 10 embaixo, que põe os controles na linha dos semáforos e separa a linha do progresso), padding 8 à esquerda mais a reserva dos semáforos, gap 6 `[kit]`. Compacto: **40**, padding 13/8. Expandido: título 33 + barra 44.
 - No macOS: `fullsize_content_view` + `titlebar_transparent` + `title_hidden`, deixando os semáforos nativos. Nunca desenhar semáforo falso `[HIG]`.
 - Título: 13/15 w700; subtítulo 11/13 w500 terciário ("— Editado"). Máximo ~15 caracteres `[HIG]`; nome do app nunca.
 - Windows/Linux: barra de título nativa do sistema; nossa faixa de 44/40 começa abaixo dela.
@@ -128,7 +128,7 @@ Papéis semânticos, não nomes de cor `[HIG]`. Valores do kit `[kit]`.
 
 | Superfície | Hoje | Alvo |
 |---|---|---|
-| Barra superior | 36 px abaixo do título nativo, tudo num nível | 32 px unificados no macOS, tudo numa linha só com os semáforos, zonas início/centro/fim, ícones 16, botões 28 |
+| Barra superior | 36 px abaixo do título nativo, tudo num nível | 42 px unificados no macOS, tudo numa linha só com os semáforos, zonas início/centro/fim, ícones 16, botões 28 |
 | Tira de abas | 30 px, pílula | 26 px, raio 9, ativa com peso 600 |
 | Painel lateral | cartão 216/220 com hairline, linha de 41/62 | sidebar 256, linha 32, raio 8, cabeçalho 11/14 w700, de ponta a ponta |
 | Segmentado Páginas/Sumário/Marcações | largura fixa por texto | 24 px, raio 6, larguras por conteúdo |
@@ -193,15 +193,17 @@ já estava no raio 12, o popover no 20, a folha no 26, o scrim em 0,475 linear
 A barra unificada (fase 4) não precisou de AppKit: o `iced` 0.13 expõe
 `title_hidden`, `titlebar_transparent` e `fullsize_content_view` no
 `PlatformSpecific` do macOS. Com eles a faixa encosta no topo (sem o respiro
-de 4) e fica com 32: o botão de 28 mais 2 em cima e 2 embaixo, o que põe o
-centro dos controles a 16 px do topo, a mesma altura dos semáforos nativos
-(medidos a 15,5). À esquerda ficam 68 reservados aos três botões, que ocupam
-de 6 a 65 na medição (`Metrics::unified_title` e `Metrics::traffic_lights`).
+de 4) e fica com 42: o botão de 28 mais 4 em cima e 10 embaixo, o que põe o
+centro dos controles a 18 px do topo, logo abaixo dos semáforos nativos
+(medidos a 15,5), e separa a linha do progresso. Abaixo do progresso ficam mais
+6 px (`CHROME_GAP`) antes de o painel começar. À esquerda ficam 68 reservados
+aos três botões, que ocupam de 6 a 65 na medição (`Metrics::unified_title` e
+`Metrics::traffic_lights`).
 Como o conteúdo corre sob a barra, os gestos dela
 são do sistema: o duplo clique (`performZoom:`) e o arrasto implícito
 (`-mouseDownCanMoveWindow` da view) foram desligados, e o arrasto passou a ser
 explícito, só nas faixas vazias: os vãos entre os controles (`view::drag_band`),
-a fileira de 2 px acima deles e a área dos semáforos. Texto e controle não
+a fileira de 4 px acima deles, a de 10 abaixo e a área dos semáforos. Texto e controle não
 arrastam mais — o `mouse_area` da faixa inteira pegava o clique no nome do
 arquivo e no número da página, que não consomem o evento. A barra
 de menu do macOS foi feita em AppKit
