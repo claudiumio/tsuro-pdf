@@ -29,8 +29,12 @@ if [ ! -f "$ROOT/libpdfium.dylib" ]; then
   trap - EXIT
 fi
 
-# 2. Binário release.
+# 2. Binário release. O diretório de saída vem do cargo, não de `target/`
+# literal: a máquina de dev redireciona pelo `.cargo/config.toml` e o CI usa o
+# padrão, e o script tem que valer nos dois.
 cargo build --release -p tsuro --manifest-path "$ROOT/Cargo.toml"
+TARGET_DIR="$(cargo metadata --no-deps --format-version 1 --manifest-path "$ROOT/Cargo.toml" \
+  | python3 -c 'import json,sys; print(json.load(sys.stdin)["target_directory"])')"
 
 # 3. Ícone a partir da marca (tsuru).
 rm -rf "$APP"
@@ -66,7 +70,7 @@ fi
 
 # 4. Bundle.
 mkdir -p "$APP/Contents/MacOS" "$APP/Contents/Frameworks"
-cp "$ROOT/target/release/TsuroPDF" "$APP/Contents/MacOS/TsuroPDF"
+cp "$TARGET_DIR/release/TsuroPDF" "$APP/Contents/MacOS/TsuroPDF"
 cp "$ROOT/libpdfium.dylib" "$APP/Contents/Frameworks/"
 cat >"$APP/Contents/Info.plist" <<PLIST_EOF
 <?xml version="1.0" encoding="UTF-8"?>

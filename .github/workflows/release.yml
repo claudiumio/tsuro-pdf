@@ -119,15 +119,20 @@ jobs:
           sha256sum * | tee SHA256SUMS
           NOTES="$(mktemp)"
           cat >"$NOTES" <<EOF
-          TsuroPDF ${TAG} — Interface em inglês, Início mais claro e destaque de marcador
+          TsuroPDF ${TAG} — macOS nativo: menu do sistema, barra unificada e ícones do tema
 
-          Novidades desde a v0.5.0:
+          Novidades desde a v0.5.5:
 
-          - **Português e inglês** (#119): a interface inteira troca de idioma em Configurações → Idioma, na hora, e a escolha fica salva.
-          - **Configurações no Início** (#120): a engrenagem na barra do Início abre tema, idioma e Sobre sem precisar abrir um PDF.
-          - **Abas como pílulas** (#120): cada aba ganha fundo, borda e cantos arredondados; a ativa fica destacada.
-          - **Início mais legível** (#121): títulos de Recentes, Pastas e PDFs com ícone, contador e linha fina; a grade de cartões fica centralizada.
-          - **Destaque como marcador** (#122): faixa contínua por linha, cobrindo os espaços entre as palavras e parando na última letra marcada; a cópia salva com marcações mostra o destaque inteiro no Acrobat e no Pdfium, não mais lascas por letra.
+          - **Menu do sistema no macOS** (#178): Arquivo, Editar, Ver, Ir e Ajuda vivem na barra do macOS, com Cmd+Q, esconder e "Sobre" do jeito nativo; Windows e Linux seguem com a lista do ⋯.
+          - **Barra unificada** (#174, #181): a faixa encosta no topo, os controles ficam na linha dos semáforos e a janela só arrasta nas áreas vazias — clicar no número da página ou no nome do arquivo não move mais o app.
+          - **Página e zoom num lugar só** (#180): o indicador saiu do rodapé, ficou centrado na barra e acompanha documentos de 2 a 900 páginas; a pílula do rodapé virou só o estado de Modo Anotação.
+          - **Fundação visual Kiri** (#168, #171, #173): tokens semânticos, Inter embarcada, tema do sistema por padrão e o chrome na escala aprovada — sidebar 256, faixa de abas 26, menu raio 12, folha 26, dica 19 e progresso 6.
+          - **Ícones do tema** (#182): os 28 Ori saem em `currentColor` e são tingidos pelo acento, então o tema claro deixa de ter ícone pálido a 2:1 de contraste.
+          - **Aba Marcações** (#162): lista as marcações da sessão com busca e salto, ao lado de Páginas e Sumário.
+          - **Diário de recuperação** (#163): marcação não salva sobrevive a fechar o app ou a queda, com o cartão de recuperação na abertura.
+          - **Exportar marcações** (#158): Markdown com página, tipo e trecho, por Cmd+E.
+          - **Assinaturas mais honestas** (#164): cada checagem aparece com o seu resultado, com texto claro quando o resumo diverge ou é ilegível.
+          - **Abrir arquivo sem travar a janela** (#169): o seletor do sistema abre como folha, assíncrono.
           EOF
           # PRs mergeadas com @autores (visibilidade open-source; rodapé Full
           # Changelog próprio do template, então filtra o gerado). Falha aqui
@@ -143,7 +148,7 @@ jobs:
           } >>"$NOTES"
           cat >>"$NOTES" <<EOF
 
-          **Full Changelog**: https://github.com/claudioorjunior/tsuro-pdf/compare/v0.5.0...${TAG}
+          **Full Changelog**: https://github.com/claudioorjunior/tsuro-pdf/compare/v0.5.5...${TAG}
 
           Instalação:
 
