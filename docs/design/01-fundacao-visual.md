@@ -204,11 +204,11 @@ linha dos controles (`macos_window::align_lights`, que mede cada botão pela
 superview e é idempotente, chamado de novo a cada resize), e os gestos dela
 são do sistema: o duplo clique (`performZoom:`) e o arrasto implícito
 (`-mouseDownCanMoveWindow` da view) foram desligados, e o arrasto passou a ser
-explícito, só nas faixas vazias: os vãos entre os controles (`view::drag_band`),
-a fileira de 8 px acima deles, a de 10 abaixo e a área dos semáforos. Texto e controle não
-arrastam mais — o `mouse_area` da faixa inteira pegava o clique no nome do
-arquivo e no número da página, que não consomem o evento. A barra
-de menu do macOS foi feita em AppKit
+explícito, só nas faixas vazias: os vãos entre os controles
+(`view::drag_band`), a fileira de 8 px acima deles, a de 10 abaixo e a área dos
+semáforos. Texto e controle não arrastam mais — o `mouse_area` da faixa
+inteira pegava o clique no nome do arquivo e no número da página, que não
+consomem o evento. A barra de menu do macOS foi feita em AppKit
 (`objc2-app-kit`), sem o `muda`: os itens são `NSMenuItem` que enviam a sua
 `Message` de volta para a sessão, e o iced não participa. No Windows e no Linux
 o menu continua sendo a lista do ⋯ desenhada no iced. Falta da fase 4: o
@@ -223,7 +223,7 @@ Ratificadas em 2026-11-01: D-1 a D-6 aprovadas com os valores finais abaixo.
 |---|---|---|---|---|
 | D-1 | Fonte | Inter embarcada em todas as plataformas | resolver SF no macOS e cair para Inter; duas aparências | Inter embarcada em todas as plataformas |
 | D-2 | Tema | `system` por padrão, com claro/escuro manuais | manter `dark` fixo (contra a HIG) | `system` por padrão, com claro/escuro manuais |
-| D-3 | Barra de menu nativa | sim no macOS via `muda` | só atalhos, sem menu (menos nativo) | sim no macOS via `muda`, depois (fase 4); por enquanto só atalhos em `keyboard_message` |
+| D-3 | Barra de menu nativa | sim no macOS via `muda` | só atalhos, sem menu (menos nativo) | sim no macOS, feito com `objc2-app-kit` direto em vez do `muda` (fase 4) |
 | D-4 | Acento | teal do Kiri | seguir o acento do sistema (mais nativo, perde a marca) | teal do Kiri fica — escuro #4db8b0 / claro #1f7d76 |
 | D-5 | Densidade | regular (24/28) | compacta (20/24), cabe mais na tela | regular (24/28) |
 | D-6 | Sidebar | de ponta a ponta, sem cartão | manter o cartão atual | painel flutuante fica: manter o cartão atual |
