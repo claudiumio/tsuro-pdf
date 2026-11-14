@@ -199,7 +199,9 @@ centro dos controles a 22 px do topo, logo abaixo dos semáforos nativos
 6 px (`CHROME_GAP`) antes de o painel começar. À esquerda ficam 68 reservados
 aos três botões, que ocupam de 6 a 65 na medição (`Metrics::unified_title` e
 `Metrics::traffic_lights`).
-Como o conteúdo corre sob a barra, os gestos dela
+Como o conteúdo corre sob a barra, os semáforos nativos são deslocados para a
+linha dos controles (`macos_window::align_lights`, que mede cada botão pela
+superview e é idempotente, chamado de novo a cada resize), e os gestos dela
 são do sistema: o duplo clique (`performZoom:`) e o arrasto implícito
 (`-mouseDownCanMoveWindow` da view) foram desligados, e o arrasto passou a ser
 explícito, só nas faixas vazias: os vãos entre os controles (`view::drag_band`),

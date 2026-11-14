@@ -180,6 +180,15 @@ impl Desktop {
             self.menu.apply();
             crate::macos_window::install();
         }
+        // O AppKit refaz o layout da barra de título a cada resize e devolveria
+        // os semáforos para a altura de fábrica; realinhar aqui é barato e
+        // idempotente.
+        if matches!(
+            message,
+            Message::Session(SessionMessage::WindowMetrics { .. })
+        ) {
+            crate::macos_window::align_lights();
+        }
         let task = match message {
             Message::Session(SessionMessage::DragWindow) => {
                 crate::macos_window::begin_drag();

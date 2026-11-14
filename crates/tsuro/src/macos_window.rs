@@ -17,7 +17,7 @@
 
 use objc2::runtime::{AnyObject, MethodImplementation, Sel};
 use objc2::{sel, MainThreadMarker};
-use objc2_app_kit::NSApplication;
+use objc2_app_kit::{NSApplication, NSWindowButton};
 
 /// Aplica os ajustes na janela principal. Idempotente.
 pub(crate) fn install() {
@@ -44,6 +44,52 @@ pub(crate) fn install() {
             );
         }
     }
+    align_lights();
+}
+
+/// Desce os semáforos nativos até a linha dos controles da barra. O AppKit os
+/// põe a 15,5 do topo e a barra põe os controles a `bar_air_top` mais meio
+/// botão, então a diferença é o que falta para os dois lerem na mesma linha.
+///
+/// Idempotente e chamada de novo a cada resize: o AppKit refaz o layout da
+/// barra de título no meio do arrasto e devolveria os botões para cima. O alvo
+/// é recalculado da posição atual, então repetir a chamada não acumula.
+pub(crate) fn align_lights() {
+    let Some(window) = window() else {
+        return;
+    };
+    let metrics = tsuro::kiri::Metrics::current();
+    let target = f64::from(metrics.bar_air_top() + metrics.button / 2.0);
+    for kind in [
+        NSWindowButton::CloseButton,
+        NSWindowButton::MiniaturizeButton,
+        NSWindowButton::ZoomButton,
+    ] {
+        let Some(button) = window.standardWindowButton(kind) else {
+            continue;
+        };
+        // O frame vem no espaço da superview, que é a barra de título encostada
+        // no topo da janela: o centro a partir do topo sai da altura dela.
+        // Converter o retângulo para a janela mente aqui, porque a view de
+        // conteúdo cobre a janela inteira e o retângulo volta deslocado.
+        let Some(superview) = (unsafe { button.superview() }) else {
+            continue;
+        };
+        let frame = button.frame();
+        let from_top = superview.bounds().size.height - frame.mid().y;
+        let delta = target - from_top;
+        if delta.abs() < 0.5 {
+            continue;
+        }
+        // A barra de título do AppKit não é invertida (y cresce para cima),
+        // então descer é subtrair; numa view invertida é somar.
+        let y = if superview.isFlipped() {
+            frame.origin.y + delta
+        } else {
+            frame.origin.y - delta
+        };
+        button.setFrameOrigin(objc2_foundation::NSPoint::new(frame.origin.x, y));
+    }
 }
 
 /// Começa o arrasto da janela. Precisa rodar durante o `mouseDown` que o pediu:
@@ -60,7 +106,7 @@ pub(crate) fn begin_drag() -> bool {
     let Some(event) = NSApplication::sharedApplication(mtm).currentEvent() else {
         return false;
     };
-    unsafe { window.performWindowDragWithEvent(&event) };
+    window.performWindowDragWithEvent(&event);
     true
 }
 
