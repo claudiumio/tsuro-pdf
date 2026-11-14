@@ -67,7 +67,7 @@ Papéis semânticos, não nomes de cor `[HIG]`. Valores do kit `[kit]`.
 
 ### Janela e barra de título
 - Janela: raio 16, hairline de 1 px, sombra acima.
-- **Título unificado** (barra + título na mesma faixa): altura **52**, padding 18/8, gap 8 `[kit]`. Compacto: **40**, padding 13/8. Expandido: título 33 + barra 44.
+- **Título unificado** (barra + título na mesma faixa): altura **46** (botão 28 + 8 de respiro em cima + 10 embaixo, que põe os controles na linha dos semáforos e separa a linha do progresso), padding 8 à esquerda mais a reserva dos semáforos, gap 6 `[kit]`. Compacto: **40**, padding 13/8. Expandido: título 33 + barra 44.
 - No macOS: `fullsize_content_view` + `titlebar_transparent` + `title_hidden`, deixando os semáforos nativos. Nunca desenhar semáforo falso `[HIG]`.
 - Título: 13/15 w700; subtítulo 11/13 w500 terciário ("— Editado"). Máximo ~15 caracteres `[HIG]`; nome do app nunca.
 - Windows/Linux: barra de título nativa do sistema; nossa faixa de 44/40 começa abaixo dela.
@@ -128,7 +128,7 @@ Papéis semânticos, não nomes de cor `[HIG]`. Valores do kit `[kit]`.
 
 | Superfície | Hoje | Alvo |
 |---|---|---|
-| Barra superior | 36 px abaixo do título nativo, tudo num nível | 52 px unificados no macOS, zonas início/centro/fim, ícones 16, botões 28 |
+| Barra superior | 36 px abaixo do título nativo, tudo num nível | 46 px unificados no macOS, tudo numa linha só com os semáforos, zonas início/centro/fim, ícones 16, botões 28 |
 | Tira de abas | 30 px, pílula | 26 px, raio 9, ativa com peso 600 |
 | Painel lateral | cartão 216/220 com hairline, linha de 41/62 | sidebar 256, linha 32, raio 8, cabeçalho 11/14 w700, de ponta a ponta |
 | Segmentado Páginas/Sumário/Marcações | largura fixa por texto | 24 px, raio 6, larguras por conteúdo |
@@ -192,13 +192,23 @@ já estava no raio 12, o popover no 20, a folha no 26, o scrim em 0,475 linear
 
 A barra unificada (fase 4) não precisou de AppKit: o `iced` 0.13 expõe
 `title_hidden`, `titlebar_transparent` e `fullsize_content_view` no
-`PlatformSpecific` do macOS. Com eles a faixa cresce para 52 e reserva 78 à
-esquerda para os semáforos nativos (`Metrics::unified_title` e
-`Metrics::traffic_lights`). Como o conteúdo corre sob a barra, os gestos dela
+`PlatformSpecific` do macOS. Com eles a faixa encosta no topo (sem o respiro
+de 4) e fica com 46: o botão de 28 mais 8 em cima e 10 embaixo, o que põe o
+centro dos controles a 22 px do topo, logo abaixo dos semáforos nativos
+(medidos a 15,5), e separa a linha do progresso. Abaixo do progresso ficam mais
+6 px (`CHROME_GAP`) antes de o painel começar. À esquerda ficam 68 reservados
+aos três botões, que ocupam de 6 a 65 na medição (`Metrics::unified_title` e
+`Metrics::traffic_lights`).
+Como o conteúdo corre sob a barra, os semáforos nativos são deslocados para a
+linha dos controles (`macos_window::align_lights`, que mede cada botão pela
+superview e é idempotente, chamado de novo a cada resize), e os gestos dela
 são do sistema: o duplo clique (`performZoom:`) e o arrasto implícito
 (`-mouseDownCanMoveWindow` da view) foram desligados, e o arrasto passou a ser
-explícito (`view::drag_region`), só na faixa vazia entre os controles. A barra
-de menu do macOS foi feita em AppKit
+explícito, só nas faixas vazias: os vãos entre os controles
+(`view::drag_band`), a fileira de 8 px acima deles, a de 10 abaixo e a área dos
+semáforos. Texto e controle não arrastam mais — o `mouse_area` da faixa
+inteira pegava o clique no nome do arquivo e no número da página, que não
+consomem o evento. A barra de menu do macOS foi feita em AppKit
 (`objc2-app-kit`), sem o `muda`: os itens são `NSMenuItem` que enviam a sua
 `Message` de volta para a sessão, e o iced não participa. No Windows e no Linux
 o menu continua sendo a lista do ⋯ desenhada no iced. Falta da fase 4: o
@@ -213,7 +223,7 @@ Ratificadas em 2026-11-01: D-1 a D-6 aprovadas com os valores finais abaixo.
 |---|---|---|---|---|
 | D-1 | Fonte | Inter embarcada em todas as plataformas | resolver SF no macOS e cair para Inter; duas aparências | Inter embarcada em todas as plataformas |
 | D-2 | Tema | `system` por padrão, com claro/escuro manuais | manter `dark` fixo (contra a HIG) | `system` por padrão, com claro/escuro manuais |
-| D-3 | Barra de menu nativa | sim no macOS via `muda` | só atalhos, sem menu (menos nativo) | sim no macOS via `muda`, depois (fase 4); por enquanto só atalhos em `keyboard_message` |
+| D-3 | Barra de menu nativa | sim no macOS via `muda` | só atalhos, sem menu (menos nativo) | sim no macOS, feito com `objc2-app-kit` direto em vez do `muda` (fase 4) |
 | D-4 | Acento | teal do Kiri | seguir o acento do sistema (mais nativo, perde a marca) | teal do Kiri fica — escuro #4db8b0 / claro #1f7d76 |
 | D-5 | Densidade | regular (24/28) | compacta (20/24), cabe mais na tela | regular (24/28) |
 | D-6 | Sidebar | de ponta a ponta, sem cartão | manter o cartão atual | painel flutuante fica: manter o cartão atual |

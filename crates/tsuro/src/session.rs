@@ -1544,16 +1544,6 @@ enum CloseTarget {
     Quit(window::Id),
 }
 
-/// Altura reservada pela faixa de abas: zero com um documento só (a janela de
-/// hoje fica idêntica) e `view::TAB_STRIP_HEIGHT` com duas ou mais.
-fn strip_height(count: usize) -> f32 {
-    if count > 1 {
-        crate::view::tab_strip_height()
-    } else {
-        0.0
-    }
-}
-
 impl Tabs {
     /// Janela com um documento só.
     pub fn single(ready: Ready) -> Self {
@@ -1597,6 +1587,12 @@ impl Tabs {
 
     pub fn len(&self) -> usize {
         self.docs.len()
+    }
+
+    /// A faixa de abas aparece: com 2+ documentos (a janela de hoje fica
+    /// idêntica com um só) ou com o Início por cima, que é o caminho de volta.
+    pub fn strip_visible(&self) -> bool {
+        self.len() > 1 || self.home().is_some()
     }
 
     pub fn active_index(&self) -> usize {
@@ -1734,13 +1730,13 @@ impl Tabs {
     /// não passa por evento de resize.
     fn push(&mut self, mut ready: Ready) {
         ready.viewport = self.active().viewport;
-        let before = self.docs.len();
+        let before = self.chrome_rows();
         self.pending = None;
         self.open_error = None;
         self.home = None;
         self.docs.push(ready);
         self.active = self.docs.len() - 1;
-        self.sync_strip(before);
+        self.sync_chrome(before);
         self.retarget_palette();
     }
 
@@ -1760,21 +1756,21 @@ impl Tabs {
     /// motor dele). O foco vai para a vizinha da direita — ou para a última,
     /// quando a fechada era a do fim. A última aba é do chamador.
     fn remove(&mut self, index: usize) -> Ready {
-        let before = self.docs.len();
+        let before = self.chrome_rows();
         let gone = self.docs.remove(index);
         self.retired_gen = self.retired_gen.max(gone.open_gen);
         if index < self.active {
             self.active -= 1;
         }
         self.active = self.active.min(self.docs.len() - 1);
-        self.sync_strip(before);
+        self.sync_chrome(before);
         self.retarget_palette();
         gone
     }
 
     fn select(&mut self, index: usize) {
         if index < self.docs.len() {
-            self.home = None;
+            self.set_home(None);
         }
         if index < self.docs.len() && index != self.active {
             self.active = index;
@@ -1784,7 +1780,7 @@ impl Tabs {
 
     /// Ctrl+Tab (e Ctrl+Shift+Tab) dão a volta na faixa.
     fn cycle(&mut self, step: i32) {
-        self.home = None;
+        self.set_home(None);
         let len = self.docs.len() as i32;
         let next = (self.active as i32 + step).rem_euclid(len) as usize;
         if next != self.active {
@@ -1793,10 +1789,26 @@ impl Tabs {
         }
     }
 
-    /// A faixa só existe com 2+ abas: ao cruzar o limite de uma para duas (e
-    /// de volta) o painel do documento ganha/perde `TAB_STRIP_HEIGHT`.
-    fn sync_strip(&mut self, before: usize) {
-        let delta = strip_height(self.docs.len()) - strip_height(before);
+    /// Troca o Início (por cima das abas ou saindo dele). A faixa de abas
+    /// depende disso além da contagem, então o painel se ajusta aqui.
+    fn set_home(&mut self, home: Option<EmptyState>) {
+        let before = self.chrome_rows();
+        self.home = home;
+        self.sync_chrome(before);
+    }
+
+    /// Linhas do chrome que o estado desenha: progresso (só sem o Início) e
+    /// faixa de abas.
+    fn chrome_rows(&self) -> f32 {
+        crate::view::chrome_rows(self.home.is_none(), self.strip_visible())
+    }
+
+    /// O painel perde a altura das linhas que entram e ganha a das que saem,
+    /// quando isso muda sem resize: 2+ abas, o Início por cima, documento na
+    /// frente. O delta sai do chrome inteiro, não só da faixa, senão o
+    /// progresso de 6 px fica de fora.
+    fn sync_chrome(&mut self, before: f32) {
+        let delta = self.chrome_rows() - before;
         if delta == 0.0 {
             return;
         }
@@ -2574,8 +2586,12 @@ pub enum Message {
     CloseSave,
     /// O SO pediu para fechar a janela.
     CloseWindow(window::Id),
-    /// Arrasta a janela: press na faixa vazia da barra (`view::drag_region`).
+    /// Arrasta a janela: press numa faixa vazia da barra (`view::drag_band`).
     DragWindow,
+    /// Sair pelo menu do sistema (⌘Q no macOS). Passa pelo mesmo caminho do
+    /// botão vermelho, que pergunta antes de fechar com marcação não salva:
+    /// `terminate:` do AppKit fecharia sem perguntar.
+    QuitApp,
     /// Troca a aba ativa (clique na faixa de abas).
     SelectTab(usize),
     /// Aba seguinte (`+1`) ou anterior (`-1`) — Ctrl+Tab / Ctrl+Shift+Tab.
@@ -2952,7 +2968,13 @@ impl Session {
                     Session::Ready(ready) => nav_follow(ready),
                     _ => Task::none(),
                 };
-                Task::batch([self.schedule_work(), follow])
+                // O documento pode ficar pronto depois do primeiro resize (a
+                // abertura inicial roda em `Loading`), e aí o painel ficaria com
+                // a geometria de fábrica. Pede a janela de novo.
+                let metrics = matches!(self, Session::Ready(_))
+                    .then(query_window_metrics)
+                    .unwrap_or_else(Task::none);
+                Task::batch([self.schedule_work(), follow, metrics])
             }
             // Tela de abertura: só o contador da barra; nada mais reage a isto.
             Message::LoadingTick => {
@@ -3242,6 +3264,9 @@ impl Session {
             // O arrasto é do shell da plataforma: no macOS o AppKit precisa do
             // evento corrente, que só existe dentro do próprio `update`.
             Message::DragWindow => Task::none(),
+            Message::QuitApp => {
+                window::get_latest().and_then(|id| Task::done(Message::CloseWindow(id)))
+            }
             Message::SelectTab(index) => self.select_tab(index),
             Message::CycleTab(step) => self.cycle_tab(step),
             Message::Nav(cmd) => {
@@ -3332,8 +3357,9 @@ impl Session {
                 Task::batch([self.schedule_work(), follow])
             }
             Message::WindowMetrics { width, height, id } => {
-                // A faixa de abas (2+ documentos) tira altura do painel.
-                let height = (height - self.tab_strip_height()).max(1.0);
+                // O chrome depende do estado (progresso, faixa de abas), então
+                // quem desconta é aqui, com a sessão na mão.
+                let height = (height - crate::view::chrome_height(self)).max(1.0);
                 let follow = if let Session::Ready(tabs) = self {
                     // Toda aba vê a mesma janela: as inativas não recebem evento.
                     tabs.set_viewport(Viewport { width, height });
@@ -3913,7 +3939,7 @@ impl Session {
                     }
                     // Início por cima das abas: Esc volta ao documento ativo.
                     if ready.home.is_some() {
-                        ready.home = None;
+                        ready.set_home(None);
                         return Task::none();
                     }
                     // Esc com rascunho de nota aberto também o fecha: o
@@ -4584,14 +4610,14 @@ impl Session {
         tabs.overflow_open = false;
         tabs.palette = None;
         if tabs.home.is_none() {
-            tabs.home = Some(EmptyState {
+            tabs.set_home(Some(EmptyState {
                 recents,
                 theme,
                 lang,
                 open_gen,
                 render_scale,
                 ..EmptyState::default()
-            });
+            }));
         }
         empty_tasks(lang)
     }
@@ -4921,13 +4947,6 @@ impl Session {
     }
 
     /// Altura que a faixa de abas toma da janela (zero com um documento só).
-    fn tab_strip_height(&self) -> f32 {
-        match self {
-            Session::Ready(tabs) => strip_height(tabs.len()),
-            _ => 0.0,
-        }
-    }
-
     fn recents(&self) -> Vec<PathBuf> {
         match self {
             Session::Empty(empty) => empty.recents.clone(),
@@ -5517,9 +5536,9 @@ fn window_event(event: Event, status: event::Status, id: window::Id) -> Option<M
         Event::Window(window::Event::Opened { size, .. })
         | Event::Window(window::Event::Resized(size)) => Some(Message::WindowMetrics {
             width: size.width,
-            // A faixa de abas encolhe o painel; quem desconta é
-            // `WindowMetrics` (a altura da faixa é estado, não evento).
-            height: (size.height - crate::view::chrome_height()).max(1.0),
+            // Altura crua da janela: o chrome depende do estado (progresso e
+            // faixa de abas), então quem desconta é o tratamento da mensagem.
+            height: size.height,
             id,
         }),
         Event::Keyboard(keyboard::Event::KeyPressed { key, modifiers, .. }) => {
@@ -5982,6 +6001,18 @@ fn query_window_scale(id: window::Id) -> Task<Message> {
     window::get_scale_factor(id).map(Message::WindowScale)
 }
 
+/// Tamanho da janela para `WindowMetrics`: o mesmo evento do resize, pedido na
+/// mão quando o documento fica pronto depois dele.
+fn query_window_metrics() -> Task<Message> {
+    window::get_latest().and_then(|id| {
+        window::get_size(id).map(move |size| Message::WindowMetrics {
+            width: size.width,
+            height: size.height,
+            id,
+        })
+    })
+}
+
 pub fn thumbnail_scale(media: MediaBox) -> Scale {
     Scale::from_factor((THUMB_WIDTH / media.width.max(1.0)).clamp(0.05, 2.0))
 }
@@ -6128,8 +6159,9 @@ impl Ready {
     }
 
     /// Altura útil do painel: a janela menos o chrome menos o respiro da
-    /// moldura (`CHROME_PAD`, espelha `chrome()` em view.rs). A faixa de abas
-    /// já vem descontada no `WindowMetrics`.
+    /// moldura (`CHROME_PAD`, espelha `chrome()` em view.rs). O chrome do
+    /// estado (barra, progresso, faixa de abas) já vem descontado no
+    /// `WindowMetrics`.
     pub(crate) fn doc_content_height(&self) -> f32 {
         (self.viewport.height - CHROME_PAD).max(1.0)
     }
@@ -7684,6 +7716,70 @@ mod tests {
             Zoom::Manual(factor) => factor.get(),
             other => panic!("esperava zoom manual, veio {other:?}"),
         }
+    }
+
+    /// O chrome que a janela desconta do painel segue o estado: o progresso só
+    /// existe com documento na frente e a faixa só quando ela aparece.
+    #[test]
+    fn chrome_height_follows_the_state() {
+        isolated(|| {
+            let Some(ready) = sample_ready() else {
+                return;
+            };
+            let mut session = Session::Ready(Tabs::single(ready));
+            let doc = crate::view::chrome_height(&session);
+            let home_off = crate::view::chrome_height(&Session::empty());
+            assert_eq!(doc - home_off, crate::kiri::PROGRESS_HEIGHT);
+
+            // Com o Início por cima a faixa entra e o progresso sai.
+            if let Session::Ready(tabs) = &mut session {
+                tabs.set_home(Some(EmptyState::default()));
+            }
+            let with_strip = crate::view::chrome_height(&session);
+            assert_eq!(
+                with_strip - doc,
+                crate::view::tab_strip_height() - crate::kiri::PROGRESS_HEIGHT
+            );
+        });
+    }
+
+    /// A faixa de abas tira altura do painel quando aparece, e ela aparece por
+    /// contagem (2+ documentos) ou pelo Início por cima. As duas vias passam
+    /// pelo mesmo ajuste, senão a página fica 26 px mais alta que a moldura.
+    #[test]
+    fn strip_height_follows_the_home_overlay() {
+        isolated(|| {
+            let Some(first) = sample_ready() else {
+                return;
+            };
+            let Some(second) = sample_ready() else {
+                return;
+            };
+            let strip = crate::view::tab_strip_height();
+            let mut tabs = Tabs::single(first);
+            tabs.set_viewport(Viewport {
+                width: 800.0,
+                height: 600.0,
+            });
+            assert!(!tabs.strip_visible(), "um documento só não tem faixa");
+
+            // O Início por cima troca o progresso pela faixa: o painel perde a
+            // diferença, não a faixa inteira.
+            tabs.set_home(Some(EmptyState::default()));
+            assert!(tabs.strip_visible(), "o Início abre a faixa");
+            assert_eq!(
+                tabs.active().viewport.height,
+                600.0 - strip + crate::kiri::PROGRESS_HEIGHT
+            );
+
+            tabs.set_home(None);
+            assert!(!tabs.strip_visible());
+            assert_eq!(tabs.active().viewport.height, 600.0);
+
+            tabs.push(second);
+            assert!(tabs.strip_visible(), "duas abas têm faixa");
+            assert_eq!(tabs.active().viewport.height, 600.0 - strip);
+        });
     }
 
     /// Issue #40: uma aba por documento, cada uma com a sua página e o seu

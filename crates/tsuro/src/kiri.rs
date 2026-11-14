@@ -496,24 +496,43 @@ impl Metrics {
         self.platform == Platform::MacOs
     }
 
-    /// Faixa reservada aos semáforos nativos: três botões de 12 a partir de 20,
-    /// mais 16 de respiro até o primeiro item da barra.
+    /// Faixa ocupada pelos semáforos nativos: três botões de 14 começando a 9
+    /// da superview, com 9 entre eles (medido: 9–22, 32–45, 55–68). Na captura
+    /// de tela os três desenham de 6 a 65 a partir da borda da janela, que é a
+    /// mesma faixa medida noutro referencial. O respiro até o primeiro item da
+    /// barra é o `8` do `toolbar_frame`, então 68 põe os controles a 76.
     pub fn traffic_lights(self) -> f32 {
         if self.unified_title() {
-            78.0
+            68.0
         } else {
             0.0
         }
     }
 
-    /// Faixa de ferramentas: 52 na barra unificada (spec §5), senão o botão
-    /// mais 16 de respiro (28 → 44 no macOS fora dela).
+    /// Faixa de ferramentas: na barra unificada é o botão mais o respiro de
+    /// cima e o de baixo (28 + 8 + 10 → 46). O respiro de cima põe o centro dos
+    /// controles a 22 px do topo, logo abaixo do centro dos semáforos nativos
+    /// (15,5); o de baixo separa a linha do progresso e do painel. Nas outras
+    /// plataformas a barra nativa fica acima, e a faixa é o botão mais 16.
     pub fn bar_height(self) -> f32 {
         if self.unified_title() {
-            52.0
+            self.button + self.bar_air_top() + self.bar_air_bottom()
         } else {
             self.button + 16.0
         }
+    }
+
+    /// Respiro entre a borda de cima da janela e os controles, na barra
+    /// unificada: a faixa vazia onde o clique arrasta a janela. Em 8 ele fica
+    /// proporcional ao de baixo, em vez de grudar os controles no topo.
+    pub fn bar_air_top(self) -> f32 {
+        8.0
+    }
+
+    /// Respiro abaixo dos controles. É maior que o de cima porque separa a
+    /// linha do progresso e do painel, que antes encostavam nela.
+    pub fn bar_air_bottom(self) -> f32 {
+        10.0
     }
 
     /// Faixa de abas: o controle mais 2 (24 → 26 no macOS).
@@ -538,6 +557,10 @@ pub const MENU_ITEM_HEIGHT: f32 = 24.0;
 
 /// Altura da barra de progresso entre a toolbar e o conteúdo.
 pub const PROGRESS_HEIGHT: f32 = 6.0;
+
+/// Respiro entre o chrome (barra e progresso) e o painel do documento, para a
+/// página não encostar na barra de progresso.
+pub const CHROME_GAP: f32 = 6.0;
 
 #[allow(unused_imports)]
 pub(crate) use ori;
@@ -1294,8 +1317,8 @@ mod tests {
     fn platform_metrics_follow_the_spec_table() {
         let mac = Metrics::for_platform(Platform::MacOs);
         assert_eq!((mac.control, mac.button), (24.0, 28.0));
-        assert_eq!((mac.bar_height(), mac.tab_strip_height()), (52.0, 26.0));
-        assert_eq!((mac.icon(), mac.traffic_lights()), (16.0, 78.0));
+        assert_eq!((mac.bar_height(), mac.tab_strip_height()), (46.0, 26.0));
+        assert_eq!((mac.icon(), mac.traffic_lights()), (16.0, 68.0));
         assert!(mac.unified_title());
 
         let win = Metrics::for_platform(Platform::Windows);
@@ -1309,6 +1332,32 @@ mod tests {
         assert_eq!(
             (linux.unified_title(), linux.traffic_lights()),
             (false, 0.0)
+        );
+    }
+
+    /// A barra dá respiro acima e abaixo da linha de controles sem perder a
+    /// relação com os semáforos nativos (centro medido em 15,5): os controles
+    /// ficam logo abaixo deles, com folga em cima e mais folga embaixo.
+    #[test]
+    fn unified_bar_gives_air_around_the_controls_line() {
+        let mac = Metrics::for_platform(Platform::MacOs);
+        let center = mac.bar_air_top() + mac.button / 2.0;
+        assert!(
+            (center - 15.5).abs() <= 8.0,
+            "centro dos controles em {center} saiu da linha dos semáforos (15,5)"
+        );
+        assert!(
+            mac.bar_air_top() >= 6.0,
+            "respiro de {} acima dos controles é pouco",
+            mac.bar_air_top()
+        );
+        assert!(
+            mac.bar_air_bottom() >= mac.bar_air_top(),
+            "o respiro de baixo é o que separa a linha do progresso"
+        );
+        assert_eq!(
+            mac.bar_height(),
+            mac.button + mac.bar_air_top() + mac.bar_air_bottom()
         );
     }
 

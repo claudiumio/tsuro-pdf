@@ -28,15 +28,49 @@ use crate::session::{
     THUMB_ROW,
 };
 
-/// Altura da faixa de ferramentas (spec §5, caso expandido): título nativo
-/// da plataforma acima e a nossa faixa abaixo do controle (44 no macOS).
+/// Altura da faixa de ferramentas (spec §5). No macOS é a barra unificada,
+/// `kiri::Metrics::bar_height` (botão + respiro em cima e embaixo); nas outras
+/// plataformas a barra nativa do sistema fica acima e a faixa é o botão mais 16.
 pub fn bar_height() -> f32 {
     kiri::Metrics::current().bar_height()
 }
 
-/// Altura do chrome Kiri: toolbar + progresso + respiro de 4 em cima e embaixo.
-pub fn chrome_height() -> f32 {
-    bar_height() + kiri::PROGRESS_HEIGHT + 8.0
+/// Respiro da moldura acima da barra: zero na barra unificada, onde a faixa
+/// encosta na borda da janela para os controles ficarem na linha dos semáforos.
+fn frame_top() -> f32 {
+    if kiri::Metrics::current().unified_title() {
+        0.0
+    } else {
+        4.0
+    }
+}
+
+/// Onde o painel do documento começa: barra, progresso (só com documento na
+/// frente), faixa de abas (2+ documentos ou o Início por cima) e o respiro
+/// antes do painel. Uma conta só, para o painel, o menu ⋯ e o viewport não
+/// divergirem.
+fn panel_top(progress: bool, strip: bool) -> f32 {
+    frame_top() + bar_height() + chrome_rows(progress, strip) + kiri::CHROME_GAP
+}
+
+/// As linhas do chrome que dependem do estado, não da plataforma: o progresso
+/// (só com documento na frente) e a faixa de abas (quando ela aparece). Quem
+/// guarda a altura do painel ajusta por esta diferença quando elas entram ou
+/// saem sem resize.
+pub(crate) fn chrome_rows(progress: bool, strip: bool) -> f32 {
+    (if progress { kiri::PROGRESS_HEIGHT } else { 0.0 })
+        + if strip { tab_strip_height() } else { 0.0 }
+}
+
+/// Altura do chrome acima do painel, para o estado atual da sessão: o
+/// `panel_top` mais o respiro de 4 da moldura embaixo. É o que a janela tem
+/// que não é painel.
+pub fn chrome_height(session: &Session) -> f32 {
+    let (progress, strip) = match session {
+        Session::Ready(tabs) => (tabs.home().is_none(), tabs.strip_visible()),
+        _ => (false, false),
+    };
+    panel_top(progress, strip) + 4.0
 }
 
 /// Altura da faixa de abas (issue #40), reservada só com 2+ documentos.
@@ -101,7 +135,8 @@ pub fn chrome(session: &Session, theme: Theme, lang: Lang) -> Element<'_, Messag
         Session::Ready(ready) => ready_body(ready, t),
     };
 
-    // Toolbar 44px + progresso 2px + respiro 8px = `CHROME_HEIGHT` (54px).
+    // Barra + progresso + respiro antes do painel: a altura que a janela tem
+    // e não é painel sai de `chrome_height(session)`, aqui ninguém soma à mão.
     let mut col = column![topbar(session, t)];
     if let Session::Ready(tabs) = session {
         // Progresso de leitura é do documento: some com o Início na tela.
@@ -111,14 +146,21 @@ pub fn chrome(session: &Session, theme: Theme, lang: Lang) -> Element<'_, Messag
         // Faixa de abas (issue #40): com um documento só a janela é a de
         // sempre — sem faixa nenhuma. Com o Início por cima, a faixa é o
         // caminho de volta (mesmo com uma aba).
-        if tabs.len() > 1 || tabs.home().is_some() {
+        if tabs.strip_visible() {
             col = col.push(tab_strip(tabs, t));
         }
     }
+    // Respiro entre o chrome e o painel: a página não encosta no progresso.
+    col = col.push(Space::with_height(Length::Fixed(kiri::CHROME_GAP)));
     col = col.push(body);
     let main: Element<'_, Message> = container(
         col.spacing(0)
-            .padding(4)
+            .padding(Padding {
+                top: frame_top(),
+                right: 4.0,
+                bottom: 4.0,
+                left: 4.0,
+            })
             .width(Length::Fill)
             .height(Length::Fill),
     )
@@ -414,14 +456,26 @@ fn settings_button(t: Tokens, open: bool) -> Element<'static, Message> {
     )
 }
 
-/// Faixa de arrasto da janela: o fundo da barra, atrás dos controles. O AppKit
-/// não arrasta mais por conta própria (`macos_window`), então este é o caminho
-/// para mover a janela pela barra — e ele não pega clique de controle.
-fn drag_region() -> Element<'static, Message> {
+/// Banda vazia da barra: onde não há controle nem texto, apertar e arrastar
+/// move a janela. Fica só nos vãos — um `mouse_area` atrás da barra inteira
+/// pegaria também o clique no nome do arquivo e no número da página, que são
+/// texto e não consomem o evento (`Stack` cai para a camada de baixo).
+///
+/// Só a barra unificada precisa disso: o AppKit não arrasta mais por conta
+/// própria (`macos_window`), e nas outras plataformas quem arrasta é a barra
+/// de título nativa.
+fn drag_band() -> Element<'static, Message> {
+    if !kiri::Metrics::current().unified_title() {
+        return Space::with_width(Length::Fill).into();
+    }
+    // Altura cheia da faixa: as fileiras vazias acima e abaixo dos controles
+    // também arrastam. `Fixed` porque num `row` a altura `Fill` sai da `cross`
+    // acumulada até aquele ponto, e a faixa vem depois de tudo; o `Fixed` é
+    // então limitado pelo padding do pai, que é a altura da linha de controles.
     mouse_area(
         container(Space::new(Length::Fill, Length::Fill))
             .width(Length::Fill)
-            .height(Length::Fill),
+            .height(Length::Fixed(bar_height())),
     )
     .on_press(Message::DragWindow)
     .into()
@@ -432,29 +486,54 @@ fn toolbar_frame(t: Tokens, content: Element<'_, Message>) -> Element<'_, Messag
     // Barra unificada (spec §5): o conteúdo corre sob os semáforos nativos, então
     // a faixa deles fica reservada à esquerda. Nas outras plataformas é 0.
     let metrics = kiri::Metrics::current();
-    let frame = container(content)
+    let unified = metrics.unified_title();
+    let frame: Element<'_, Message> = container(content)
         .width(Length::Fill)
         .height(Length::Fixed(bar_height()))
         .align_y(Alignment::Center)
         .padding(Padding {
-            top: 0.0,
+            top: if unified { metrics.bar_air_top() } else { 0.0 },
             right: 8.0,
-            bottom: 0.0,
+            bottom: if unified {
+                metrics.bar_air_bottom()
+            } else {
+                0.0
+            },
             left: 8.0 + metrics.traffic_lights(),
         })
         .style(move |_| container::Style {
             background: Some(Background::Color(t.chrome)),
             ..container::Style::default()
-        });
-    // Só a barra unificada precisa do arrasto explícito: nas outras plataformas
-    // a barra de título nativa fica acima e a nossa faixa não arrasta nada.
-    if metrics.unified_title() {
-        stack![drag_region(), frame]
-            .width(Length::Fill)
-            .height(Length::Fixed(bar_height()))
+        })
+        .into();
+    if unified {
+        // As faixas vazias arrastam a janela: a fileira de cima, a de baixo e a
+        // área dos semáforos, à esquerda, onde nada nosso é desenhado. O resto
+        // da barra pertence aos controles.
+        let band = |w: Length, h: Length| -> Element<'_, Message> {
+            mouse_area(
+                container(Space::new(Length::Fill, Length::Fill))
+                    .width(w)
+                    .height(h),
+            )
+            .on_press(Message::DragWindow)
             .into()
+        };
+        let bottom = container(band(Length::Fill, Length::Fixed(metrics.bar_air_bottom())))
+            .width(Length::Fill)
+            .height(Length::Fill)
+            .align_y(Alignment::End);
+        stack![
+            frame,
+            band(Length::Fixed(metrics.traffic_lights()), Length::Fill),
+            band(Length::Fill, Length::Fixed(metrics.bar_air_top())),
+            bottom,
+        ]
+        .width(Length::Fill)
+        .height(Length::Fixed(bar_height()))
+        .into()
     } else {
-        frame.into()
+        frame
     }
 }
 
@@ -545,7 +624,7 @@ fn search_nav<'a>(ready: &'a Ready, t: Tokens) -> Element<'a, Message> {
 }
 
 /// Barra única Kiri (`Session::Ready`): abrir │ pílula do documento │ busca e
-/// página │ marcar │ zoom │ painéis │ ⋯. Uma linha só (`CHROME_HEIGHT`).
+/// página │ marcar │ zoom │ painéis │ ⋯. Uma linha só, em `bar_height()`.
 fn topbar(session: &Session, t: Tokens) -> Element<'_, Message> {
     // Com o Início por cima das abas, a barra é a da tela inicial.
     let doc = match session {
@@ -629,7 +708,6 @@ fn topbar(session: &Session, t: Tokens) -> Element<'_, Message> {
         .padding(Padding::from([0, 10]))
         .style(kiri::search_field_style(t));
 
-        // Página + ‹ › (zona central): o campo e o segmento na mesma pílula.
         // Página + ‹ › (zona central): o campo, o total e o segmento na mesma
         // pílula. As larguras saem do número de páginas do documento, então o
         // par "N / M" fica centrado em qualquer contagem (1/2, 9/120).
@@ -816,7 +894,7 @@ fn topbar(session: &Session, t: Tokens) -> Element<'_, Message> {
             open_button(t),
             kiri::vsep(t),
             doc_pill,
-            Space::with_width(Length::Fill),
+            drag_band(),
             pager,
             zoom_seg,
         ]
@@ -900,7 +978,7 @@ fn topbar(session: &Session, t: Tokens) -> Element<'_, Message> {
                 .push(mark_seg);
         }
         bar = bar
-            .push(Space::with_width(Length::Fill))
+            .push(drag_band())
             .push(search)
             .push(kiri::vsep(t))
             .push(right);
@@ -916,7 +994,7 @@ fn topbar(session: &Session, t: Tokens) -> Element<'_, Message> {
     }
     items.push(open_button(t));
     if matches!(session, Session::Empty(_) | Session::Ready(_)) {
-        items.push(Space::with_width(Length::Fill).into());
+        items.push(drag_band());
         if let Some(badge) = update_badge(t, &session.settings().update) {
             items.push(badge);
         }
@@ -934,12 +1012,8 @@ fn overflow_layer(tabs: &Tabs, t: Tokens) -> Element<'_, Message> {
             background: Some(Background::Color(kiri::scrim())),
             ..container::Style::default()
         });
-    // Abaixo da barra e do progresso, com a faixa de abas somada quando existe.
-    let top = if tabs.len() > 1 {
-        chrome_height() - 4.0 + tab_strip_height()
-    } else {
-        chrome_height() - 4.0
-    };
+    // Abaixo do chrome inteiro: barra, progresso e faixa de abas quando há.
+    let top = panel_top(tabs.home().is_none(), tabs.strip_visible());
     let card = container(overflow_menu(tabs, tabs.settings.theme_pref, t))
         .width(Length::Fill)
         .height(Length::Fill)
