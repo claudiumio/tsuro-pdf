@@ -509,9 +509,9 @@ impl Metrics {
     }
 
     /// Faixa de ferramentas: na barra unificada é o botão mais o respiro de
-    /// cima e o de baixo (28 + 4 + 10 → 42). O respiro de cima põe o centro dos
-    /// controles a 18 px do topo, perto do centro dos semáforos nativos (15,5);
-    /// o de baixo separa a linha do progresso e do painel. Nas outras
+    /// cima e o de baixo (28 + 8 + 10 → 46). O respiro de cima põe o centro dos
+    /// controles a 22 px do topo, logo abaixo do centro dos semáforos nativos
+    /// (15,5); o de baixo separa a linha do progresso e do painel. Nas outras
     /// plataformas a barra nativa fica acima, e a faixa é o botão mais 16.
     pub fn bar_height(self) -> f32 {
         if self.unified_title() {
@@ -522,9 +522,10 @@ impl Metrics {
     }
 
     /// Respiro entre a borda de cima da janela e os controles, na barra
-    /// unificada: a faixa vazia onde o clique arrasta a janela.
+    /// unificada: a faixa vazia onde o clique arrasta a janela. Em 8 ele fica
+    /// proporcional ao de baixo, em vez de grudar os controles no topo.
     pub fn bar_air_top(self) -> f32 {
-        4.0
+        8.0
     }
 
     /// Respiro abaixo dos controles. É maior que o de cima porque separa a
@@ -1315,7 +1316,7 @@ mod tests {
     fn platform_metrics_follow_the_spec_table() {
         let mac = Metrics::for_platform(Platform::MacOs);
         assert_eq!((mac.control, mac.button), (24.0, 28.0));
-        assert_eq!((mac.bar_height(), mac.tab_strip_height()), (42.0, 26.0));
+        assert_eq!((mac.bar_height(), mac.tab_strip_height()), (46.0, 26.0));
         assert_eq!((mac.icon(), mac.traffic_lights()), (16.0, 68.0));
         assert!(mac.unified_title());
 
@@ -1334,19 +1335,23 @@ mod tests {
     }
 
     /// A barra dá respiro acima e abaixo da linha de controles sem perder a
-    /// relação com os semáforos nativos (centro medido em 15,5): o centro fica
-    /// logo abaixo deles, e o respiro de baixo é o maior dos dois.
+    /// relação com os semáforos nativos (centro medido em 15,5): os controles
+    /// ficam logo abaixo deles, com folga em cima e mais folga embaixo.
     #[test]
     fn unified_bar_gives_air_around_the_controls_line() {
         let mac = Metrics::for_platform(Platform::MacOs);
         let center = mac.bar_air_top() + mac.button / 2.0;
         assert!(
-            (center - 15.5).abs() <= 4.0,
+            (center - 15.5).abs() <= 8.0,
             "centro dos controles em {center} saiu da linha dos semáforos (15,5)"
         );
-        assert!(mac.bar_air_top() >= 3.0, "sem respiro acima dos controles");
         assert!(
-            mac.bar_air_bottom() > mac.bar_air_top(),
+            mac.bar_air_top() >= 6.0,
+            "respiro de {} acima dos controles é pouco",
+            mac.bar_air_top()
+        );
+        assert!(
+            mac.bar_air_bottom() >= mac.bar_air_top(),
             "o respiro de baixo é o que separa a linha do progresso"
         );
         assert_eq!(
