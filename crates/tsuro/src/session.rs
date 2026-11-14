@@ -1544,16 +1544,6 @@ enum CloseTarget {
     Quit(window::Id),
 }
 
-/// Altura reservada pela faixa de abas: zero quando ela não aparece (a janela
-/// de hoje com um documento só) e a altura dela quando aparece.
-fn strip_height(visible: bool) -> f32 {
-    if visible {
-        crate::view::tab_strip_height()
-    } else {
-        0.0
-    }
-}
-
 impl Tabs {
     /// Janela com um documento só.
     pub fn single(ready: Ready) -> Self {
@@ -1740,13 +1730,13 @@ impl Tabs {
     /// não passa por evento de resize.
     fn push(&mut self, mut ready: Ready) {
         ready.viewport = self.active().viewport;
-        let before = self.strip_visible();
+        let before = self.chrome_rows();
         self.pending = None;
         self.open_error = None;
         self.home = None;
         self.docs.push(ready);
         self.active = self.docs.len() - 1;
-        self.sync_strip(before);
+        self.sync_chrome(before);
         self.retarget_palette();
     }
 
@@ -1766,14 +1756,14 @@ impl Tabs {
     /// motor dele). O foco vai para a vizinha da direita — ou para a última,
     /// quando a fechada era a do fim. A última aba é do chamador.
     fn remove(&mut self, index: usize) -> Ready {
-        let before = self.strip_visible();
+        let before = self.chrome_rows();
         let gone = self.docs.remove(index);
         self.retired_gen = self.retired_gen.max(gone.open_gen);
         if index < self.active {
             self.active -= 1;
         }
         self.active = self.active.min(self.docs.len() - 1);
-        self.sync_strip(before);
+        self.sync_chrome(before);
         self.retarget_palette();
         gone
     }
@@ -1802,15 +1792,23 @@ impl Tabs {
     /// Troca o Início (por cima das abas ou saindo dele). A faixa de abas
     /// depende disso além da contagem, então o painel se ajusta aqui.
     fn set_home(&mut self, home: Option<EmptyState>) {
-        let before = self.strip_visible();
+        let before = self.chrome_rows();
         self.home = home;
-        self.sync_strip(before);
+        self.sync_chrome(before);
     }
 
-    /// A faixa aparece com 2+ abas ou com o Início por cima: ao cruzar esse
-    /// limite o painel do documento ganha/perde `TAB_STRIP_HEIGHT`.
-    fn sync_strip(&mut self, before: bool) {
-        let delta = strip_height(self.strip_visible()) - strip_height(before);
+    /// Linhas do chrome que o estado desenha: progresso (só sem o Início) e
+    /// faixa de abas.
+    fn chrome_rows(&self) -> f32 {
+        crate::view::chrome_rows(self.home.is_none(), self.strip_visible())
+    }
+
+    /// O painel perde a altura das linhas que entram e ganha a das que saem,
+    /// quando isso muda sem resize: 2+ abas, o Início por cima, documento na
+    /// frente. O delta sai do chrome inteiro, não só da faixa, senão o
+    /// progresso de 6 px fica de fora.
+    fn sync_chrome(&mut self, before: f32) {
+        let delta = self.chrome_rows() - before;
         if delta == 0.0 {
             return;
         }
@@ -2970,7 +2968,13 @@ impl Session {
                     Session::Ready(ready) => nav_follow(ready),
                     _ => Task::none(),
                 };
-                Task::batch([self.schedule_work(), follow])
+                // O documento pode ficar pronto depois do primeiro resize (a
+                // abertura inicial roda em `Loading`), e aí o painel ficaria com
+                // a geometria de fábrica. Pede a janela de novo.
+                let metrics = matches!(self, Session::Ready(_))
+                    .then(query_window_metrics)
+                    .unwrap_or_else(Task::none);
+                Task::batch([self.schedule_work(), follow, metrics])
             }
             // Tela de abertura: só o contador da barra; nada mais reage a isto.
             Message::LoadingTick => {
@@ -5997,6 +6001,18 @@ fn query_window_scale(id: window::Id) -> Task<Message> {
     window::get_scale_factor(id).map(Message::WindowScale)
 }
 
+/// Tamanho da janela para `WindowMetrics`: o mesmo evento do resize, pedido na
+/// mão quando o documento fica pronto depois dele.
+fn query_window_metrics() -> Task<Message> {
+    window::get_latest().and_then(|id| {
+        window::get_size(id).map(move |size| Message::WindowMetrics {
+            width: size.width,
+            height: size.height,
+            id,
+        })
+    })
+}
+
 pub fn thumbnail_scale(media: MediaBox) -> Scale {
     Scale::from_factor((THUMB_WIDTH / media.width.max(1.0)).clamp(0.05, 2.0))
 }
@@ -7747,9 +7763,14 @@ mod tests {
             });
             assert!(!tabs.strip_visible(), "um documento só não tem faixa");
 
+            // O Início por cima troca o progresso pela faixa: o painel perde a
+            // diferença, não a faixa inteira.
             tabs.set_home(Some(EmptyState::default()));
             assert!(tabs.strip_visible(), "o Início abre a faixa");
-            assert_eq!(tabs.active().viewport.height, 600.0 - strip);
+            assert_eq!(
+                tabs.active().viewport.height,
+                600.0 - strip + crate::kiri::PROGRESS_HEIGHT
+            );
 
             tabs.set_home(None);
             assert!(!tabs.strip_visible());

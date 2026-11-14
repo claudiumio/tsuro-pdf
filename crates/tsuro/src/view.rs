@@ -50,11 +50,16 @@ fn frame_top() -> f32 {
 /// antes do painel. Uma conta só, para o painel, o menu ⋯ e o viewport não
 /// divergirem.
 fn panel_top(progress: bool, strip: bool) -> f32 {
-    frame_top()
-        + bar_height()
-        + if progress { kiri::PROGRESS_HEIGHT } else { 0.0 }
+    frame_top() + bar_height() + chrome_rows(progress, strip) + kiri::CHROME_GAP
+}
+
+/// As linhas do chrome que dependem do estado, não da plataforma: o progresso
+/// (só com documento na frente) e a faixa de abas (quando ela aparece). Quem
+/// guarda a altura do painel ajusta por esta diferença quando elas entram ou
+/// saem sem resize.
+pub(crate) fn chrome_rows(progress: bool, strip: bool) -> f32 {
+    (if progress { kiri::PROGRESS_HEIGHT } else { 0.0 })
         + if strip { tab_strip_height() } else { 0.0 }
-        + kiri::CHROME_GAP
 }
 
 /// Altura do chrome acima do painel, para o estado atual da sessão: o
