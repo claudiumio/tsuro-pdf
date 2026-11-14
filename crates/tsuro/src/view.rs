@@ -203,91 +203,32 @@ pub fn chrome(session: &Session, theme: Theme, lang: Lang) -> Element<'_, Messag
     stack![main, hud_layer, overlay].into()
 }
 
-/// Botão-ícone da pílula do HUD: Ori + tooltip, no tamanho dos segmentos.
-fn hud_icon(
-    file: &str,
-    label: &'static str,
-    t: Tokens,
-    message: Message,
-) -> Element<'static, Message> {
-    tip(
-        t,
-        control_seg(t, button(seg_icon(file))).on_press(message),
-        label,
-    )
-}
-
 /// HUD flutuante (Stitch §Floating Action Pill): pílula 36px centrada a 24px do
-/// rodapé, sobre o canvas. Só os botões capturam clique — o resto atravessa.
+/// rodapé, sobre o canvas. Página e zoom vivem na barra, então aqui fica só o
+/// estado de Modo Anotação. Só a pílula captura clique, o resto atravessa.
 fn hud(ready: &Ready, t: Tokens) -> Element<'_, Message> {
-    let n = ready.page_count().max(1);
-    let page = ready.visible.index() + 1;
-    let current = ready.zoom_step_factor();
-    let out = Zoom::Manual(ZoomFactor::new(current / 1.1));
-    let into = Zoom::Manual(ZoomFactor::new(current * 1.1));
-    let mono = |s: String, color: Color| text(s).size(12).font(iced::Font::MONOSPACE).color(color);
-    let mut pill = row![
-        hud_icon(
-            "chevron-left",
-            t.lang.pick("Página anterior", "Previous page"),
-            t,
-            Message::Nav(NavCmd::Previous)
-        ),
-        mono(page.to_string(), t.ink),
-        mono("/".to_string(), t.muted),
-        mono(n.to_string(), t.muted),
-        hud_icon(
-            "chevron-right",
-            t.lang.pick("Próxima página", "Next page"),
-            t,
-            Message::Nav(NavCmd::Next)
-        ),
-        kiri::vsep(t),
-        hud_icon(
-            "fit-width",
-            t.lang.pick("Ajustar à largura", "Fit width"),
-            t,
-            Message::SetZoom(Zoom::Width)
-        ),
-        hud_icon(
-            "minus",
-            t.lang.pick("Diminuir zoom (-)", "Zoom out (-)"),
-            t,
-            Message::SetZoom(out)
-        ),
-        mono(format!("{}%", (current * 100.0).round() as i32), t.ink),
-        hud_icon(
-            "plus",
-            t.lang.pick("Aumentar zoom (+)", "Zoom in (+)"),
-            t,
-            Message::SetZoom(into)
-        ),
-    ]
-    .spacing(2)
-    .align_y(Alignment::Center);
-    // Modo Anotação: só com seleção viva ou marcações na sessão.
-    if ready.selection_plain_text().is_some() || !ready.annotations.is_empty() {
-        pill = pill.push(kiri::vsep(t)).push(
-            row![
-                container(Space::with_width(Length::Fixed(7.0)))
-                    .width(Length::Fixed(7.0))
-                    .height(Length::Fixed(7.0))
-                    .style(move |_| container::Style {
-                        background: Some(Background::Color(t.accent)),
-                        border: Border {
-                            radius: 99.0.into(),
-                            ..Border::default()
-                        },
-                        ..container::Style::default()
-                    }),
-                text(t.lang.pick("Modo Anotação", "Annotation mode"))
-                    .size(11)
-                    .color(t.accent),
-            ]
-            .spacing(6)
-            .align_y(Alignment::Center),
-        );
+    // Sem seleção e sem marcações não há nada a dizer: nada de pílula vazia.
+    if ready.selection_plain_text().is_none() && ready.annotations.is_empty() {
+        return Space::new(Length::Shrink, Length::Shrink).into();
     }
+    let pill = row![
+        container(Space::with_width(Length::Fixed(7.0)))
+            .width(Length::Fixed(7.0))
+            .height(Length::Fixed(7.0))
+            .style(move |_| container::Style {
+                background: Some(Background::Color(t.accent)),
+                border: Border {
+                    radius: 99.0.into(),
+                    ..Border::default()
+                },
+                ..container::Style::default()
+            }),
+        text(t.lang.pick("Modo Anotação", "Annotation mode"))
+            .size(11)
+            .color(t.accent),
+    ]
+    .spacing(6)
+    .align_y(Alignment::Center);
     // Cursor sobre a pílula a segura na tela (não some embaixo da mão).
     container(
         mouse_area(
@@ -689,6 +630,10 @@ fn topbar(session: &Session, t: Tokens) -> Element<'_, Message> {
         .style(kiri::search_field_style(t));
 
         // Página + ‹ › (zona central): o campo e o segmento na mesma pílula.
+        // Página + ‹ › (zona central): o campo, o total e o segmento na mesma
+        // pílula. As larguras saem do número de páginas do documento, então o
+        // par "N / M" fica centrado em qualquer contagem (1/2, 9/120).
+        let (field_w, total_w) = pager_widths(n);
         let pager = container(
             row![
                 tip(
@@ -701,18 +646,23 @@ fn topbar(session: &Session, t: Tokens) -> Element<'_, Message> {
                         .font(iced::Font::MONOSPACE)
                         .size(body.size)
                         .line_height(body.line_height)
-                        .padding([4, 6])
-                        .width(Length::Fixed(30.0)),
+                        .align_x(Alignment::Center)
+                        .padding([4, 4])
+                        .width(Length::Fixed(field_w)),
                     t.lang.pick(
                         "Ir para página (Enter confirma)",
                         "Go to page (Enter confirms)"
                     ),
                 ),
-                text(format!("/{n}"))
-                    .size(body.size)
-                    .line_height(body.line_height)
-                    .font(iced::Font::MONOSPACE)
-                    .color(t.muted),
+                container(
+                    text(format!("/{n}"))
+                        .size(body.size)
+                        .line_height(body.line_height)
+                        .font(iced::Font::MONOSPACE)
+                        .color(t.muted),
+                )
+                .width(Length::Fixed(total_w))
+                .align_x(Alignment::Center),
                 Space::with_width(Length::Fixed(4.0)),
                 container(
                     row![
@@ -4455,10 +4405,37 @@ fn failed<'a>(source: &'a OpenSource, message: &'a str, t: Tokens) -> Element<'a
     .into()
 }
 
+/// Larguras do indicador de página: o campo com o número atual e a caixa do
+/// total `/N`. As duas crescem com o número de dígitos do documento, então o
+/// par fica centrado e com o mesmo peso visual em 2 ou em 900 páginas.
+fn pager_widths(pages: u32) -> (f32, f32) {
+    // Um dígito mono na escala do corpo (13 px) mede cerca de 8 px.
+    const DIGIT: f32 = 8.0;
+    let digits = pages.to_string().len();
+    // O campo aceita digitar até o número de dígitos do documento, com um
+    // mínimo de dois para o texto não encostar na borda.
+    let field_digits = digits.max(2) as f32;
+    // O total mostra "/" mais todos os dígitos.
+    let total_digits = (digits + 1) as f32;
+    (DIGIT * field_digits + 12.0, DIGIT * total_digits + 6.0)
+}
+
 #[cfg(test)]
 mod tests {
-    use super::{outline_title, sweep_x, LOADING_BAR_W, LOADING_SEG_W, LOADING_STEPS};
+    use super::{
+        outline_title, pager_widths, sweep_x, LOADING_BAR_W, LOADING_SEG_W, LOADING_STEPS,
+    };
     use crate::i18n::Lang;
+
+    #[test]
+    fn pager_widths_fit_the_document_page_count() {
+        // Dois dígitos no campo e "/2" no total.
+        assert_eq!(pager_widths(2), (28.0, 22.0));
+        // Documento de três dígitos: o par cresce junto.
+        assert_eq!(pager_widths(120), (36.0, 38.0));
+        assert!(pager_widths(900).1 > pager_widths(9).1);
+        assert!(pager_widths(900).0 >= pager_widths(9).0);
+    }
 
     #[test]
     fn opening_sweep_stays_inside_the_track() {
