@@ -25,10 +25,23 @@ jobs:
             asset: pdfium-win-x64.tgz
             lib: pdfium.dll
             plant: target/debug/deps target/debug
+          - os: ubuntu-24.04
+            asset: pdfium-linux-x64.tgz
+            lib: libpdfium.so
+            plant: target/debug/deps target/debug
     runs-on: ${{ matrix.os }}
     steps:
       - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@stable
+      - name: Dependências de sistema (Linux)
+        if: runner.os == 'Linux'
+        # printers liga libcups; winit e o clipboard puxam xcb/xkbcommon/wayland.
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends \
+            libcups2-dev libxkbcommon-dev libxkbcommon-x11-dev \
+            libx11-xcb-dev libxcb1-dev libwayland-dev \
+            libegl1-mesa-dev libgl1-mesa-dev pkg-config
       - name: Pdfium
         shell: bash
         env:
@@ -44,6 +57,9 @@ jobs:
           echo "$GITHUB_WORKSPACE" >> "$GITHUB_PATH"
           if [ "${{ runner.os }}" = "macOS" ]; then
             echo "DYLD_LIBRARY_PATH=$GITHUB_WORKSPACE" >> "$GITHUB_ENV"
+          fi
+          if [ "${{ runner.os }}" = "Linux" ]; then
+            echo "LD_LIBRARY_PATH=$GITHUB_WORKSPACE" >> "$GITHUB_ENV"
           fi
       - name: Testes Rust
         shell: bash
