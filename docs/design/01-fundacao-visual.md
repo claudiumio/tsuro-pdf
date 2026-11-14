@@ -194,7 +194,11 @@ A barra unificada (fase 4) não precisou de AppKit: o `iced` 0.13 expõe
 `title_hidden`, `titlebar_transparent` e `fullsize_content_view` no
 `PlatformSpecific` do macOS. Com eles a faixa cresce para 52 e reserva 78 à
 esquerda para os semáforos nativos (`Metrics::unified_title` e
-`Metrics::traffic_lights`). A barra de menu do macOS foi feita em AppKit
+`Metrics::traffic_lights`). Como o conteúdo corre sob a barra, os gestos dela
+são do sistema: o duplo clique (`performZoom:`) e o arrasto implícito
+(`-mouseDownCanMoveWindow` da view) foram desligados, e o arrasto passou a ser
+explícito (`view::drag_region`), só na faixa vazia entre os controles. A barra
+de menu do macOS foi feita em AppKit
 (`objc2-app-kit`), sem o `muda`: os itens são `NSMenuItem` que enviam a sua
 `Message` de volta para a sessão, e o iced não participa. No Windows e no Linux
 o menu continua sendo a lista do ⋯ desenhada no iced. Falta da fase 4: o
