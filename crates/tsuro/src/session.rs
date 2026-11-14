@@ -2574,7 +2574,7 @@ pub enum Message {
     CloseSave,
     /// O SO pediu para fechar a janela.
     CloseWindow(window::Id),
-    /// Arrasta a janela: press na faixa vazia da barra (`view::drag_region`).
+    /// Arrasta a janela: press numa faixa vazia da barra (`view::drag_band`).
     DragWindow,
     /// Troca a aba ativa (clique na faixa de abas).
     SelectTab(usize),

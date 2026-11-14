@@ -434,14 +434,25 @@ fn settings_button(t: Tokens, open: bool) -> Element<'static, Message> {
     )
 }
 
-/// Faixa de arrasto da janela: o fundo da barra, atrás dos controles. O AppKit
-/// não arrasta mais por conta própria (`macos_window`), então este é o caminho
-/// para mover a janela pela barra — e ele não pega clique de controle.
-fn drag_region() -> Element<'static, Message> {
+/// Banda vazia da barra: onde não há controle nem texto, apertar e arrastar
+/// move a janela. Fica só nos vãos — um `mouse_area` atrás da barra inteira
+/// pegaria também o clique no nome do arquivo e no número da página, que são
+/// texto e não consomem o evento (`Stack` cai para a camada de baixo).
+///
+/// Só a barra unificada precisa disso: o AppKit não arrasta mais por conta
+/// própria (`macos_window`), e nas outras plataformas quem arrasta é a barra
+/// de título nativa.
+fn drag_band() -> Element<'static, Message> {
+    if !kiri::Metrics::current().unified_title() {
+        return Space::with_width(Length::Fill).into();
+    }
+    // Altura cheia da faixa: os 2 px acima e abaixo dos controles também
+    // arrastam. `Fixed` porque num `row` um filho `Fill` na vertical fica
+    // limitado à altura do mais alto dos irmãos (o botão de 28).
     mouse_area(
         container(Space::new(Length::Fill, Length::Fill))
             .width(Length::Fill)
-            .height(Length::Fill),
+            .height(Length::Fixed(bar_height())),
     )
     .on_press(Message::DragWindow)
     .into()
@@ -452,7 +463,7 @@ fn toolbar_frame(t: Tokens, content: Element<'_, Message>) -> Element<'_, Messag
     // Barra unificada (spec §5): o conteúdo corre sob os semáforos nativos, então
     // a faixa deles fica reservada à esquerda. Nas outras plataformas é 0.
     let metrics = kiri::Metrics::current();
-    let frame = container(content)
+    let frame: Element<'_, Message> = container(content)
         .width(Length::Fill)
         .height(Length::Fixed(bar_height()))
         .align_y(Alignment::Center)
@@ -465,16 +476,31 @@ fn toolbar_frame(t: Tokens, content: Element<'_, Message>) -> Element<'_, Messag
         .style(move |_| container::Style {
             background: Some(Background::Color(t.chrome)),
             ..container::Style::default()
-        });
-    // Só a barra unificada precisa do arrasto explícito: nas outras plataformas
-    // a barra de título nativa fica acima e a nossa faixa não arrasta nada.
+        })
+        .into();
     if metrics.unified_title() {
-        stack![drag_region(), frame]
-            .width(Length::Fill)
-            .height(Length::Fixed(bar_height()))
+        // Duas faixas vazias arrastam a janela: a fileira acima dos controles
+        // (os 2 px de respiro) e a área dos semáforos, à esquerda, onde nada
+        // nosso é desenhado. O resto da barra pertence aos controles.
+        let band = |w: Length, h: Length| -> Element<'_, Message> {
+            mouse_area(
+                container(Space::new(Length::Fill, Length::Fill))
+                    .width(w)
+                    .height(h),
+            )
+            .on_press(Message::DragWindow)
             .into()
+        };
+        stack![
+            frame,
+            band(Length::Fixed(metrics.traffic_lights()), Length::Fill),
+            band(Length::Fill, Length::Fixed(metrics.bar_respiro())),
+        ]
+        .width(Length::Fill)
+        .height(Length::Fixed(bar_height()))
+        .into()
     } else {
-        frame.into()
+        frame
     }
 }
 
@@ -836,7 +862,7 @@ fn topbar(session: &Session, t: Tokens) -> Element<'_, Message> {
             open_button(t),
             kiri::vsep(t),
             doc_pill,
-            Space::with_width(Length::Fill),
+            drag_band(),
             pager,
             zoom_seg,
         ]
@@ -920,7 +946,7 @@ fn topbar(session: &Session, t: Tokens) -> Element<'_, Message> {
                 .push(mark_seg);
         }
         bar = bar
-            .push(Space::with_width(Length::Fill))
+            .push(drag_band())
             .push(search)
             .push(kiri::vsep(t))
             .push(right);
@@ -936,7 +962,7 @@ fn topbar(session: &Session, t: Tokens) -> Element<'_, Message> {
     }
     items.push(open_button(t));
     if matches!(session, Session::Empty(_) | Session::Ready(_)) {
-        items.push(Space::with_width(Length::Fill).into());
+        items.push(drag_band());
         if let Some(badge) = update_badge(t, &session.settings().update) {
             items.push(badge);
         }

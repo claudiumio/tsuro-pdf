@@ -8,9 +8,9 @@
 //! pegava até o número da página.
 //!
 //! A correção desliga o arrasto implícito do AppKit e deixa o arrasto explícito
-//! para a faixa vazia da barra (`view::drag_region`), que pede
-//! [`begin_drag`] só onde não há controle. Na mesma troca some o gesto nativo de
-//! duplo clique, que mandava a janela para tela cheia.
+//! para as faixas vazias da barra (`view::drag_band` e as bandas do
+//! `toolbar_frame`): só onde não há controle nem texto. Na mesma troca some o
+//! gesto nativo de duplo clique, que mandava a janela para tela cheia.
 //!
 //! A janela do app é única, então trocar o método na classe da view e da janela
 //! vale para todas as janelas do processo sem mexer na hierarquia de views.

@@ -195,11 +195,15 @@ A barra unificada (fase 4) não precisou de AppKit: o `iced` 0.13 expõe
 `PlatformSpecific` do macOS. Com eles a faixa encosta no topo (sem o respiro
 de 4) e fica com 32: o botão de 28 mais 2 em cima e 2 embaixo, o que põe o
 centro dos controles a 16 px do topo, a mesma altura dos semáforos nativos
-(medidos a 15,5). À esquerda ficam 78 reservados aos três botões
-(`Metrics::unified_title` e `Metrics::traffic_lights`). Como o conteúdo corre sob a barra, os gestos dela
+(medidos a 15,5). À esquerda ficam 68 reservados aos três botões, que ocupam
+de 6 a 65 na medição (`Metrics::unified_title` e `Metrics::traffic_lights`).
+Como o conteúdo corre sob a barra, os gestos dela
 são do sistema: o duplo clique (`performZoom:`) e o arrasto implícito
 (`-mouseDownCanMoveWindow` da view) foram desligados, e o arrasto passou a ser
-explícito (`view::drag_region`), só na faixa vazia entre os controles. A barra
+explícito, só nas faixas vazias: os vãos entre os controles (`view::drag_band`),
+a fileira de 2 px acima deles e a área dos semáforos. Texto e controle não
+arrastam mais — o `mouse_area` da faixa inteira pegava o clique no nome do
+arquivo e no número da página, que não consomem o evento. A barra
 de menu do macOS foi feita em AppKit
 (`objc2-app-kit`), sem o `muda`: os itens são `NSMenuItem` que enviam a sua
 `Message` de volta para a sessão, e o iced não participa. No Windows e no Linux

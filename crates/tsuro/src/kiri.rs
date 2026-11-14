@@ -496,11 +496,13 @@ impl Metrics {
         self.platform == Platform::MacOs
     }
 
-    /// Faixa reservada aos semáforos nativos: três botões de 12 a partir de 20,
-    /// mais 16 de respiro até o primeiro item da barra.
+    /// Faixa ocupada pelos semáforos nativos: três botões de 14 começando a 9
+    /// da borda, com 9 entre eles (medido na janela de 768 de altura: 9–22,
+    /// 32–45, 55–68). O respiro até o primeiro item da barra é o `8` do
+    /// `toolbar_frame`, então 68 põe os controles a 76 da borda.
     pub fn traffic_lights(self) -> f32 {
         if self.unified_title() {
-            78.0
+            68.0
         } else {
             0.0
         }
@@ -513,10 +515,16 @@ impl Metrics {
     /// nativa fica acima, e a faixa é o botão mais 16.
     pub fn bar_height(self) -> f32 {
         if self.unified_title() {
-            self.button + 4.0
+            self.button + 2.0 * self.bar_respiro()
         } else {
             self.button + 16.0
         }
+    }
+
+    /// Respiro acima e abaixo dos controles na barra unificada: 2 px, a faixa
+    /// vazia onde o clique arrasta a janela em vez de acertar um controle.
+    pub fn bar_respiro(self) -> f32 {
+        2.0
     }
 
     /// Faixa de abas: o controle mais 2 (24 → 26 no macOS).
@@ -1298,7 +1306,7 @@ mod tests {
         let mac = Metrics::for_platform(Platform::MacOs);
         assert_eq!((mac.control, mac.button), (24.0, 28.0));
         assert_eq!((mac.bar_height(), mac.tab_strip_height()), (32.0, 26.0));
-        assert_eq!((mac.icon(), mac.traffic_lights()), (16.0, 78.0));
+        assert_eq!((mac.icon(), mac.traffic_lights()), (16.0, 68.0));
         assert!(mac.unified_title());
 
         let win = Metrics::for_platform(Platform::Windows);
