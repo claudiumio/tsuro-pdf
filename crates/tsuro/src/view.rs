@@ -324,13 +324,13 @@ fn bar_button(
     file: &str,
     active: bool,
 ) -> iced::widget::button::Button<'static, Message> {
-    button(kiri::ori_icon(file, bar_icon()))
+    button(kiri::ori_icon(file, bar_icon(), t.accent))
         .padding(6)
         .style(kiri::bar_btn_style(t, active))
 }
 
-fn seg_icon(file: &str) -> Element<'static, Message> {
-    kiri::ori_icon(file, bar_icon())
+fn seg_icon(file: &str, t: Tokens) -> Element<'static, Message> {
+    kiri::ori_icon(file, bar_icon(), t.accent)
 }
 
 /// Botão-ícone dentro de segmentos: o conteúdo do controle (24 no macOS)
@@ -606,7 +606,7 @@ fn search_nav<'a>(ready: &'a Ready, t: Tokens) -> Element<'a, Message> {
             t,
             control_seg(
                 t,
-                button(seg_icon("chevron-left")).on_press(Message::SearchPrev),
+                button(seg_icon("chevron-left", t)).on_press(Message::SearchPrev),
             ),
             t.lang
                 .pick("Anterior (Shift+Enter)", "Previous (Shift+Enter)"),
@@ -615,7 +615,7 @@ fn search_nav<'a>(ready: &'a Ready, t: Tokens) -> Element<'a, Message> {
             t,
             control_seg(
                 t,
-                button(seg_icon("chevron-right")).on_press(Message::SearchNext),
+                button(seg_icon("chevron-right", t)).on_press(Message::SearchNext),
             ),
             t.lang.pick("Próximo (Enter)", "Next (Enter)"),
         ));
@@ -676,7 +676,7 @@ fn topbar(session: &Session, t: Tokens) -> Element<'_, Message> {
             row![
                 tip(
                     t,
-                    kiri::ori_small!("search"),
+                    kiri::ori_small!("search", t.accent),
                     if cfg!(target_os = "macos") {
                         t.lang
                             .pick("Buscar no documento (Cmd+F)", "Find in document (Cmd+F)")
@@ -748,7 +748,7 @@ fn topbar(session: &Session, t: Tokens) -> Element<'_, Message> {
                             t,
                             control_seg(
                                 t,
-                                button(seg_icon("chevron-left"))
+                                button(seg_icon("chevron-left", t))
                                     .on_press(Message::Nav(NavCmd::Previous))
                             ),
                             t.lang.pick("Página anterior", "Previous page")
@@ -757,7 +757,7 @@ fn topbar(session: &Session, t: Tokens) -> Element<'_, Message> {
                             t,
                             control_seg(
                                 t,
-                                button(seg_icon("chevron-right"))
+                                button(seg_icon("chevron-right", t))
                                     .on_press(Message::Nav(NavCmd::Next))
                             ),
                             t.lang.pick("Próxima página", "Next page")
@@ -786,7 +786,10 @@ fn topbar(session: &Session, t: Tokens) -> Element<'_, Message> {
             row![
                 tip(
                     t,
-                    control_seg(t, button(seg_icon("minus")).on_press(Message::SetZoom(out))),
+                    control_seg(
+                        t,
+                        button(seg_icon("minus", t)).on_press(Message::SetZoom(out))
+                    ),
                     t.lang.pick("Diminuir zoom (-)", "Zoom out (-)")
                 ),
                 tip(
@@ -803,14 +806,17 @@ fn topbar(session: &Session, t: Tokens) -> Element<'_, Message> {
                 ),
                 tip(
                     t,
-                    control_seg(t, button(seg_icon("plus")).on_press(Message::SetZoom(into))),
+                    control_seg(
+                        t,
+                        button(seg_icon("plus", t)).on_press(Message::SetZoom(into))
+                    ),
                     t.lang.pick("Aumentar zoom (+)", "Zoom in (+)")
                 ),
                 tip(
                     t,
                     control_seg(
                         t,
-                        button(seg_icon("fit-width")).on_press(Message::SetZoom(Zoom::Width))
+                        button(seg_icon("fit-width", t)).on_press(Message::SetZoom(Zoom::Width))
                     ),
                     t.lang.pick("Ajustar à largura", "Fit width")
                 ),
@@ -924,7 +930,7 @@ fn topbar(session: &Session, t: Tokens) -> Element<'_, Message> {
                         control_seg(
                             t,
                             button(tool(
-                                seg_icon("highlighter"),
+                                seg_icon("highlighter", t),
                                 t.lang.pick("Destacar", "Highlight"),
                                 "H"
                             ))
@@ -937,7 +943,7 @@ fn topbar(session: &Session, t: Tokens) -> Element<'_, Message> {
                         control_seg(
                             t,
                             button(tool(
-                                seg_icon("underline"),
+                                seg_icon("underline", t),
                                 t.lang.pick("Sublinhar", "Underline"),
                                 "U"
                             ))
@@ -950,7 +956,7 @@ fn topbar(session: &Session, t: Tokens) -> Element<'_, Message> {
                         control_seg(
                             t,
                             button(tool(
-                                seg_icon("strike"),
+                                seg_icon("strike", t),
                                 t.lang.pick("Riscar", "Strikeout"),
                                 "S"
                             ))
@@ -962,7 +968,7 @@ fn topbar(session: &Session, t: Tokens) -> Element<'_, Message> {
                         t,
                         control_seg(
                             t,
-                            button(tool(seg_icon("note"), t.lang.pick("Nota", "Note"), "N"))
+                            button(tool(seg_icon("note", t), t.lang.pick("Nota", "Note"), "N"))
                                 .on_press(Message::Annotate(AnnotKind::Note))
                         ),
                         t.lang.pick("Nota (N)", "Note (N)")
@@ -1291,7 +1297,7 @@ fn menu_item(
     let hint = crate::session::shortcut_hint(&message);
     let body = kiri::text_style(kiri::TextKind::Body, false);
     let mut content = row![
-        kiri::ori_icon(icon, 16.0),
+        kiri::ori_icon(icon, 16.0, t.accent),
         text(label.into())
             .size(body.size)
             .line_height(body.line_height)
@@ -1442,7 +1448,7 @@ fn print_preview<'a>(
             .into(),
         };
     let pager = row![
-        button(kiri::ori!("chevron-left"))
+        button(kiri::ori!("chevron-left", t.accent))
             .style(kiri::ibtn_style(t, false))
             .on_press_maybe((!dialog.busy && at > 0).then_some(Message::PrintPreviewPrev)),
         text(format!(
@@ -1452,7 +1458,7 @@ fn print_preview<'a>(
             pages.len().max(1)
         ))
         .size(13),
-        button(kiri::ori!("chevron-right"))
+        button(kiri::ori!("chevron-right", t.accent))
             .style(kiri::ibtn_style(t, false))
             .on_press_maybe(
                 (!dialog.busy && at + 1 < pages.len()).then_some(Message::PrintPreviewNext)
@@ -1533,13 +1539,13 @@ fn print_controls(dialog: &PrintDialog, t: Tokens) -> Element<'_, Message> {
     col = col.push(section_title(t.lang.pick("Cópias", "Copies"), t));
     col = col.push(
         row![
-            button(kiri::ori!("minus"))
+            button(kiri::ori!("minus", t.accent))
                 .style(kiri::ibtn_style(t, false))
                 .on_press_maybe((!busy && dialog.copies > 1).then_some(Message::PrintCopiesMinus)),
             container(text(dialog.copies.to_string()).size(14))
                 .width(Length::Fixed(32.0))
                 .align_x(Alignment::Center),
-            button(kiri::ori!("plus"))
+            button(kiri::ori!("plus", t.accent))
                 .style(kiri::ibtn_style(t, false))
                 .on_press_maybe(
                     (!busy && dialog.copies < MAX_COPIES).then_some(Message::PrintCopiesPlus)
@@ -1679,22 +1685,22 @@ fn selection_bar_layer(ready: &Ready, t: Tokens) -> Element<'_, Message> {
     let bar = container(
         row![
             seg(
-                seg_icon("highlighter"),
+                seg_icon("highlighter", t),
                 t.lang.pick("Destacar (H)", "Highlight (H)"),
                 AnnotKind::Highlight
             ),
             seg(
-                seg_icon("underline"),
+                seg_icon("underline", t),
                 t.lang.pick("Sublinhar (U)", "Underline (U)"),
                 AnnotKind::Underline
             ),
             seg(
-                seg_icon("strike"),
+                seg_icon("strike", t),
                 t.lang.pick("Riscar (S)", "Strikeout (S)"),
                 AnnotKind::Strikeout
             ),
             seg(
-                seg_icon("note"),
+                seg_icon("note", t),
                 t.lang.pick("Nota (N)", "Note (N)"),
                 AnnotKind::Note
             ),
@@ -2422,7 +2428,7 @@ fn palette_card(palette: &PaletteState, t: Tokens) -> Element<'_, Message> {
             rows = rows.push(
                 button(
                     row![
-                        kiri::ori_icon(item.icon(), 16.0),
+                        kiri::ori_icon(item.icon(), 16.0, t.accent),
                         titlecol,
                         Space::with_width(Length::Fill),
                         text((i + 1).to_string()).size(11).color(t.muted),
@@ -2596,7 +2602,7 @@ fn empty_browser(empty: &EmptyState, tabs_open: bool, t: Tokens) -> Element<'_, 
 
     content = content.push(home_section(
         t,
-        kiri::ori_icon("pages", 22.0),
+        kiri::ori_icon("pages", 22.0, t.accent),
         t.lang.pick("Recentes", "Recent"),
         Some(empty.recents.len()),
     ));
@@ -2618,7 +2624,7 @@ fn empty_browser(empty: &EmptyState, tabs_open: bool, t: Tokens) -> Element<'_, 
     // Pastas: título, caminho atual e voltar na mesma linha.
     let mut folders_head = row![home_section(
         t,
-        kiri::ori_icon("folder", 22.0),
+        kiri::ori_icon("folder", 22.0, t.accent),
         t.lang.pick("Pastas", "Folders"),
         None,
     )]
@@ -2629,7 +2635,7 @@ fn empty_browser(empty: &EmptyState, tabs_open: bool, t: Tokens) -> Element<'_, 
             t,
             control_seg(
                 t,
-                button(seg_icon("chevron-left")).on_press(Message::BrowseTo(parent)),
+                button(seg_icon("chevron-left", t)).on_press(Message::BrowseTo(parent)),
             ),
             t.lang.pick("Voltar", "Back"),
         ));
@@ -2664,7 +2670,7 @@ fn empty_browser(empty: &EmptyState, tabs_open: bool, t: Tokens) -> Element<'_, 
     if !pdfs.is_empty() {
         content = content.push(home_section(
             t,
-            kiri::ori_icon("file-text", 22.0),
+            kiri::ori_icon("file-text", 22.0, t.accent),
             t.lang.pick("PDFs nesta pasta", "PDFs in this folder"),
             Some(pdfs.len()),
         ));
@@ -2827,7 +2833,7 @@ fn file_card<'a>(path: &std::path::Path, thumb: Option<&Thumb>, t: Tokens) -> El
     home_card(
         t,
         preview.into(),
-        kiri::ori!("file-text"),
+        kiri::ori!("file-text", t.accent),
         name,
         parent,
         Message::OpenRecent(path.to_path_buf()),
@@ -2836,13 +2842,13 @@ fn file_card<'a>(path: &std::path::Path, thumb: Option<&Thumb>, t: Tokens) -> El
 
 /// Cartão de pasta: ícone grande no lugar da prévia.
 fn folder_card<'a>(entry: &FsEntry, t: Tokens) -> Element<'a, Message> {
-    let preview = container(kiri::ori_icon("folder", 44.0))
+    let preview = container(kiri::ori_icon("folder", 44.0, t.accent))
         .center_x(Length::Fill)
         .center_y(Length::Fill);
     home_card(
         t,
         preview.into(),
-        kiri::ori!("folder"),
+        kiri::ori!("folder", t.accent),
         entry.name.clone(),
         t.lang.pick("Pasta", "Folder").into(),
         Message::BrowseTo(Some(entry.path.clone())),
