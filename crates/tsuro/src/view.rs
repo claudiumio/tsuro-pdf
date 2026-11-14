@@ -28,8 +28,9 @@ use crate::session::{
     THUMB_ROW,
 };
 
-/// Altura da faixa de ferramentas (spec §5, caso expandido): título nativo
-/// da plataforma acima e a nossa faixa abaixo do controle (44 no macOS).
+/// Altura da faixa de ferramentas (spec §5). No macOS é a barra unificada,
+/// `kiri::Metrics::bar_height` (botão + respiro em cima e embaixo); nas outras
+/// plataformas a barra nativa do sistema fica acima e a faixa é o botão mais 16.
 pub fn bar_height() -> f32 {
     kiri::Metrics::current().bar_height()
 }
@@ -44,15 +45,27 @@ fn frame_top() -> f32 {
     }
 }
 
-/// Altura do chrome Kiri: respiro de cima + toolbar + progresso + respiro até o
-/// painel + o respiro de 4 da moldura embaixo.
-pub fn chrome_height() -> f32 {
-    frame_top() + bar_height() + kiri::PROGRESS_HEIGHT + kiri::CHROME_GAP + 4.0
+/// Onde o painel do documento começa: barra, progresso (só com documento na
+/// frente), faixa de abas (2+ documentos ou o Início por cima) e o respiro
+/// antes do painel. Uma conta só, para o painel, o menu ⋯ e o viewport não
+/// divergirem.
+fn panel_top(progress: bool, strip: bool) -> f32 {
+    frame_top()
+        + bar_height()
+        + if progress { kiri::PROGRESS_HEIGHT } else { 0.0 }
+        + if strip { tab_strip_height() } else { 0.0 }
+        + kiri::CHROME_GAP
 }
 
-/// Onde o chrome termina e o conteúdo começa: abaixo da barra (e das abas).
-fn chrome_top() -> f32 {
-    frame_top() + bar_height()
+/// Altura do chrome acima do painel, para o estado atual da sessão: o
+/// `panel_top` mais o respiro de 4 da moldura embaixo. É o que a janela tem
+/// que não é painel.
+pub fn chrome_height(session: &Session) -> f32 {
+    let (progress, strip) = match session {
+        Session::Ready(tabs) => (tabs.home().is_none(), tabs.strip_visible()),
+        _ => (false, false),
+    };
+    panel_top(progress, strip) + 4.0
 }
 
 /// Altura da faixa de abas (issue #40), reservada só com 2+ documentos.
@@ -117,7 +130,8 @@ pub fn chrome(session: &Session, theme: Theme, lang: Lang) -> Element<'_, Messag
         Session::Ready(ready) => ready_body(ready, t),
     };
 
-    // Toolbar 44px + progresso 2px + respiro 8px = `CHROME_HEIGHT` (54px).
+    // Barra + progresso + respiro antes do painel: a altura que a janela tem
+    // e não é painel sai de `chrome_height(session)`, aqui ninguém soma à mão.
     let mut col = column![topbar(session, t)];
     if let Session::Ready(tabs) = session {
         // Progresso de leitura é do documento: some com o Início na tela.
@@ -127,7 +141,7 @@ pub fn chrome(session: &Session, theme: Theme, lang: Lang) -> Element<'_, Messag
         // Faixa de abas (issue #40): com um documento só a janela é a de
         // sempre — sem faixa nenhuma. Com o Início por cima, a faixa é o
         // caminho de volta (mesmo com uma aba).
-        if tabs.len() > 1 || tabs.home().is_some() {
+        if tabs.strip_visible() {
             col = col.push(tab_strip(tabs, t));
         }
     }
@@ -449,9 +463,10 @@ fn drag_band() -> Element<'static, Message> {
     if !kiri::Metrics::current().unified_title() {
         return Space::with_width(Length::Fill).into();
     }
-    // Altura cheia da faixa: os 2 px acima e abaixo dos controles também
-    // arrastam. `Fixed` porque num `row` um filho `Fill` na vertical fica
-    // limitado à altura do mais alto dos irmãos (o botão de 28).
+    // Altura cheia da faixa: as fileiras vazias acima e abaixo dos controles
+    // também arrastam. `Fixed` porque num `row` a altura `Fill` sai da `cross`
+    // acumulada até aquele ponto, e a faixa vem depois de tudo; o `Fixed` é
+    // então limitado pelo padding do pai, que é a altura da linha de controles.
     mouse_area(
         container(Space::new(Length::Fill, Length::Fill))
             .width(Length::Fill)
@@ -604,7 +619,7 @@ fn search_nav<'a>(ready: &'a Ready, t: Tokens) -> Element<'a, Message> {
 }
 
 /// Barra única Kiri (`Session::Ready`): abrir │ pílula do documento │ busca e
-/// página │ marcar │ zoom │ painéis │ ⋯. Uma linha só (`CHROME_HEIGHT`).
+/// página │ marcar │ zoom │ painéis │ ⋯. Uma linha só, em `bar_height()`.
 fn topbar(session: &Session, t: Tokens) -> Element<'_, Message> {
     // Com o Início por cima das abas, a barra é a da tela inicial.
     let doc = match session {
@@ -688,7 +703,6 @@ fn topbar(session: &Session, t: Tokens) -> Element<'_, Message> {
         .padding(Padding::from([0, 10]))
         .style(kiri::search_field_style(t));
 
-        // Página + ‹ › (zona central): o campo e o segmento na mesma pílula.
         // Página + ‹ › (zona central): o campo, o total e o segmento na mesma
         // pílula. As larguras saem do número de páginas do documento, então o
         // par "N / M" fica centrado em qualquer contagem (1/2, 9/120).
@@ -993,12 +1007,8 @@ fn overflow_layer(tabs: &Tabs, t: Tokens) -> Element<'_, Message> {
             background: Some(Background::Color(kiri::scrim())),
             ..container::Style::default()
         });
-    // Abaixo da barra e do progresso, com a faixa de abas somada quando existe.
-    let top = if tabs.len() > 1 {
-        chrome_top() + tab_strip_height()
-    } else {
-        chrome_top()
-    };
+    // Abaixo do chrome inteiro: barra, progresso e faixa de abas quando há.
+    let top = panel_top(tabs.home().is_none(), tabs.strip_visible());
     let card = container(overflow_menu(tabs, tabs.settings.theme_pref, t))
         .width(Length::Fill)
         .height(Length::Fill)

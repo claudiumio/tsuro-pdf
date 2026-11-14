@@ -497,9 +497,10 @@ impl Metrics {
     }
 
     /// Faixa ocupada pelos semáforos nativos: três botões de 14 começando a 9
-    /// da borda, com 9 entre eles (medido na janela de 768 de altura: 9–22,
-    /// 32–45, 55–68). O respiro até o primeiro item da barra é o `8` do
-    /// `toolbar_frame`, então 68 põe os controles a 76 da borda.
+    /// da superview, com 9 entre eles (medido: 9–22, 32–45, 55–68). Na captura
+    /// de tela os três desenham de 6 a 65 a partir da borda da janela, que é a
+    /// mesma faixa medida noutro referencial. O respiro até o primeiro item da
+    /// barra é o `8` do `toolbar_frame`, então 68 põe os controles a 76.
     pub fn traffic_lights(self) -> f32 {
         if self.unified_title() {
             68.0

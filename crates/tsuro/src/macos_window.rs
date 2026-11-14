@@ -19,15 +19,19 @@ use objc2::runtime::{AnyObject, MethodImplementation, Sel};
 use objc2::{sel, MainThreadMarker};
 use objc2_app_kit::{NSApplication, NSWindowButton};
 
-/// Aplica os ajustes na janela principal. Idempotente.
-pub(crate) fn install() {
+/// Aplica os ajustes na janela principal. Idempotente e devolve se achou a
+/// janela: no primeiro update ela ainda pode não existir, e sem os ajustes o
+/// arrasto implícito do AppKit volta — então quem chama tenta de novo.
+pub(crate) fn install() -> bool {
     let Some(window) = window() else {
-        return;
+        return false;
     };
     let zoom: unsafe extern "C-unwind" fn(*mut AnyObject, Sel, *mut AnyObject) = no_zoom;
     let movable: unsafe extern "C-unwind" fn(*mut AnyObject, Sel) -> i8 = no_move;
     unsafe {
-        // `- performZoom:` é o que o duplo clique na faixa chama.
+        // `- performZoom:` é o que o duplo clique na faixa chama. Isso desliga
+        // o zoom da janela por inteiro, inclusive o Option+clique no semáforo
+        // verde; o clique simples no verde usa `toggleFullScreen:` e continua.
         objc2::ffi::class_replaceMethod(
             window.class() as *const _ as *mut _,
             sel!(performZoom:),
@@ -45,6 +49,7 @@ pub(crate) fn install() {
         }
     }
     align_lights();
+    true
 }
 
 /// Desce os semáforos nativos até a linha dos controles da barra. O AppKit os
@@ -70,13 +75,21 @@ pub(crate) fn align_lights() {
         };
         // O frame vem no espaço da superview, que é a barra de título encostada
         // no topo da janela: o centro a partir do topo sai da altura dela.
-        // Converter o retângulo para a janela mente aqui, porque a view de
-        // conteúdo cobre a janela inteira e o retângulo volta deslocado.
+        // Premissa: a superview dos botões começa no topo da janela (hoje
+        // verdade com `fullsize_content_view`). Converter o retângulo para a
+        // janela mente aqui, porque a view de conteúdo cobre a janela inteira e
+        // o retângulo volta deslocado.
         let Some(superview) = (unsafe { button.superview() }) else {
             continue;
         };
         let frame = button.frame();
-        let from_top = superview.bounds().size.height - frame.mid().y;
+        let superview_height = superview.bounds().size.height;
+        // Em tela cheia e com janela em aba os botões somem e a barra de
+        // título encolhe; medir ali daria um alvo sem sentido.
+        if button.isHidden() || superview_height < frame.size.height {
+            continue;
+        }
+        let from_top = superview_height - frame.mid().y;
         let delta = target - from_top;
         if delta.abs() < 0.5 {
             continue;

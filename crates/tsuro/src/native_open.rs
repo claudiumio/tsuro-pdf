@@ -176,9 +176,10 @@ impl Desktop {
 
     pub(crate) fn update(&mut self, message: Message) -> Task<Message> {
         if !self.menu_applied {
-            self.menu_applied = true;
             self.menu.apply();
-            crate::macos_window::install();
+            // A janela pode ainda não existir neste primeiro update; sem ela
+            // nada é aplicado, então o próximo update tenta de novo.
+            self.menu_applied = crate::macos_window::install();
         }
         // O AppKit refaz o layout da barra de título a cada resize e devolveria
         // os semáforos para a altura de fábrica; realinhar aqui é barato e
@@ -189,6 +190,7 @@ impl Desktop {
         ) {
             crate::macos_window::align_lights();
         }
+        let lang_changed = matches!(message, Message::Session(SessionMessage::SetLang(_)));
         let task = match message {
             Message::Session(SessionMessage::DragWindow) => {
                 crate::macos_window::begin_drag();
@@ -202,6 +204,11 @@ impl Desktop {
                 Task::none()
             }
         };
+        // Os rótulos da barra do sistema são montados na hora: trocar o idioma
+        // com o app aberto pede uma barra nova.
+        if lang_changed {
+            self.menu.rebuild(self.session.lang());
+        }
         if self.session.is_opening() {
             return task;
         }

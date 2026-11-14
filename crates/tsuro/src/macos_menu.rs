@@ -155,11 +155,6 @@ const HELP: &[Item] = &[
         message: || Message::SetDefaultReader,
         separator_before: false,
     },
-    Item {
-        label: ("Sobre o Tsuro PDF", "About Tsuro PDF"),
-        message: || Message::ToggleAbout,
-        separator_before: true,
-    },
 ];
 
 const SECTIONS: &[Section] = &[
@@ -224,6 +219,7 @@ impl TsuroMenuItem {
         title: &NSString,
         message: Message,
         sender: UnboundedSender<Message>,
+        key: &str,
     ) -> Retained<Self> {
         let this = mtm.alloc().set_ivars(ItemIvars {
             message: RefCell::new(Some(message)),
@@ -234,7 +230,7 @@ impl TsuroMenuItem {
                 super(this),
                 initWithTitle: title,
                 action: Some(sel!(tsuroFired:)),
-                keyEquivalent: &*NSString::new()
+                keyEquivalent: &*NSString::from_str(key)
             ]
         }
     }
@@ -243,16 +239,18 @@ impl TsuroMenuItem {
 pub(crate) struct MenuEvents {
     receiver: Arc<Mutex<UnboundedReceiver<Message>>>,
     bar: Option<Retained<NSMenu>>,
+    sender: UnboundedSender<Message>,
 }
 
 impl MenuEvents {
     /// Canal inerte para testes: nenhuma escolha chega, nada toca o AppKit.
     #[cfg(test)]
     pub(crate) fn for_test() -> Self {
-        let (_sender, receiver) = mpsc::unbounded();
+        let (sender, receiver) = mpsc::unbounded();
         Self {
             receiver: Arc::new(Mutex::new(receiver)),
             bar: None,
+            sender,
         }
     }
 
@@ -263,6 +261,17 @@ impl MenuEvents {
             return;
         };
         NSApplication::sharedApplication(mtm).setMainMenu(Some(bar));
+    }
+
+    /// Remonta a barra no idioma atual. Os rótulos saem da tabela na montagem,
+    /// então trocar o idioma com o app aberto deixaria a barra velha.
+    pub(crate) fn rebuild(&mut self, lang: Lang) {
+        let Some(mtm) = MainThreadMarker::new() else {
+            return;
+        };
+        let bar = build_bar(mtm, lang, &self.sender);
+        NSApplication::sharedApplication(mtm).setMainMenu(Some(&bar));
+        self.bar = Some(bar);
     }
 
     pub(crate) fn stream(&self) -> impl Stream<Item = Message> + Send + 'static {
@@ -276,6 +285,21 @@ impl MenuEvents {
 /// Monta a barra do sistema e devolve o canal por onde as escolhas chegam.
 pub(crate) fn install(mtm: MainThreadMarker, lang: Lang) -> MenuEvents {
     let (sender, receiver) = mpsc::unbounded();
+    let bar = build_bar(mtm, lang, &sender);
+    NSApplication::sharedApplication(mtm).setMainMenu(Some(&bar));
+    MenuEvents {
+        receiver: Arc::new(Mutex::new(receiver)),
+        bar: Some(bar),
+        sender,
+    }
+}
+
+/// Monta a barra inteira: menu do app, seções da tabela e o item de Sair.
+fn build_bar(
+    mtm: MainThreadMarker,
+    lang: Lang,
+    sender: &UnboundedSender<Message>,
+) -> Retained<NSMenu> {
     let bar = NSMenu::new(mtm);
     bar.setAutoenablesItems(false);
 
@@ -285,18 +309,19 @@ pub(crate) fn install(mtm: MainThreadMarker, lang: Lang) -> MenuEvents {
         mtm,
         pick(("Sobre o Tsuro PDF", "About Tsuro PDF"), lang),
         Message::ToggleAbout,
-        &sender,
+        sender,
+        "",
     ));
     app_menu.addItem(&NSMenuItem::separatorItem(mtm));
-    let quit = unsafe {
-        NSMenuItem::initWithTitle_action_keyEquivalent(
-            mtm.alloc(),
-            &NSString::from_str(pick(("Sair do Tsuro PDF", "Quit Tsuro PDF"), lang)),
-            Some(sel!(terminate:)),
-            &NSString::from_str("q"),
-        )
-    };
-    app_menu.addItem(&quit);
+    // ⌘Q fala com a sessão, não com o `terminate:` do AppKit: o fechamento
+    // passa por `request_quit` e pergunta antes de descartar marcação suja.
+    app_menu.addItem(&message_item(
+        mtm,
+        pick(("Sair do Tsuro PDF", "Quit Tsuro PDF"), lang),
+        Message::QuitApp,
+        sender,
+        "q",
+    ));
     let app_parent = submenu_item(mtm, "TsuroPDF");
     app_parent.setSubmenu(Some(&app_menu));
     bar.addItem(&app_parent);
@@ -311,19 +336,17 @@ pub(crate) fn install(mtm: MainThreadMarker, lang: Lang) -> MenuEvents {
                 mtm,
                 pick(entry.label, lang),
                 (entry.message)(),
-                &sender,
+                sender,
+                // Sem atalho: as teclas da janela são do iced, que respeita o
+                // modal aberto. O único equivalente é o ⌘Q do Sair.
+                "",
             ));
         }
         let parent = submenu_item(mtm, pick(section.title, lang));
         parent.setSubmenu(Some(&menu));
         bar.addItem(&parent);
     }
-
-    NSApplication::sharedApplication(mtm).setMainMenu(Some(&bar));
-    MenuEvents {
-        receiver: Arc::new(Mutex::new(receiver)),
-        bar: Some(bar),
-    }
+    bar
 }
 
 fn submenu(mtm: MainThreadMarker, title: &str) -> Retained<NSMenu> {
@@ -352,8 +375,15 @@ fn message_item(
     title: &'static str,
     message: Message,
     sender: &UnboundedSender<Message>,
+    key: &str,
 ) -> Retained<NSMenuItem> {
-    let item = TsuroMenuItem::new(mtm, &NSString::from_str(title), message, sender.clone());
+    let item = TsuroMenuItem::new(
+        mtm,
+        &NSString::from_str(title),
+        message,
+        sender.clone(),
+        key,
+    );
     unsafe { item.setTarget(Some(&item)) };
     Retained::into_super(item)
 }
