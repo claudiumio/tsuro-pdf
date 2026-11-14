@@ -417,15 +417,15 @@ pub fn elevation(preset: Elevation) -> ElevationSpec {
 /// redo, save, page-single, continuous, settings.
 #[allow(unused_macros)]
 macro_rules! ori {
-    ($file:literal) => {
-        $crate::kiri::ori_icon($file, 16.0)
+    ($file:literal, $color:expr) => {
+        $crate::kiri::ori_icon($file, 16.0, $color)
     };
 }
 
 #[allow(unused_macros)]
 macro_rules! ori_small {
-    ($file:literal) => {
-        $crate::kiri::ori_icon($file, 15.0)
+    ($file:literal, $color:expr) => {
+        $crate::kiri::ori_icon($file, 15.0, $color)
     };
 }
 
@@ -567,7 +567,15 @@ pub(crate) use ori;
 #[allow(unused_imports)]
 pub(crate) use ori_small;
 
-pub fn ori_icon<Message: 'static>(file: &str, size: f32) -> iced::Element<'static, Message> {
+/// Ícone Ori, tingido pela cor recebida: o SVG é neutro (`currentColor`) e o
+/// iced troca os pixels pela cor, então o mesmo arquivo serve claro e escuro.
+/// A profundidade dos três tons do desenho vive na opacidade, que o tinte
+/// preserva.
+pub fn ori_icon<Message: 'static>(
+    file: &str,
+    size: f32,
+    color: Color,
+) -> iced::Element<'static, Message> {
     let bytes: &'static [u8] = match file {
         "folder-open" => include_bytes!("../assets/icons/ori/folder-open.svg"),
         "search" => include_bytes!("../assets/icons/ori/search.svg"),
@@ -603,6 +611,7 @@ pub fn ori_icon<Message: 'static>(file: &str, size: f32) -> iced::Element<'stati
     svg(svg::Handle::from_memory(bytes))
         .width(Length::Fixed(size))
         .height(Length::Fixed(size))
+        .style(move |_theme, _status| svg::Style { color: Some(color) })
         .into()
 }
 
@@ -1333,6 +1342,36 @@ mod tests {
             (linux.unified_title(), linux.traffic_lights()),
             (false, 0.0)
         );
+    }
+
+    /// Nenhum ícone Ori carrega cor fixa: todos saem em `currentColor` com a
+    /// profundidade na opacidade, porque quem tinge é o token do tema. Um tom
+    /// gravado no arquivo volta a quebrar o contraste num dos temas.
+    #[test]
+    fn ori_icons_take_their_color_from_the_token() {
+        let dir = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("assets/icons/ori");
+        let mut seen = 0;
+        for entry in std::fs::read_dir(&dir).expect("assets/icons/ori") {
+            let path = entry.expect("entrada").path();
+            if path.extension().and_then(|e| e.to_str()) != Some("svg") {
+                continue;
+            }
+            let svg = std::fs::read_to_string(&path).expect("svg legível");
+            assert!(
+                svg.contains("currentColor"),
+                "{} não usa currentColor",
+                path.display()
+            );
+            for tone in ["#5ec9c1", "#3a9d95", "#247870"] {
+                assert!(
+                    !svg.contains(tone),
+                    "{} ainda grava o tom {tone}",
+                    path.display()
+                );
+            }
+            seen += 1;
+        }
+        assert!(seen >= 28, "esperava os 28 ícones, achei {seen}");
     }
 
     /// A barra dá respiro acima e abaixo da linha de controles sem perder a

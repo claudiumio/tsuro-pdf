@@ -137,7 +137,7 @@ Papéis semânticos, não nomes de cor `[HIG]`. Valores do kit `[kit]`.
 | Diálogos | cartão de 440/620 px, scrim 25%/55% | folha raio 26, scrim 25%, botões 28 pílula, primário à direita |
 | Tooltip | 13 px, padding 4/8 | 11/13, 19 de altura, padding 6/3 |
 | Progresso | 2 px | 6 px |
-| Ícones | SVG teal fixo, ~2:1 sobre branco | monocromático por token, com estado claro/escuro |
+| Ícones | SVG em `currentColor`, tingido pelo token `accent` do tema | monocromático por token, com estado claro/escuro |
 | Tema | pref `dark` por padrão | `system` por padrão com override (D-2) |
 | Fonte | fonte padrão do iced | Inter 13 como base |
 | Cores | 18 tokens sem papéis semânticos | papéis semânticos + variantes de contraste |
@@ -189,6 +189,12 @@ separadores de 1×14 e a busca como campo próprio de 24 na zona final da barra
 ⋯). A fase 3 trouxe a linha de menu de 24 e a dica 11/13 de 19 de altura; o menu
 já estava no raio 12, o popover no 20, a folha no 26, o scrim em 0,475 linear
 (que mede 25% na tela) e o progresso em 6.
+
+Os ícones fecharam a dívida da fase 1: os 28 Ori saem em `currentColor` com a
+profundidade dos três tons na opacidade (1, 0,78 e 0,56) e o `kiri::ori_icon`
+tinge com o token do tema, então o mesmo arquivo serve claro e escuro. Antes o
+teal vinha gravado no SVG e o traço mais claro media 1,98:1 sobre branco, que é
+o fundo do tema claro.
 
 A barra unificada (fase 4) não precisou de AppKit: o `iced` 0.13 expõe
 `title_hidden`, `titlebar_transparent` e `fullsize_content_view` no

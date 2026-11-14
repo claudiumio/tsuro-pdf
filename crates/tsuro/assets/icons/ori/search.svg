@@ -1,6 +1,6 @@
 <svg xmlns="http://www.w3.org/2000/svg" width="24" height="24" viewBox="0 0 24 24" fill="none" aria-hidden="true">
   <!-- Ori · search · Tsuro · gen -->
-  <path fill="none" stroke="#5ec9c1" stroke-width="3" d="M6.46 13.54A5 5 0 0 1 13.54 6.46"/>
-  <path fill="none" stroke="#3a9d95" stroke-width="3" d="M13.54 6.46A5 5 0 0 1 6.46 13.54"/>
-  <path fill="none" stroke="#3a9d95" stroke-width="3.4" stroke-linecap="round" d="M13.6 13.6L19.4 19.4"/>
+  <path fill="none" stroke="currentColor" stroke-width="3" d="M6.46 13.54A5 5 0 0 1 13.54 6.46"/>
+  <path fill="none" stroke="currentColor" opacity="0.78" stroke-width="3" d="M13.54 6.46A5 5 0 0 1 6.46 13.54"/>
+  <path fill="none" stroke="currentColor" opacity="0.78" stroke-width="3.4" stroke-linecap="round" d="M13.6 13.6L19.4 19.4"/>
 </svg>

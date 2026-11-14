@@ -1,7 +1,7 @@
 <svg xmlns="http://www.w3.org/2000/svg" width="24" height="24" viewBox="0 0 24 24" fill="none" aria-hidden="true">
   <!-- Ori · print · Tsuro · gen -->
-  <path fill="#5ec9c1" d="M7 3H17V9H7Z"/>
-  <path fill="#3a9d95" d="M4 9H20V17H4Z"/>
-  <path fill="#247870" d="M6 11H18V12.6H6Z"/>
-  <path fill="#5ec9c1" d="M7.5 14H16.5V20.5H7.5Z"/>
+  <path fill="currentColor" d="M7 3H17V9H7Z"/>
+  <path fill="currentColor" opacity="0.78" d="M4 9H20V17H4Z"/>
+  <path fill="currentColor" opacity="0.56" d="M6 11H18V12.6H6Z"/>
+  <path fill="currentColor" d="M7.5 14H16.5V20.5H7.5Z"/>
 </svg>
