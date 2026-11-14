@@ -303,7 +303,8 @@ fn build_bar(
     let bar = NSMenu::new(mtm);
     bar.setAutoenablesItems(false);
 
-    // Menu do app: Sobre e Sair, os dois que a barra do sistema precisa ter.
+    // Menu do app: Sobre, esconder e Sair. Esconder é do AppKit (`hide:` vai
+    // pelo responder chain até o NSApp), então não passa pela sessão.
     let app_menu = submenu(mtm, "TsuroPDF");
     app_menu.addItem(&message_item(
         mtm,
@@ -312,6 +313,34 @@ fn build_bar(
         sender,
         "",
     ));
+    app_menu.addItem(&NSMenuItem::separatorItem(mtm));
+    for (label, key, action) in [
+        (
+            pick(("Esconder o Tsuro PDF", "Hide Tsuro PDF"), lang),
+            "h",
+            sel!(hide:),
+        ),
+        (
+            pick(("Esconder outros", "Hide Others"), lang),
+            "",
+            sel!(hideOtherApplications:),
+        ),
+        (
+            pick(("Mostrar tudo", "Show All"), lang),
+            "",
+            sel!(unhideAllApplications:),
+        ),
+    ] {
+        let item = unsafe {
+            NSMenuItem::initWithTitle_action_keyEquivalent(
+                mtm.alloc(),
+                &NSString::from_str(label),
+                Some(action),
+                &NSString::from_str(key),
+            )
+        };
+        app_menu.addItem(&item);
+    }
     app_menu.addItem(&NSMenuItem::separatorItem(mtm));
     // ⌘Q fala com a sessão, não com o `terminate:` do AppKit: o fechamento
     // passa por `request_quit` e pergunta antes de descartar marcação suja.
