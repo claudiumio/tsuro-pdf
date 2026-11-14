@@ -2,13 +2,15 @@
 
 Data: 2026-11-14. Base: `52960c6` (main). Escopo: decidir **se**, **com que custo** e **em que ordem** o visor nativo (iced + Pdfium) roda num Omarchy de verdade, e o que a distribuição exige além de "o binário abre".
 
+**Decisões tomadas em 2026-11-14.** Motor do port: **alcance do projeto**, Linux como terceiro alvo de segunda classe para usuários que o autor não conhece; o critério é não quebrar, não ser perfeito no Hyprland. Verificação: **só CI Linux**, sem hardware e sem VM. Isso reescreve o plano do §5 e do §6; as seções seguintes ficam como registro do levantamento.
+
 ## 1. Veredito curto
 
-Viável, e mais barato do que a história do `AGENTS.md` sugere. O crate já foi escrito com uma plataforma Linux de primeira classe em dois lugares que costumam doer: as métricas de chrome (`kiri::Metrics::for_platform`, `kiri.rs:467`, com valores próprios para `Platform::Linux`) e o roteamento de atalhos (`Ctrl` em vez de `⌘`, `session.rs:5702`). O que falta é concentrado e nomeável: empacotamento, escolha de decoração de janela sob Hyprland, Pdfium como `libpdfium.so`, spool de impressão via CUPS e o caminho de atualização.
+> 🧠 **From Hindsight memory (Component map):** a página descreve o Tsuro PDF em `crates/tsuro/src/`, com `kiri.rs` carregando tokens e estilos, `session.rs` guardando estado sem nada visual e `view.rs` só chrome. Usei isso para escolher os arquivos a ler primeiro e conferi cada afirmação no código.
 
-O custo real não está no Rust. Está em três decisões de produto que o código ainda não tomou: (a) que decoração de janela o app usa no Wayland, (b) se o app adota o tema do Omarchy, (c) quem atualiza o binário depois de instalado. As três têm resposta barata se escolhidas antes do primeiro PR, e caras se escolhidas durante.
+Viável, e mais barato do que a história do `AGENTS.md` sugere. O crate já foi escrito com uma plataforma Linux de primeira classe em dois lugares que costumam doer: as métricas de chrome (`kiri::Metrics::for_platform`, `kiri.rs:467`, com valores próprios para `Platform::Linux`) e o roteamento de atalhos (`Ctrl` em vez de `⌘`, `session.rs:5702`). O que falta é concentrado e nomeável: empacotamento, Pdfium como `libpdfium.so`, spool de impressão via CUPS e o caminho de atualização.
 
-Recomendo um PR de integração (fase 0 + fase 1 abaixo), medido em um Omarchy real, antes de qualquer compromisso público de suporte a Linux.
+Como o alvo é alcance e não uso próprio, **decoração de janela sob Hyprland e integração de tema saem do escopo**. Não temos como verificar e não há usuário conhecido pedindo. O port vira "compila, passa nos testes e abre um PDF no Linux", provado na CI.
 
 ## 2. O alvo, concretamente
 
@@ -41,7 +43,9 @@ Legenda: **P** portátil como está, **C** precisa de `cfg` novo, **M** macOS-on
 
 Total macOS-only: 968 LOC, todos atrás de `#[cfg(target_os = "macos")]`, zero entrelaçados em `session`/`view`.
 
-## 4. Os cinco riscos concretos
+## 4. Os riscos concretos
+
+Decisões de escopo: **4.1 (decoração) e 4.5 (tema) ficam fora**, por falta de meio de verificação e por não haver usuário conhecido afetado. O que resta **dentro** é 4.2, 4.3 e 4.4.
 
 ### 4.1 Decoração de janela sob Hyprland
 
@@ -83,60 +87,65 @@ O `kiri.rs` tem tokens fixos (Kiri). O Omarchy tem 22 temas em `colors.toml`, ex
 - **respeitar**: ler `~/.local/state/omarchy/current/theme/colors.toml` (ou o caminho que `omarchy-theme-set` deixa) e mapear para `Tokens`. Acopla o app a uma estrutura de arquivo de terceiro.
 - **não respeitar**: Tsuro entra claro/escuro como hoje, e o app fica visualmente alheio ao resto do desktop.
 
-Minha leitura: um leitor de PDF deve respeitar o desktop em que vive, mas o mapeamento só vale a pena depois que o app roda. Fase 5, não fase 1.
+Minha leitura: um leitor de PDF deveria respeitar o desktop em que vive, mas o mapeamento só vale a pena depois que o app roda. Fica **fora de escopo** pela decisão de 2026-11-14, junto com a decoração de janela.
 
 ## 5. Como testar sem hardware Omarchy
 
-Este Mac não tem Docker, Podman, Lima, Multipass nem OrbStack, e o Rust é o do Homebrew (1.95, sem `rustup`, sem alvo cruzado). Toda a validação real acontece fora desta máquina:
+Decidido: **só CI Linux**. Este Mac não tem Docker, Podman, Lima, Multipass, OrbStack, UTM nem QEMU, e tem 8 GB de RAM com 17 GB livres de disco, o que inviabiliza a VM Omarchy ARM (pede ~40 GB).
+
+O canal é o GitHub Actions, que já está ligado neste repositório (`gh api repos/claudiumio/tsuro-pdf/actions/permissions` devolve `true`, e o repo é público, então minutos de runner são gratuitos).
 
 | Nível | O que prova | Como |
 |---|---|---|
-| A. Compilação | O `cfg` Linux compila e os testes passam | GitHub Actions `ubuntu-latest`: `apt install libcups2-dev`, baixar `pdfium-linux-x64.tgz` para o cwd, `cargo test -p tsuro`. O `release.yml` já tem job `ubuntu-latest`, é só reusar o molde. |
-| B. Abre e renderiza | O binário abre um PDF headless | `xvfb-run -a cargo run -p tsuro -- public/samples/guia-folio.pdf` com um `grim`/`import` de screenshot no runner. Prova que o `iced` liga GL sob X11; não prova Wayland. |
-| C. Wayland e Hyprland | A coisa que o usuário vai ver | Máquina Omarchy real (a do usuário, ou uma VM com Hyprland). Nada aqui substitui isto. |
-| D. Impressão | CUPS de verdade | Só em C, com `cupsd`. |
+| A. Compilação e testes | O `cfg` Linux compila e a suíte passa | Job `ubuntu-24.04` no `pr.yml`: `apt install libcups2-dev`, baixar `pdfium-linux-x64.tgz`, copiar `libpdfium.so` para `target/debug/deps` e `target/debug` (mesmo truque do macOS/Windows), `cargo test -p tsuro -- --test-threads=1`. |
+| B. Abre e renderiza | O binário cria janela e desenha um PDF | Compositores headless: `WLR_BACKENDS=headless`, `WLR_LIBINPUT_NO_DEVICES=1`, `WLR_RENDERER=pixman` com sway, ou `Hyprland --headless`. Software rendering: `LIBGL_ALWAYS_SOFTWARE=1`. Screenshot por `grim` e comparação de que a página não saiu em branco. |
+| C. Impressão | CUPS responde | `cupsd` no runner com destino `-o printer-is-shared=false`, ou checagem indireta: o app lista impressoras sem estourar. |
 
-O teste B não é opcional: o `iced` no Linux tem histórico de regressão em resize e DPI sob Wayland (`iced-rs/iced#2750`, `#2404`, `#2687`).
+O `iced_renderer 0.13` já traz fallback para software: `ICED_BACKEND=tiny-skia` escolhe o renderizador por software quando o wgpu falha (`iced_renderer/src/fallback.rs:215-260`) e `LIBGL_ALWAYS_SOFTWARE=1` cobre o wgpu em llvmpipe. Isso é o que torna o nível B possível num runner sem GPU.
+
+Limite honesto: a CI não prova decoração de janela no Hyprland, escala fracionária, nem tinta real em impressora. Prova que o código não quebra no Linux e que um PDF aparece na tela. Para o alvo de alcance, é a prova que importa.
+
+Risco de CI conhecido, em camadas. O `winit 0.30` carrega libs de sistema com `dlopen` por default (`wayland-dlopen`, `x11-dlopen`), então a maior parte não exige headers no build. O que exige pacote de desenvolvimento é `x11-dl`, que usa `pkg-config` para achar `libX11` e `xcb`, e `printers`, que faz `#[link(name = "cups")]`. Isso se descobre no primeiro run, não aqui.
 
 ## 6. Fases
 
-Cada fase termina num estado verificável. Nenhuma fase publica release.
+Cada fase termina num estado verificável **na CI**. Nenhuma fase publica release.
 
 | Fase | Entrega | Verificação | Esforço |
 |---|---|---|---|
-| 0 | Branch de trabalho, `cargo build -p tsuro` no Linux, `cargo test -p tsuro` no Linux | CI Linux verde | 0,5 dia |
-| 1 | `scripts/bundle-linux.sh` gerando `dist/TsuroPDF` + `.desktop` + ícone; `libpdfium.so` baixado do `pdfium-binaries` | Abre PDF em Omarchy real, duplo clique no Nautilus | 1–2 dias |
-| 2 | PKGBUILD + `pacman -U` local; dependência `cups`; `libpdfium.so` empacotado | Instala e desinstala limpo numa máquina | 1 dia |
-| 3 | Caminho CUPS de impressão verificado, diálogo próprio intacto | Imprime em impressora local e em PDF | 0,5–1 dia |
-| 4 | (opcional) titlebar própria com `start_dragging` | Arrastar janela, maximizar, atalhos não roubados | 1–2 dias |
-| 5 | (opcional) mapear `colors.toml` do Omarchy para `kiri::Tokens` | Trocar de tema no Omarchy e ver o Tsuro acompanhar | 1–2 dias |
+| 0 | Job Linux no `pr.yml`: `libcups2-dev`, `libxcb1-dev`, `libxkbcommon-dev`, `libxkbcommon-x11-dev`, `libwayland-dev`, `libx11-xcb-dev`, `libegl1-mesa-dev`, `pdfium-linux-x64.tgz` plantado, `cargo test -p tsuro` | CI Linux verde e `tsuro-sign` verde | 0,5 dia |
+| 1 | Smoke test de janela: sway headless com `WLR_BACKENDS=headless` e `WLR_RENDERER=pixman`, `ICED_BACKEND=tiny-skia`, abrir `public/samples/guia-folio.pdf`, `grim` e checar que a página não está em branco | Job verde provando que o app desenha um PDF no Linux | 0,5 dia |
+| 2 | `scripts/bundle-linux.sh` gerando `dist/TsuroPDF` + `.desktop` + ícone, `libpdfium.so` empacotado; updater escondido no Linux (uma linha de `cfg`) | `cargo run` local não é possível; a prova é o script rodar na CI e o artefato subir como `artifact` | 1 dia |
+| 3 | (opcional) PKGBUILD + `pacman -U` | Só verificável fora da CI, em máquina Arch | 1 dia, bloqueado sem hardware |
 
-Total até um app instalável e imprimindo: **3 a 4 dias de trabalho**. Fases 4 e 5 são produto, não viabilidade.
+Até a fase 2: **2 dias de trabalho**, tudo verificado na CI. As fases 3 em diante exigem uma máquina Linux, que hoje não existe. O PKGBUILD pode ser escrito às cegas, mas nunca saberei se instala.
 
 ### Critérios de kill
 
-Parar e reportar se, na fase 1:
+Parar e reportar se:
 
-- o `iced 0.13` não sustenta resize ou escala fracionária em Hyprland sem workaround feio;
-- o `libdecor` desenha barra sobre a nossa, e desligar a feature `wayland-csd-adwaita` quebra o arrasto da janela;
-- o Pdfium do AUR não carrega no binário empacotado (ABI, `soname`, ou conflito com os pacotes `pdfium-binaries-v8` instalados pelo usuário).
+- a suíte não passa no `ubuntu-24.04` por motivo de plataforma (não de ambiente de teste) e o conserto exigir mudança em `session.rs` ou `view.rs`, que é onde um erro custa caro;
+- o sway headless não sobe no runner e não há caminho alternativo barato;
+- a fase 2 exigir decidir decoração de janela ou tema, que ficaram fora de escopo.
 
 ## 7. Trade-offs das alternativas
 
 | Alternativa | O que ganha | O que custa | Quando faz sentido |
 |---|---|---|---|
-| **Port nativo (recomendado)** | O app é o mesmo código; toda a UI, anotação, assinatura e impressão vêm de graça; zero fork | 3–4 dias + manutenção de PKGBUILD e de um terceiro alvo na CI | O usuário usa Omarchy no dia a dia e quer o leitor dele lá |
-| **Empacotar o build Windows/Wine** | Nada a escrever | Wine para um leitor de PDF é o oposto do "leve e veloz" do mission gate; Pdfium e CUPS no Wine são frágeis | Nunca, para este produto |
-| **Não portar; indicar Okular/Zathura** | Zero custo | Perde o produto no único desktop onde o usuário do projeto já vive | Se o objetivo for "ler PDF no Omarchy hoje" |
+| **Port nativo, verificado só na CI (escolhido)** | O app é o mesmo código; toda a UI, anotação, assinatura e impressão vêm de graça; zero fork | ~2 dias + manutenção de um terceiro alvo na CI; nada de decoração ou tema | Alcance, com honestidade sobre o que não foi provado |
+| **Port completo com máquina Linux** | Verificação real de Hyprland e CUPS | 3–4 dias e o custo de adquirir e manter uma máquina | O autor vive no Omarchy |
+| **Empacotar o build Windows/Wine** | Nada a escrever | Wine para um leitor de PDF é o oposto do "leve e veloz" do mission gate | Nunca, para este produto |
+| **Não portar; indicar Okular/Zathura** | Zero custo | Perde alcance no desktop com mais leitores de PDF nativos | Se o alvo de alcance não compensar 2 dias |
 
-O estudo de instaladores de 2026-09-07 já registrou "Linux é extra" (`docs/installer-updater-research.md`, linha 5). Este estudo não contradiz isso: ele mostra que "extra" custa 3–4 dias e não 3 semanas, porque a abstração de plataforma já foi feita em `kiri` e nas métricas de chrome.
+> 🧠 **From Hindsight memory (Component map):** a página registra "Linux é extra" como registro anterior do projeto. Este estudo não contradiz o registro: mostra que "extra, provado na CI" custa 2 dias, e "extra, provado no hardware" custa 3 a 4 mais a máquina.
 
 ## 8. O que este estudo não faz
 
 - Não escreve código de plataforma.
 - Não abre PR nem issue.
 - Não decide sobre Flatpak/AppImage: a cultura do Omarchy é pacman, e o custo de manter dois canais não se paga.
-- Não mede performance no Omarchy real: isso é fase 1.
+- Não mede decoração de janela, escala fracionária nem impressão real. Sem hardware Linux, essas afirmações seriam chute.
+- Não mede performance no Omarchy real.
 
 ## 9. Fontes lidas nesta sessão
 
@@ -145,4 +154,11 @@ O estudo de instaladores de 2026-09-07 já registrou "Linux é extra" (`docs/ins
 - Omarchy: `omarchy.org/manual/{other-packages,guis,themes}`, `github.com/basecamp/omarchy` (releases v3.4.0–v3.8.3, `docs/theming.md`, `bin/omarchy-theme-set-qt`).
 - AUR: `pdfium-binaries`, `pdfium-binaries-bin`, `pdfium-binaries-v8`, `libpdfium`.
 - Hyprland: `hyprwm/Hyprland#1556`, `hyprwm/Hyprland#15078`.
-- iced/winit: `iced-rs/iced#759`, `#2625`, `#2657`, `#2687`, `#2750`, `#2404`.
+- iced/winit: `iced-rs/iced#759`, `#2625`, `#2657`, `#2687`, `#2750`, `#2404`; `iced_renderer 0.13.0` `src/fallback.rs` (seleção de backend por `ICED_BACKEND`).
+
+## 10. Decisões do autor (2026-11-14)
+
+- Motor: alcance do projeto. Linux como terceiro alvo de segunda classe.
+- Verificação: só CI Linux. Sem hardware, sem VM.
+- Consequência: decoração de janela (§4.1) e tema do Omarchy (§4.5) saem do escopo até existir uma máquina Linux.
+- Ordem acordada: fase 0 e fase 1 primeiro, num PR só, antes de qualquer trabalho de empacotamento.
