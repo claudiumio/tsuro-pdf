@@ -1895,6 +1895,7 @@ impl SettingsPanel {
         if !self.open {
             return Task::none();
         }
+        #[allow(unused_mut)]
         let mut tasks = vec![self.check_update()];
         #[cfg(target_os = "macos")]
         if self.permissions != PermissionsState::Checking {
@@ -5855,7 +5856,8 @@ async fn install_update(tag: String) -> Result<PathBuf, UpdateError> {
 }
 
 /// O que fazer ao fechar a janela: no macOS abrir o `.app` novo; no Windows
-/// rodar o instalador validado e reabrir o `.exe` instalado depois.
+/// rodar o instalador validado e reabrir o `.exe` instalado depois; no Linux,
+/// onde a instalação é do pacote e não do app, nada a fazer.
 fn pending_update(ready: PathBuf) -> update::Pending {
     #[cfg(target_os = "windows")]
     {
@@ -5869,9 +5871,14 @@ fn pending_update(ready: PathBuf) -> update::Pending {
             exe,
         }
     }
-    #[cfg(not(target_os = "windows"))]
+    #[cfg(target_os = "macos")]
     {
         update::Pending::Bundle(ready)
+    }
+    #[cfg(not(any(target_os = "macos", target_os = "windows")))]
+    {
+        let _ = ready;
+        update::Pending::Download
     }
 }
 

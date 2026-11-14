@@ -116,6 +116,7 @@ pub fn release_page(tag: &str) -> String {
 }
 
 /// Soma de `name` num `SHA256SUMS` (`<hex>  <nome>` ou `<hex> *<nome>`).
+#[cfg(any(target_os = "macos", target_os = "windows", test))]
 pub(crate) fn expected_sha256(sums: &str, name: &str) -> Option<String> {
     sums.lines().find_map(|line| {
         let (hex, file) = line.trim().split_once(char::is_whitespace)?;
@@ -278,6 +279,7 @@ fn powershell_args(script: &str) -> Vec<String> {
 }
 
 /// `CFBundleShortVersionString` de um `Info.plist` XML.
+#[cfg(any(target_os = "macos", test))]
 pub(crate) fn plist_version(xml: &str) -> Option<&str> {
     let rest = xml.split_once("<key>CFBundleShortVersionString</key>")?.1;
     let rest = rest.split_once("<string>")?.1;
@@ -447,6 +449,7 @@ fn swap(bundle: &Path, staged: &Path) -> Result<(), UpdateError> {
     Ok(())
 }
 
+#[cfg(any(target_os = "macos", target_os = "windows"))]
 fn curl_text(url: &str) -> Result<String, UpdateError> {
     let out = std::process::Command::new("curl")
         .args(["-fsSL", "--max-time", "30", url])
@@ -458,6 +461,7 @@ fn curl_text(url: &str) -> Result<String, UpdateError> {
     String::from_utf8(out.stdout).map_err(|_| UpdateError::Download)
 }
 
+#[cfg(any(target_os = "macos", target_os = "windows"))]
 fn curl_file(url: &str, dest: &Path) -> Result<(), UpdateError> {
     run(
         "curl",
@@ -486,6 +490,7 @@ fn sha256_of(path: &Path) -> Result<String, UpdateError> {
     }
 }
 
+#[cfg(any(target_os = "macos", target_os = "windows"))]
 fn run(program: &str, args: &[&std::ffi::OsStr], error: UpdateError) -> Result<(), UpdateError> {
     let status = std::process::Command::new(program)
         .args(args)
@@ -566,6 +571,10 @@ pub(crate) enum Pending {
     Bundle(PathBuf),
     #[cfg(target_os = "windows")]
     Installer { installer: PathBuf, exe: PathBuf },
+    /// Plataforma onde o app não se atualiza sozinho (Linux): a instalação é
+    /// do pacote, então nada a fazer ao fechar.
+    #[cfg(not(any(target_os = "macos", target_os = "windows")))]
+    Download,
 }
 
 /// App instalado que reabre quando esta janela fechar (Reiniciar).
@@ -591,6 +600,8 @@ pub(crate) fn relaunch_if_armed() {
         Pending::Bundle(bundle) => relaunch_bundle(&bundle),
         #[cfg(target_os = "windows")]
         Pending::Installer { installer, exe } => spawn_install_helper(installer, exe),
+        #[cfg(not(any(target_os = "macos", target_os = "windows")))]
+        Pending::Download => {}
     }
 }
 
