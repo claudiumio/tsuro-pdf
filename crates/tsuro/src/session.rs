@@ -7701,6 +7701,65 @@ mod tests {
         }
     }
 
+    /// O chrome que a janela desconta do painel segue o estado: o progresso só
+    /// existe com documento na frente e a faixa só quando ela aparece.
+    #[test]
+    fn chrome_height_follows_the_state() {
+        isolated(|| {
+            let Some(ready) = sample_ready() else {
+                return;
+            };
+            let mut session = Session::Ready(Tabs::single(ready));
+            let doc = crate::view::chrome_height(&session);
+            let home_off = crate::view::chrome_height(&Session::empty());
+            assert_eq!(doc - home_off, crate::kiri::PROGRESS_HEIGHT);
+
+            // Com o Início por cima a faixa entra e o progresso sai.
+            if let Session::Ready(tabs) = &mut session {
+                tabs.set_home(Some(EmptyState::default()));
+            }
+            let with_strip = crate::view::chrome_height(&session);
+            assert_eq!(
+                with_strip - doc,
+                crate::view::tab_strip_height() - crate::kiri::PROGRESS_HEIGHT
+            );
+        });
+    }
+
+    /// A faixa de abas tira altura do painel quando aparece, e ela aparece por
+    /// contagem (2+ documentos) ou pelo Início por cima. As duas vias passam
+    /// pelo mesmo ajuste, senão a página fica 26 px mais alta que a moldura.
+    #[test]
+    fn strip_height_follows_the_home_overlay() {
+        isolated(|| {
+            let Some(first) = sample_ready() else {
+                return;
+            };
+            let Some(second) = sample_ready() else {
+                return;
+            };
+            let strip = crate::view::tab_strip_height();
+            let mut tabs = Tabs::single(first);
+            tabs.set_viewport(Viewport {
+                width: 800.0,
+                height: 600.0,
+            });
+            assert!(!tabs.strip_visible(), "um documento só não tem faixa");
+
+            tabs.set_home(Some(EmptyState::default()));
+            assert!(tabs.strip_visible(), "o Início abre a faixa");
+            assert_eq!(tabs.active().viewport.height, 600.0 - strip);
+
+            tabs.set_home(None);
+            assert!(!tabs.strip_visible());
+            assert_eq!(tabs.active().viewport.height, 600.0);
+
+            tabs.push(second);
+            assert!(tabs.strip_visible(), "duas abas têm faixa");
+            assert_eq!(tabs.active().viewport.height, 600.0 - strip);
+        });
+    }
+
     /// Issue #40: uma aba por documento, cada uma com a sua página e o seu
     /// zoom; a última aba fechada fecha a janela, como antes.
     #[test]
