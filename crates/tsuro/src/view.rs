@@ -34,9 +34,24 @@ pub fn bar_height() -> f32 {
     kiri::Metrics::current().bar_height()
 }
 
-/// Altura do chrome Kiri: toolbar + progresso + respiro de 4 em cima e embaixo.
+/// Respiro da moldura acima da barra: zero na barra unificada, onde a faixa
+/// encosta na borda da janela para os controles ficarem na linha dos semáforos.
+fn frame_top() -> f32 {
+    if kiri::Metrics::current().unified_title() {
+        0.0
+    } else {
+        4.0
+    }
+}
+
+/// Altura do chrome Kiri: respiro de cima + toolbar + progresso + respiro de 4.
 pub fn chrome_height() -> f32 {
-    bar_height() + kiri::PROGRESS_HEIGHT + 8.0
+    frame_top() + bar_height() + kiri::PROGRESS_HEIGHT + 4.0
+}
+
+/// Onde o chrome termina e o conteúdo começa: abaixo da barra (e das abas).
+fn chrome_top() -> f32 {
+    frame_top() + bar_height()
 }
 
 /// Altura da faixa de abas (issue #40), reservada só com 2+ documentos.
@@ -118,7 +133,12 @@ pub fn chrome(session: &Session, theme: Theme, lang: Lang) -> Element<'_, Messag
     col = col.push(body);
     let main: Element<'_, Message> = container(
         col.spacing(0)
-            .padding(4)
+            .padding(Padding {
+                top: frame_top(),
+                right: 4.0,
+                bottom: 4.0,
+                left: 4.0,
+            })
             .width(Length::Fill)
             .height(Length::Fill),
     )
@@ -936,9 +956,9 @@ fn overflow_layer(tabs: &Tabs, t: Tokens) -> Element<'_, Message> {
         });
     // Abaixo da barra e do progresso, com a faixa de abas somada quando existe.
     let top = if tabs.len() > 1 {
-        chrome_height() - 4.0 + tab_strip_height()
+        chrome_top() + tab_strip_height()
     } else {
-        chrome_height() - 4.0
+        chrome_top()
     };
     let card = container(overflow_menu(tabs, tabs.settings.theme_pref, t))
         .width(Length::Fill)

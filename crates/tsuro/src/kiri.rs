@@ -506,11 +506,14 @@ impl Metrics {
         }
     }
 
-    /// Faixa de ferramentas: 52 na barra unificada (spec §5), senão o botão
-    /// mais 16 de respiro (28 → 44 no macOS fora dela).
+    /// Faixa de ferramentas: na barra unificada é o botão mais 2 de respiro em
+    /// cima e embaixo (28 → 32), que põe o centro dos controles a 16 px do topo
+    /// — a mesma altura do centro dos semáforos nativos (medido a 15,5), então
+    /// a barra inteira lê como uma linha só. Nas outras plataformas a barra
+    /// nativa fica acima, e a faixa é o botão mais 16.
     pub fn bar_height(self) -> f32 {
         if self.unified_title() {
-            52.0
+            self.button + 4.0
         } else {
             self.button + 16.0
         }
@@ -1294,7 +1297,7 @@ mod tests {
     fn platform_metrics_follow_the_spec_table() {
         let mac = Metrics::for_platform(Platform::MacOs);
         assert_eq!((mac.control, mac.button), (24.0, 28.0));
-        assert_eq!((mac.bar_height(), mac.tab_strip_height()), (52.0, 26.0));
+        assert_eq!((mac.bar_height(), mac.tab_strip_height()), (32.0, 26.0));
         assert_eq!((mac.icon(), mac.traffic_lights()), (16.0, 78.0));
         assert!(mac.unified_title());
 
@@ -1310,6 +1313,20 @@ mod tests {
             (linux.unified_title(), linux.traffic_lights()),
             (false, 0.0)
         );
+    }
+
+    /// A linha de controles fica na altura dos semáforos nativos: o centro da
+    /// faixa em 16 casa com o centro medido do sistema (15,5), e sobram 2 px de
+    /// respiro em cima e embaixo, que é a faixa onde a janela arrasta.
+    #[test]
+    fn unified_bar_puts_the_controls_on_the_traffic_lights_line() {
+        let mac = Metrics::for_platform(Platform::MacOs);
+        let center = mac.bar_height() / 2.0;
+        assert!(
+            (center - 15.5).abs() <= 0.5,
+            "centro dos controles em {center} não casa com os semáforos em 15,5"
+        );
+        assert_eq!((mac.bar_height() - mac.button) / 2.0, 2.0);
     }
 
     /// O controle nunca é menor que o ícone: o padding do segmento sai da
