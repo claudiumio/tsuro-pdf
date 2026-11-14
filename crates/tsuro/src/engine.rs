@@ -12,7 +12,7 @@ use crate::page::{
 use crate::session::{AnnotKind, Annotation};
 
 const PDFIUM_MISSING: &str =
-    "Não foi possível carregar a biblioteca Pdfium (.dylib/.dll). Coloque-a na pasta do aplicativo ou instale-a no sistema.";
+    "Não foi possível carregar a biblioteca Pdfium (.dylib/.dll/.so). Coloque-a na pasta do aplicativo ou instale-a no sistema.";
 const WORKER_GONE: &str = "motor PDF encerrado";
 const DOC_GONE: &str = "documento fechado";
 const RENDER_TOO_LARGE: &str = "página grande demais para renderizar nesta escala";
