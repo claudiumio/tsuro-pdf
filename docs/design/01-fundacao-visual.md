@@ -150,7 +150,7 @@ Papéis semânticos, não nomes de cor `[HIG]`. Valores do kit `[kit]`.
 | SF Symbols | licença só para apps em sistemas Apple | Ori, desenhados por nós, monocromáticos |
 | Liquid Glass (refração, blur real) | exige superfície nativa | superfície chapada com raio, sombra e hairline equivalentes |
 | Vibração atrás da janela | iced não amostra o desktop | scrim sólido com alfa |
-| Barra de menu nativa | iced não desenha | `muda` (já no lockfile) ou AppKit via objc2 (D-3) |
+| Barra de menu nativa | iced não desenha | AppKit direto via `objc2-app-kit` (D-3 revisada em 13/11/2026) |
 | Painel de impressão do sistema | idem | nosso cartão, com os mesmos campos |
 | VoiceOver | iced não expõe árvore de acessibilidade | pendência separada; não prometer |
 
@@ -194,9 +194,12 @@ A barra unificada (fase 4) não precisou de AppKit: o `iced` 0.13 expõe
 `title_hidden`, `titlebar_transparent` e `fullsize_content_view` no
 `PlatformSpecific` do macOS. Com eles a faixa cresce para 52 e reserva 78 à
 esquerda para os semáforos nativos (`Metrics::unified_title` e
-`Metrics::traffic_lights`). Falta da fase 4: a barra de menu nativa via `muda`
-(0.19.3 já no lockfile) e o comportamento de título nas plataformas Windows e
-Linux, onde a barra nativa continua acima da nossa faixa.
+`Metrics::traffic_lights`). A barra de menu do macOS foi feita em AppKit
+(`objc2-app-kit`), sem o `muda`: os itens são `NSMenuItem` que enviam a sua
+`Message` de volta para a sessão, e o iced não participa. No Windows e no Linux
+o menu continua sendo a lista do ⋯ desenhada no iced. Falta da fase 4: o
+comportamento de título nas plataformas Windows e Linux, onde a barra nativa
+continua acima da nossa faixa.
 
 ## 10. Decisões para o Junior
 

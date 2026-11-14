@@ -145,26 +145,43 @@ impl NativeEvents {
 pub(crate) enum Message {
     Session(SessionMessage),
     Documents(Vec<PathBuf>),
+    /// Escolha feita na barra de menu do sistema (macOS).
+    Menu(SessionMessage),
 }
 
 pub(crate) struct Desktop {
+    /// O iced instala a barra de menu dele ao subir o laço de eventos, então a
+    /// nossa é reaplicada uma vez, no primeiro update.
+    menu_applied: bool,
     session: Session,
     events: NativeEvents,
+    menu: crate::macos_menu::MenuEvents,
     pending: VecDeque<PathBuf>,
 }
 
 impl Desktop {
-    pub(crate) fn new(session: Session, events: NativeEvents) -> Self {
+    pub(crate) fn new(
+        session: Session,
+        events: NativeEvents,
+        menu: crate::macos_menu::MenuEvents,
+    ) -> Self {
         Self {
+            menu_applied: false,
             session,
             events,
+            menu,
             pending: VecDeque::new(),
         }
     }
 
     pub(crate) fn update(&mut self, message: Message) -> Task<Message> {
+        if !self.menu_applied {
+            self.menu_applied = true;
+            self.menu.apply();
+        }
         let task = match message {
             Message::Session(message) => self.session.update(message).map(Message::Session),
+            Message::Menu(message) => self.session.update(message).map(Message::Session),
             Message::Documents(paths) => {
                 self.pending
                     .extend(paths.into_iter().filter(|path| is_pdf(path)));
@@ -194,6 +211,7 @@ impl Desktop {
             self.session.subscription().map(Message::Session),
             Subscription::run_with_id("tsuro-native-documents", self.events.stream())
                 .map(Message::Documents),
+            Subscription::run_with_id("tsuro-macos-menu", self.menu.stream()).map(Message::Menu),
         ])
     }
 }
@@ -284,7 +302,11 @@ mod tests {
 
     #[test]
     fn cold_native_batch_starts_only_the_first_pdf() {
-        let mut desktop = Desktop::new(Session::empty(), events());
+        let mut desktop = Desktop::new(
+            Session::empty(),
+            events(),
+            crate::macos_menu::MenuEvents::for_test(),
+        );
         assert!(!desktop.session.is_opening());
         let _ = desktop.update(Message::Documents(vec![
             PathBuf::from("/tmp/first.pdf"),
@@ -303,7 +325,11 @@ mod tests {
     #[test]
     fn native_batches_do_not_replace_an_inflight_open() {
         let initial = PathBuf::from("/tmp/initial.pdf");
-        let mut desktop = Desktop::new(Session::open_path(initial.clone()), events());
+        let mut desktop = Desktop::new(
+            Session::open_path(initial.clone()),
+            events(),
+            crate::macos_menu::MenuEvents::for_test(),
+        );
         let _ = desktop.update(Message::Documents(vec![
             PathBuf::from("/tmp/first.pdf"),
             PathBuf::from("/tmp/second.pdf"),
@@ -327,7 +353,11 @@ mod tests {
     #[test]
     fn failed_open_advances_one_queued_pdf_without_losing_the_next() {
         let initial = PathBuf::from("/tmp/missing.pdf");
-        let mut desktop = Desktop::new(Session::open_path(initial.clone()), events());
+        let mut desktop = Desktop::new(
+            Session::open_path(initial.clone()),
+            events(),
+            crate::macos_menu::MenuEvents::for_test(),
+        );
         let _ = desktop.update(Message::Documents(vec![
             PathBuf::from("/tmp/first.pdf"),
             PathBuf::from("/tmp/not-a-pdf.txt"),
