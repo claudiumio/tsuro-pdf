@@ -3,6 +3,10 @@ name: Release
 on:
   push:
     tags: ["v*"]
+    # Toda merge na main passa pelo gate: só publica se a versão do Cargo.toml
+    # ainda não tem release. Sem isso a release dependia de alguém lembrar de
+    # disparar o workflow à mão (foi o que atrasou a v0.6.0).
+    branches: [main]
   workflow_dispatch:
     inputs:
       tag:
@@ -13,8 +17,67 @@ on:
 permissions:
   contents: write
 
+# Uma release por vez: o gate decide, mas só o publish cria a tag.
+concurrency:
+  group: release
+  cancel-in-progress: false
+
 jobs:
+  gate:
+    runs-on: ubuntu-latest
+    outputs:
+      tag: ${{ steps.resolve.outputs.tag }}
+      build: ${{ steps.resolve.outputs.build }}
+      publish: ${{ steps.resolve.outputs.publish }}
+    steps:
+      - uses: actions/checkout@v4
+      - id: resolve
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+          INPUT_TAG: ${{ inputs.tag }}
+          EVENT: ${{ github.event_name }}
+          REF_TYPE: ${{ github.ref_type }}
+          REF_NAME: ${{ github.ref_name }}
+        run: |
+          VERSION="$(sed -n 's/^version = "\(.*\)"/\1/p' Cargo.toml | head -n 1)"
+          test -n "$VERSION"
+
+          # A tag vem do que disparou; se ninguém nomeou, vem da versão.
+          NAMED=false
+          if [ -n "$INPUT_TAG" ]; then
+            TAG="$INPUT_TAG"; NAMED=true
+          elif [ "$REF_TYPE" = "tag" ]; then
+            TAG="$REF_NAME"; NAMED=true
+          else
+            TAG="v$VERSION"
+          fi
+          # Quem nomeia a tag responde pela versão: o Cargo.toml é a verdade.
+          if [ "$NAMED" = true ]; then
+            test "$TAG" = "v$VERSION"
+          fi
+
+          BUILD=true
+          if [ "$EVENT" = "workflow_dispatch" ] && [ -z "$INPUT_TAG" ]; then
+            # Contrato do input: disparo manual sem tag só gera os instaladores.
+            PUBLISH=false
+          elif gh release view "$TAG" >/dev/null 2>&1; then
+            BUILD=false
+            PUBLISH=false
+            echo "::notice::$TAG já está publicada; nada a fazer."
+          else
+            PUBLISH=true
+          fi
+
+          {
+            echo "tag=$TAG"
+            echo "build=$BUILD"
+            echo "publish=$PUBLISH"
+          } >> "$GITHUB_OUTPUT"
+
   macos:
+    needs: gate
+    if: needs.gate.outputs.build == 'true'
     runs-on: macos-15
     steps:
       - uses: actions/checkout@v4
@@ -54,6 +117,8 @@ jobs:
           if-no-files-found: error
 
   windows:
+    needs: gate
+    if: needs.gate.outputs.build == 'true'
     runs-on: windows-latest
     steps:
       - uses: actions/checkout@v4
@@ -90,9 +155,8 @@ jobs:
           if-no-files-found: error
 
   publish:
-    needs: [macos, windows]
-    # Tag enviada, ou disparo manual com `tag` (o próprio job cria a tag).
-    if: startsWith(github.ref, 'refs/tags/v') || inputs.tag != ''
+    needs: [gate, macos, windows]
+    if: needs.gate.outputs.publish == 'true'
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
@@ -102,14 +166,10 @@ jobs:
       - name: Publicar GitHub Release
         env:
           GH_TOKEN: ${{ github.token }}
-          INPUT_TAG: ${{ inputs.tag }}
+          TAG: ${{ needs.gate.outputs.tag }}
         run: |
-          export TAG="${INPUT_TAG:-$GITHUB_REF_NAME}"
-          if [ -n "$INPUT_TAG" ]; then
-            # Disparo manual: a tag tem de bater com a versão do Cargo.toml e
-            # nasce no commit que acabou de ser compilado e testado.
-            VERSION="$(sed -n 's/^version = "\(.*\)"/\1/p' Cargo.toml | head -n 1)"
-            test "$TAG" = "v$VERSION"
+          # A tag nasce no commit que acabou de ser compilado e testado.
+          if ! gh api "repos/$GITHUB_REPOSITORY/git/refs/tags/$TAG" >/dev/null 2>&1; then
             gh api "repos/$GITHUB_REPOSITORY/git/refs" -f "ref=refs/tags/$TAG" -f "sha=$GITHUB_SHA"
           fi
           mkdir -p out
