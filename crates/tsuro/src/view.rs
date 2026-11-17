@@ -3034,6 +3034,7 @@ fn tab_strip(tabs: &Tabs, t: Tokens) -> Element<'_, Message> {
         strip = strip.push(
             container(row![name, close].align_y(Alignment::Center))
                 .padding(1)
+                .height(Length::Fixed(kiri::TAB_PILL_HEIGHT))
                 .style(kiri::tab_pill_style(t, active)),
         );
     }
@@ -3041,6 +3042,7 @@ fn tab_strip(tabs: &Tabs, t: Tokens) -> Element<'_, Message> {
         .width(Length::Fill)
         .height(Length::Fixed(tab_strip_height()))
         .padding(Padding::from([kiri::TAB_STRIP_AIR, 8.0]))
+        .align_y(Alignment::Center)
         .style(move |_| container::Style {
             background: Some(Background::Color(t.chrome)),
             ..container::Style::default()
