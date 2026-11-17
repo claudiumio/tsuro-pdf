@@ -274,11 +274,12 @@ impl Zoom {
     }
 }
 
-/// Modo de página (issue #26; Espelhadas fora do MVP).
+/// Modo de página (issue #26; Espelhadas fora do MVP). A rolagem contínua é o
+/// padrão; uma posição salva em `Single` continua voltando em página única.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub enum ViewMode {
-    #[default]
     Single,
+    #[default]
     Continuous,
 }
 
@@ -8358,25 +8359,25 @@ mod tests {
         let Some(ready) = uniform_ready() else {
             return;
         };
-        assert_eq!(ready.view_mode, ViewMode::Single);
+        assert_eq!(ready.view_mode, ViewMode::Continuous, "contínuo é o padrão");
         let target = 1.min(ready.page_count() - 1);
         let mut session = Session::Ready(Tabs::single(ready));
         apply(
             &mut session,
             Message::Nav(NavCmd::GoTo(PageNo::from_index(target))),
         );
-        apply(&mut session, Message::SetViewMode(ViewMode::Continuous));
+        apply(&mut session, Message::SetViewMode(ViewMode::Single));
         match &session {
             Session::Ready(ready) => {
-                assert_eq!(ready.view_mode, ViewMode::Continuous);
+                assert_eq!(ready.view_mode, ViewMode::Single);
                 assert_eq!(ready.visible.index(), target);
                 assert!(matches!(ready.zoom, Zoom::Width));
             }
             _ => unreachable!(),
         }
-        apply(&mut session, Message::SetViewMode(ViewMode::Single));
+        apply(&mut session, Message::SetViewMode(ViewMode::Continuous));
         match &session {
-            Session::Ready(ready) => assert_eq!(ready.view_mode, ViewMode::Single),
+            Session::Ready(ready) => assert_eq!(ready.view_mode, ViewMode::Continuous),
             _ => unreachable!(),
         }
     }
