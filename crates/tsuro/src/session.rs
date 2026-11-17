@@ -64,11 +64,14 @@ pub(crate) const PAGES_PANEL_W: f32 = 256.0;
 pub(crate) const SIG_PANEL_W: f32 = 220.0;
 const PANES_GAP: f32 = 12.0;
 const CHROME_PAD: f32 = 8.0;
-/// Célula do contínuo replica o padding de `page_pane` (view.rs).
+/// Célula do contínuo replica o padding de `page_pane` (view.rs). Os dois
+/// primeiros só valem nas pontas da coluna: no meio, o vão é `DOC_GAP`.
 pub(crate) const DOC_PAD_TOP: f32 = 28.0;
 pub(crate) const DOC_PAD_BOTTOM: f32 = 56.0;
 pub(crate) const DOC_PAD_X: f32 = 24.0;
-pub(crate) const DOC_GAP: f32 = 16.0;
+/// Vão entre uma folha e a seguinte no contínuo. Empilhar os pads do palco em
+/// cada célula somava 100 px de buraco; aqui ele é um número só.
+pub(crate) const DOC_GAP: f32 = 40.0;
 
 /// Intervalo do tique da tela de abertura (issue #41): 12 passos dos 90 ms
 /// fecham o ciclo de ~1,1 s da barra indeterminada (`view::LOADING_STEPS`).
@@ -6216,23 +6219,47 @@ impl Ready {
         [sw, sw * rotated.height.max(1.0) / rotated.width.max(1.0)]
     }
 
-    /// Altura da célula (padding + folha proporcional à mídia girada).
-    pub(crate) fn doc_cell_height(&self, page: PageNo, sheet_width: f32) -> f32 {
-        let media = self.rotated_media(page);
-        DOC_PAD_TOP + sheet_width * media.height.max(1.0) / media.width.max(1.0) + DOC_PAD_BOTTOM
+    /// Respiro acima da célula: a primeira página leva o pad do palco, as
+    /// seguintes levam o vão até a folha anterior.
+    pub(crate) fn doc_cell_pad_top(&self, page: PageNo) -> f32 {
+        if page.index() == 0 {
+            DOC_PAD_TOP
+        } else {
+            DOC_GAP
+        }
     }
 
-    /// Offset Y do topo da página na coluna contínua.
+    /// Respiro abaixo da célula: só a última página fecha o palco com o pad
+    /// de baixo; entre páginas ele já veio do topo da seguinte.
+    pub(crate) fn doc_cell_pad_bottom(&self, page: PageNo) -> f32 {
+        if page.index() + 1 >= self.pages.total {
+            DOC_PAD_BOTTOM
+        } else {
+            0.0
+        }
+    }
+
+    /// Altura da célula (respiro + folha proporcional à mídia girada).
+    pub(crate) fn doc_cell_height(&self, page: PageNo, sheet_width: f32) -> f32 {
+        let media = self.rotated_media(page);
+        self.doc_cell_pad_top(page)
+            + sheet_width * media.height.max(1.0) / media.width.max(1.0)
+            + self.doc_cell_pad_bottom(page)
+    }
+
+    /// Offset Y do topo da célula na coluna contínua (inclui o respiro de
+    /// cima dela).
     pub(crate) fn page_offset(&self, page: PageNo) -> f32 {
         let mut y = 0.0;
         for i in 0..page.index().min(self.pages.total) {
             let p = PageNo::from_index(i);
-            y += self.doc_cell_height(p, self.sheet_width(p)) + DOC_GAP;
+            y += self.doc_cell_height(p, self.sheet_width(p));
         }
         y
     }
 
-    /// Primeira página cujo intervalo contém `y` (clamp no fim).
+    /// Primeira página cujo intervalo contém `y` (clamp no fim). O vão antes
+    /// de uma folha já pertence à célula dela.
     pub(crate) fn page_at_offset(&self, y: f32) -> PageNo {
         if self.pages.total == 0 {
             return PageNo::first();
@@ -6244,7 +6271,6 @@ impl Ready {
             if y < top {
                 return PageNo::from_index(i);
             }
-            top += DOC_GAP;
         }
         PageNo::from_index(self.pages.total - 1)
     }
@@ -6999,9 +7025,9 @@ impl Ready {
         let stage = self.stage_size(page);
         let left = (stage[0] - sw) / 2.0;
         let top = match self.view_mode {
-            ViewMode::Continuous => self.page_offset(page),
-            ViewMode::Single => 0.0,
-        } + DOC_PAD_TOP;
+            ViewMode::Continuous => self.page_offset(page) + self.doc_cell_pad_top(page),
+            ViewMode::Single => DOC_PAD_TOP,
+        };
         Some([left + x0, top + y0, x1 - x0, y1 - y0])
     }
 
@@ -7745,7 +7771,8 @@ mod tests {
 
     /// A faixa de abas tira altura do painel quando aparece, e ela aparece por
     /// contagem (2+ documentos) ou pelo Início por cima. As duas vias passam
-    /// pelo mesmo ajuste, senão a página fica 26 px mais alta que a moldura.
+    /// pelo mesmo ajuste, senão a página fica com a altura da faixa a mais
+    /// que a moldura.
     #[test]
     fn strip_height_follows_the_home_overlay() {
         isolated(|| {
@@ -8199,14 +8226,28 @@ mod tests {
             return;
         };
         assert_eq!(ready.doc_content_width(), 744.0);
-        let cell = DOC_PAD_TOP + 744.0 * 2.0 + DOC_PAD_BOTTOM;
+        let sheet = 744.0 * 2.0;
         let n = ready.page_count();
         assert_eq!(ready.page_offset(PageNo::first()), 0.0);
         if n > 1 {
-            assert_eq!(ready.page_offset(PageNo::from_index(1)), cell + DOC_GAP);
+            let first = PageNo::first();
+            let second = PageNo::from_index(1);
+            assert_eq!(ready.doc_cell_pad_top(first), DOC_PAD_TOP);
+            assert_eq!(ready.doc_cell_pad_top(second), DOC_GAP);
+            assert_eq!(ready.doc_cell_pad_bottom(first), 0.0);
+            // O vão entre as folhas é `DOC_GAP`, não a soma dos pads do palco.
+            assert_eq!(ready.page_offset(second), DOC_PAD_TOP + sheet);
+            assert_eq!(
+                ready.page_offset(second) + ready.doc_cell_pad_top(second),
+                DOC_PAD_TOP + sheet + DOC_GAP
+            );
         }
         let last = PageNo::from_index(n - 1);
-        assert_eq!(ready.doc_total_height(), ready.page_offset(last) + cell);
+        assert_eq!(ready.doc_cell_pad_bottom(last), DOC_PAD_BOTTOM);
+        assert_eq!(
+            ready.doc_total_height(),
+            ready.page_offset(last) + ready.doc_cell_height(last, ready.sheet_width(last))
+        );
     }
 
     /// Página sem `PageData` não pode medir 1×1 pt: no ajuste à largura isso
@@ -8241,11 +8282,16 @@ mod tests {
         assert!((got.width - known.width).abs() < 0.01);
         assert!((got.height - known.height).abs() < 0.01);
 
-        let h0 = ready.doc_cell_height(PageNo::first(), ready.sheet_width(PageNo::first()));
-        let ht = ready.doc_cell_height(tail, ready.sheet_width(tail));
+        let sheet_h = |page: PageNo| {
+            ready.doc_cell_height(page, ready.sheet_width(page))
+                - ready.doc_cell_pad_top(page)
+                - ready.doc_cell_pad_bottom(page)
+        };
+        let h0 = sheet_h(PageNo::first());
+        let ht = sheet_h(tail);
         assert!((h0 - ht).abs() < 0.01);
 
-        let square = DOC_PAD_TOP + ready.doc_content_width() + DOC_PAD_BOTTOM;
+        let square = ready.doc_content_width();
         let aspect = known.height / known.width;
         if (aspect - 1.0).abs() > 0.05 {
             assert!(
@@ -8254,9 +8300,19 @@ mod tests {
             );
         }
 
-        let step = h0 + DOC_GAP;
-        assert_eq!(ready.page_offset(tail), (total - 1) as f32 * step);
-        assert_eq!(ready.page_at_offset(2.0 * step + 1.0).index(), 2);
+        let second = PageNo::from_index(1);
+        let step = DOC_GAP + ht;
+        assert_eq!(ready.page_offset(second), DOC_PAD_TOP + h0);
+        assert_eq!(
+            ready.page_offset(tail),
+            ready.page_offset(second) + (total as f32 - 2.0) * step
+        );
+        assert_eq!(
+            ready
+                .page_at_offset(ready.page_offset(PageNo::from_index(2)) + 1.0)
+                .index(),
+            2
+        );
     }
 
     /// A janela montada pede `PageData` além de visível+1. Sem isso o bitmap
@@ -8342,11 +8398,11 @@ mod tests {
         let Some(ready) = uniform_ready() else {
             return;
         };
-        let cell = DOC_PAD_TOP + 744.0 * 2.0 + DOC_PAD_BOTTOM;
+        let cell = DOC_PAD_TOP + 744.0 * 2.0;
         let last = ready.page_count() - 1;
         assert_eq!(ready.page_at_offset(0.0).index(), 0);
         assert_eq!(ready.page_at_offset(cell - 1.0).index(), 0);
-        // No gap entre células, a próxima página já responde.
+        // No vão entre células, a próxima página já responde.
         let gap_page = if last > 0 { 1 } else { 0 };
         assert_eq!(ready.page_at_offset(cell).index(), gap_page);
         assert_eq!(ready.page_at_offset(-5.0).index(), 0);
@@ -12599,6 +12655,32 @@ mod tests {
         assert_eq!(ready.doc_scroll_y, 30.0, "já visível: a rolagem fica");
         assert_eq!(ready.visible, PageNo::first());
         assert!(!ready.can_history_back(), "mesma página: sem origem nova");
+    }
+
+    /// Trecho na página 1: o topo do retângulo é o offset da célula mais o vão
+    /// entre folhas, não o pad do palco da primeira. Um `DOC_PAD_TOP` fixo no
+    /// meio da coluna erra a sobreposição em `DOC_GAP - DOC_PAD_TOP`.
+    #[test]
+    fn annotation_rect_on_later_page_uses_the_between_page_gap() {
+        let Some(mut ready) = annotated_ready() else {
+            return;
+        };
+        set_letter_media(&mut ready);
+        ready.view_mode = ViewMode::Continuous;
+        ready.viewport = Viewport {
+            width: 900.0,
+            height: 600.0,
+        };
+        let page = PageNo::from_index(1);
+        let quad = Quad::from_rect(72.0, 20.0, 200.0, 36.0);
+        ready.annotations = vec![mark_at(44, 1, quad)];
+        let rect = ready
+            .annotation_stage_rect(&ready.annotations[0])
+            .expect("quads do trecho");
+        let [sw, sh] = ready.sheet_size(page);
+        let [_, y0, _, _] = display_rect(quad, ready.media(page), ready.view_rotation, sw, sh);
+        assert_eq!(rect[1], ready.page_offset(page) + DOC_GAP + y0);
+        assert_ne!(rect[1], ready.page_offset(page) + DOC_PAD_TOP + y0);
     }
 
     /// Folha mais larga que a janela (zoom 200%): o trecho à direita entra na

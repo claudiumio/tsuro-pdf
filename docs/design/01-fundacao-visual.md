@@ -79,7 +79,7 @@ Papéis semânticos, não nomes de cor `[HIG]`. Valores do kit `[kit]`.
 - Todo item da barra também existe no menu `[HIG]`.
 
 ### Abas de documento
-- Botão de aba do kit: **44×26, raio 9**, fundo translúcido e desfoque `[kit]`. Nossa tira hoje tem 30 px e pílula — aproximar de 26 + raio 9 + gap 4.
+- Botão de aba do kit: **44×26, raio 9**, fundo translúcido e desfoque `[kit]`. Nossa pílula segue 26; a tira tem **34** para dar 4 de respiro em cima e embaixo — na tira de 26 a pílula cobria as bordas e parecia cortada.
 - Aba ativa com peso 600 e fundo `fill_1`; inativa sem fundo, texto `label_2`.
 
 ### Sidebar / painel lateral
@@ -129,7 +129,7 @@ Papéis semânticos, não nomes de cor `[HIG]`. Valores do kit `[kit]`.
 | Superfície | Hoje | Alvo |
 |---|---|---|
 | Barra superior | 36 px abaixo do título nativo, tudo num nível | 46 px unificados no macOS, tudo numa linha só com os semáforos, zonas início/centro/fim, ícones 16, botões 28 |
-| Tira de abas | 30 px, pílula | 26 px, raio 9, ativa com peso 600 |
+| Tira de abas | 30 px, pílula | 34 px com pílula de 26 e 4 de respiro, raio 9, ativa com peso 600 |
 | Painel lateral | cartão 216/220 com hairline, linha de 41/62 | sidebar 256, linha 32, raio 8, cabeçalho 11/14 w700, de ponta a ponta |
 | Segmentado Páginas/Sumário/Marcações | largura fixa por texto | 24 px, raio 6, larguras por conteúdo |
 | Busca | campo próprio, sem anel de foco | 24 px, pílula, anel de acento, limpar |
@@ -174,7 +174,7 @@ Regra: a estrutura (zonas, hierarquia, escala relativa) é uma só; mudam fonte,
 ## 9. Fases
 
 1. **Tokens.** Reescrever `kiri.rs` com papéis semânticos, escala tipográfica, espaçamento, raios e sombras; embarcar Inter; tema `system`. Sem mudança de layout. Aceite: nenhuma cor/tamanho literal fora de `kiri.rs` nas superfícies já migradas.
-2. **Chrome.** Barra unificada (macOS), zonas, botões 28, tira de abas 26/raio 9, sidebar 256 com linha 32 e raio 8, segmentado 24, busca pílula com anel.
+2. **Chrome.** Barra unificada (macOS), zonas, botões 28, tira de abas 34 com pílula 26/raio 9, sidebar 256 com linha 32 e raio 8, segmentado 24, busca pílula com anel.
 3. **Sobreposições.** Menu raio 12/item 24, popover raio 20, diálogos como folha raio 26 com scrim 25%, tooltip 19, progresso 6.
 4. **Plataforma.** Conjuntos Windows/Linux, barra de menu nativa no macOS, glifos de atalho quando o backend permitir.
 
