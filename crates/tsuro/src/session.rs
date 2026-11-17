@@ -12657,6 +12657,32 @@ mod tests {
         assert!(!ready.can_history_back(), "mesma página: sem origem nova");
     }
 
+    /// Trecho na página 1: o topo do retângulo é o offset da célula mais o vão
+    /// entre folhas, não o pad do palco da primeira. Um `DOC_PAD_TOP` fixo no
+    /// meio da coluna erra a sobreposição em `DOC_GAP - DOC_PAD_TOP`.
+    #[test]
+    fn annotation_rect_on_later_page_uses_the_between_page_gap() {
+        let Some(mut ready) = annotated_ready() else {
+            return;
+        };
+        set_letter_media(&mut ready);
+        ready.view_mode = ViewMode::Continuous;
+        ready.viewport = Viewport {
+            width: 900.0,
+            height: 600.0,
+        };
+        let page = PageNo::from_index(1);
+        let quad = Quad::from_rect(72.0, 20.0, 200.0, 36.0);
+        ready.annotations = vec![mark_at(44, 1, quad)];
+        let rect = ready
+            .annotation_stage_rect(&ready.annotations[0])
+            .expect("quads do trecho");
+        let [sw, sh] = ready.sheet_size(page);
+        let [_, y0, _, _] = display_rect(quad, ready.media(page), ready.view_rotation, sw, sh);
+        assert_eq!(rect[1], ready.page_offset(page) + DOC_GAP + y0);
+        assert_ne!(rect[1], ready.page_offset(page) + DOC_PAD_TOP + y0);
+    }
+
     /// Folha mais larga que a janela (zoom 200%): o trecho à direita entra na
     /// horizontal, e a rolagem horizontal fica registrada.
     #[test]

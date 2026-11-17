@@ -2991,7 +2991,8 @@ fn disk_stale_row(ready: &Ready, t: Tokens) -> Element<'static, Message> {
     .into()
 }
 
-/// Faixa de abas sob a toolbar (issue #40, spec §5): altura 26, raio 9, gap 4.
+/// Faixa de abas sob a toolbar (issue #40, spec §5): pílula de 26, raio 9,
+/// gap 4 e `TAB_STRIP_AIR` de respiro em cima e embaixo (faixa de 34 no macOS).
 /// A aba ativa leva `fill_1` e peso 600; as demais são transparentes com texto
 /// `label_2`. Só existe com 2+ abas ou com o Início por cima delas.
 fn tab_strip(tabs: &Tabs, t: Tokens) -> Element<'_, Message> {

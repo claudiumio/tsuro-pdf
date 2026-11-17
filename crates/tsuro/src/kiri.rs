@@ -1336,8 +1336,9 @@ mod tests {
         let mac = Metrics::for_platform(Platform::MacOs);
         assert_eq!((mac.control, mac.button), (24.0, 28.0));
         assert_eq!((mac.bar_height(), mac.tab_strip_height()), (46.0, 34.0));
-        assert!(
-            mac.tab_strip_height() > TAB_PILL_HEIGHT,
+        assert_eq!(
+            mac.tab_strip_height(),
+            TAB_PILL_HEIGHT + 2.0 * TAB_STRIP_AIR,
             "pílula com respiro"
         );
         assert_eq!((mac.icon(), mac.traffic_lights()), (16.0, 68.0));
