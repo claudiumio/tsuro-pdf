@@ -24,8 +24,7 @@ use crate::session::{
     display_pt, display_rect, marker_side, page_pt_at, AnnotKind, AnnotationRow, Message, NavCmd,
     NoteDraft, OpenSource, PaletteItem, PaletteState, PanelKey, PanelTab, PrintDialog, RangeMode,
     Ready, RecoveryState, Session, SettingsPanel, Tabs, UpdateState, ViewMode, Zoom, ZoomFactor,
-    ANNOT_ROW, DOC_GAP, DOC_PAD_BOTTOM, DOC_PAD_TOP, DOC_PAD_X, PAGES_PANEL_W, SIG_PANEL_W,
-    THUMB_ROW,
+    ANNOT_ROW, DOC_PAD_BOTTOM, DOC_PAD_TOP, DOC_PAD_X, PAGES_PANEL_W, SIG_PANEL_W, THUMB_ROW,
 };
 
 /// Altura da faixa de ferramentas (spec §5). No macOS é a barra unificada,
@@ -3040,7 +3039,7 @@ fn tab_strip(tabs: &Tabs, t: Tokens) -> Element<'_, Message> {
     container(strip)
         .width(Length::Fill)
         .height(Length::Fixed(tab_strip_height()))
-        .padding(Padding::from([0, 8]))
+        .padding(Padding::from([kiri::TAB_STRIP_AIR, 8.0]))
         .style(move |_| container::Style {
             background: Some(Background::Color(t.chrome)),
             ..container::Style::default()
@@ -3489,20 +3488,17 @@ fn single_pane(ready: &Ready, t: Tokens) -> Element<'_, Message> {
 fn continuous_pane(ready: &Ready, t: Tokens) -> Element<'_, Message> {
     let total = ready.page_count();
     let (start, end) = ready.doc_window();
-    let mut col = column![]
-        .spacing(DOC_GAP)
-        .width(Length::Fixed(ready.doc_stage_max_width()));
+    let mut col = column![].width(Length::Fixed(ready.doc_stage_max_width()));
     if start > 0 {
-        // Offset acumulado menos um gap (o spacing da coluna já conta um).
-        let h = (ready.page_offset(PageNo::from_index(start)) - DOC_GAP).max(0.0);
+        // O offset já é o topo da célula: o respiro dela não é spacing.
+        let h = ready.page_offset(PageNo::from_index(start)).max(0.0);
         col = col.push(Space::with_height(Length::Fixed(h)));
     }
     for i in start..end {
         col = col.push(doc_cell(ready, PageNo::from_index(i), t));
     }
     if end < total {
-        let h = (ready.doc_total_height() - ready.page_offset(PageNo::from_index(end)) - DOC_GAP)
-            .max(0.0);
+        let h = (ready.doc_total_height() - ready.page_offset(PageNo::from_index(end))).max(0.0);
         col = col.push(Space::with_height(Length::Fixed(h)));
     }
     scrollable(col)
@@ -3539,7 +3535,7 @@ fn doc_cell(ready: &Ready, page: PageNo, t: Tokens) -> Element<'_, Message> {
             t,
         ),
         None => {
-            let h = (ready.doc_cell_height(page, sw) - DOC_PAD_TOP - DOC_PAD_BOTTOM).max(1.0);
+            let h = sh.max(1.0);
             container(
                 text(t.lang.pick("Renderizando página…", "Rendering page…"))
                     .size(13)
@@ -3563,9 +3559,9 @@ fn doc_cell(ready: &Ready, page: PageNo, t: Tokens) -> Element<'_, Message> {
     .width(Length::Fill)
     .center_x(Length::Fill)
     .padding(Padding {
-        top: DOC_PAD_TOP,
+        top: ready.doc_cell_pad_top(page),
         right: DOC_PAD_X,
-        bottom: DOC_PAD_BOTTOM,
+        bottom: ready.doc_cell_pad_bottom(page),
         left: DOC_PAD_X,
     })
     .style(move |_| container::Style {

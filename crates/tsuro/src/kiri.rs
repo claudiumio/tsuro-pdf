@@ -535,9 +535,11 @@ impl Metrics {
         10.0
     }
 
-    /// Faixa de abas: o controle mais 2 (24 → 26 no macOS).
+    /// Faixa de abas: o controle mais 2, com no mínimo a pílula mais o
+    /// respiro em cima e embaixo. No macOS o controle (24) daria 26, a altura
+    /// exata da pílula, e ela encostaria nas bordas da faixa.
     pub fn tab_strip_height(self) -> f32 {
-        self.control + 2.0
+        (self.control + 2.0).max(TAB_PILL_HEIGHT + 2.0 * TAB_STRIP_AIR)
     }
 
     /// Ícone de barra ou segmento: o alvo menos 12 (28 → 16 no macOS).
@@ -545,6 +547,13 @@ impl Metrics {
         self.button - 12.0
     }
 }
+
+/// Altura da pílula de aba (spec §5): texto 13/16 mais 8 de padding e a
+/// moldura de 1 px — 26 nas três plataformas.
+pub const TAB_PILL_HEIGHT: f32 = 26.0;
+
+/// Respiro vertical da faixa de abas acima e abaixo da pílula.
+pub const TAB_STRIP_AIR: f32 = 4.0;
 
 /// Item de navegação da sidebar (spec §5): 32 de altura, raio 8, padding 14 à
 /// esquerda, ícone 16 e texto 13/16.
@@ -1326,7 +1335,11 @@ mod tests {
     fn platform_metrics_follow_the_spec_table() {
         let mac = Metrics::for_platform(Platform::MacOs);
         assert_eq!((mac.control, mac.button), (24.0, 28.0));
-        assert_eq!((mac.bar_height(), mac.tab_strip_height()), (46.0, 26.0));
+        assert_eq!((mac.bar_height(), mac.tab_strip_height()), (46.0, 34.0));
+        assert!(
+            mac.tab_strip_height() > TAB_PILL_HEIGHT,
+            "pílula com respiro"
+        );
         assert_eq!((mac.icon(), mac.traffic_lights()), (16.0, 68.0));
         assert!(mac.unified_title());
 
