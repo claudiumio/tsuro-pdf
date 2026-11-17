@@ -97,7 +97,7 @@ Documentar no README a primeira abertura no Mac (Gatekeeper esperado, não é ma
 
 ### Update in-app (fluxo Hermes → Tsuro)
 
-1. **Checar** — ao abrir (delay ~5s) e no máximo 1×/24h (`self_update::UpdateCheckGuard`). `GET /repos/claudioorjunior/tsuro-pdf/releases/latest` via `is_update_available()`.
+1. **Checar** — ao abrir (delay ~5s) e no máximo 1×/24h (`self_update::UpdateCheckGuard`). `GET /repos/claudiumio/tsuro-pdf/releases/latest` via `is_update_available()`.
 2. **Avisar** — se houver versão maior: pill/botão discreto na barra do Tsuro: “Atualização v0.2.0 disponível”. Sem modal bloqueante.
 3. **Baixar** — usuário clica “Atualizar”; barra de progresso na pill ou toast. Asset escolhido por target (`aarch64-apple-darwin` / `x86_64-pc-windows-msvc`).
 4. **Instalar** — Mac: `bundle_path_in_archive("Tsuro.app")` + `bundle_install_path("/Applications/Tsuro.app")` — troca o bundle inteiro (Pdfium incluído). Windows: NSIS silent ou troca do diretório de instalação. Verificar digest `sha256:` que o GitHub publica por asset (`checksums` feature).
