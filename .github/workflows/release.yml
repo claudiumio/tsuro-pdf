@@ -208,7 +208,7 @@ jobs:
           } >>"$NOTES"
           cat >>"$NOTES" <<EOF
 
-          **Full Changelog**: https://github.com/claudioorjunior/tsuro-pdf/compare/v0.5.5...${TAG}
+          **Full Changelog**: https://github.com/claudiumio/tsuro-pdf/compare/v0.5.5...${TAG}
 
           Instalação:
 

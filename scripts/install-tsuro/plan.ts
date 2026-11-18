@@ -1,8 +1,8 @@
 import { createHash } from "node:crypto";
 
-export const REPO = "claudioorjunior/tsuro-pdf";
-export const CLONE_URL = "https://github.com/claudioorjunior/tsuro-pdf.git";
-export const TRACKING_ISSUE = "https://github.com/claudioorjunior/tsuro-pdf/issues/5";
+export const REPO = "claudiumio/tsuro-pdf";
+export const CLONE_URL = "https://github.com/claudiumio/tsuro-pdf.git";
+export const TRACKING_ISSUE = "https://github.com/claudiumio/tsuro-pdf/issues/5";
 export const API_BASE = `https://api.github.com/repos/${REPO}`;
 export const MAC_APP_DEST = "/Applications/TsuroPDF.app";
 
