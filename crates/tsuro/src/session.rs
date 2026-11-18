@@ -12015,6 +12015,79 @@ mod tests {
         let _ = std::fs::remove_file(&file);
     }
 
+    /// Documento gravado em página única reabre em página única: o padrão novo
+    /// (`Continuous`) só vale para quem não tem posição salva.
+    #[test]
+    fn restore_position_keeps_a_document_saved_in_single_page() {
+        let Some(mut ready) = sample_ready() else {
+            return;
+        };
+        let file = std::env::temp_dir().join(format!(
+            "tsuro-positions-unit-{}-restore-single",
+            std::process::id()
+        ));
+        let _ = std::fs::remove_file(&file);
+        crate::positions::with_positions_path(file.clone(), || {
+            let path = ready.source.path().to_path_buf();
+            let (size, mtime) = crate::positions::file_identity(&path).unwrap();
+            let last = ready.page_count().saturating_sub(1);
+            let entries = crate::positions::record_position(
+                Vec::new(),
+                path,
+                crate::positions::DocPosition {
+                    page: last,
+                    zoom: Zoom::Page,
+                    mode: ViewMode::Single,
+                    size,
+                    mtime,
+                },
+            );
+            crate::positions::save_positions(&entries).unwrap();
+            // Abertura nova parte do padrão atual; restaurar tem de voltar ao gravado.
+            ready.view_mode = ViewMode::Continuous;
+            ready.restore_position();
+            assert_eq!(ready.visible.index(), last);
+            assert!(matches!(ready.zoom, Zoom::Page));
+            assert_eq!(ready.view_mode, ViewMode::Single);
+            assert_eq!(ready.history.pages, vec![ready.visible]);
+            assert_eq!(ready.history.pos, 0);
+        });
+        let _ = std::fs::remove_file(&file);
+    }
+
+    /// Linha de posição no formato antigo (5 campos, sem `modo`) restaura em
+    /// página única, e não no modo padrão atual.
+    #[test]
+    fn restore_position_reads_a_five_field_line_as_single_page() {
+        let Some(mut ready) = sample_ready() else {
+            return;
+        };
+        let file = std::env::temp_dir().join(format!(
+            "tsuro-positions-unit-{}-restore-legacy",
+            std::process::id()
+        ));
+        let _ = std::fs::remove_file(&file);
+        crate::positions::with_positions_path(file.clone(), || {
+            let path = ready.source.path().to_path_buf();
+            let (size, mtime) = crate::positions::file_identity(&path).unwrap();
+            let last = ready.page_count().saturating_sub(1);
+            std::fs::write(
+                &file,
+                format!(
+                    "{last}\tpage\t{size}\t{mtime}\t{}\n",
+                    crate::positions::escape_path(&path)
+                ),
+            )
+            .unwrap();
+            ready.view_mode = ViewMode::Continuous;
+            ready.restore_position();
+            assert_eq!(ready.visible.index(), last);
+            assert!(matches!(ready.zoom, Zoom::Page));
+            assert_eq!(ready.view_mode, ViewMode::Single);
+        });
+        let _ = std::fs::remove_file(&file);
+    }
+
     /// Smoke de estado (fixture real): navegar até a última página, fechar e
     /// reabrir pelo caminho de produção (`begin_open`+`finish_open`) volta pra lá,
     /// com zoom e modo persistidos.
