@@ -7731,11 +7731,15 @@ mod tests {
         );
         let recents = std::env::temp_dir().join(format!("tsuro-session-recents-{stamp}"));
         let positions = std::env::temp_dir().join(format!("tsuro-session-positions-{stamp}"));
+        let prefs = std::env::temp_dir().join(format!("tsuro-session-prefs-{stamp}"));
         let result = crate::browse::with_recents_path(recents.clone(), || {
-            crate::positions::with_positions_path(positions.clone(), f)
+            crate::positions::with_positions_path(positions.clone(), || {
+                crate::prefs::with_prefs_path(prefs.clone(), f)
+            })
         });
         let _ = std::fs::remove_file(recents);
         let _ = std::fs::remove_file(positions);
+        let _ = std::fs::remove_file(prefs);
         result
     }
 

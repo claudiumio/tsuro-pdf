@@ -1,6 +1,6 @@
 //! Caminho descartável por thread para os stores persistidos (`positions`,
-//! `recents`) nos testes de unidade. Sem ele, `cargo test` lê e grava os
-//! arquivos reais do usuário: o store global vaza entre testes (a página
+//! `recents`, `prefs`) nos testes de unidade. Sem ele, `cargo test` lê e grava
+//! os arquivos reais do usuário: o store global vaza entre testes (a página
 //! restaurada por um teste derruba o assert de outro) e sobra lixo na máquina.
 
 use std::path::PathBuf;
