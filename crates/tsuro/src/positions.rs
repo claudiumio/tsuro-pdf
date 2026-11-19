@@ -53,11 +53,8 @@ pub fn with_positions_path<R>(path: PathBuf, f: impl FnOnce() -> R) -> R {
 }
 
 pub fn positions_file() -> PathBuf {
-    #[cfg(test)]
-    {
-        if let Some(p) = POSITIONS_PATH.with(|slot| slot.borrow().clone()) {
-            return p;
-        }
+    if let Some(path) = test_store_override() {
+        return path;
     }
     if let Some(p) = std::env::var_os("TSURO_POSITIONS") {
         return PathBuf::from(p);
@@ -74,6 +71,21 @@ pub fn positions_file() -> PathBuf {
         return PathBuf::from(home).join(".local/share/tsuro/positions");
     }
     std::env::temp_dir().join("tsuro-positions")
+}
+
+#[cfg(test)]
+fn test_store_override() -> Option<PathBuf> {
+    if let Some(p) = POSITIONS_PATH.with(|slot| slot.borrow().clone()) {
+        return Some(p);
+    }
+    // Sem caminho explícito o teste cai num arquivo temporário do processo:
+    // nunca no store real do usuário nem no TSURO_POSITIONS da máquina.
+    Some(std::env::temp_dir().join(format!("tsuro-test-positions-{}", std::process::id())))
+}
+
+#[cfg(not(test))]
+fn test_store_override() -> Option<PathBuf> {
+    None
 }
 
 /// Tamanho + mtime (nanossegundos desde o epoch) do arquivo; `None` se ilegível.

@@ -79,11 +79,8 @@ pub fn is_pdf(path: &Path) -> bool {
 }
 
 pub fn recents_file() -> PathBuf {
-    #[cfg(test)]
-    {
-        if let Some(p) = RECENTS_PATH.with(|slot| slot.borrow().clone()) {
-            return p;
-        }
+    if let Some(path) = test_store_override() {
+        return path;
     }
     if let Some(p) = std::env::var_os("TSURO_RECENTS") {
         return PathBuf::from(p);
@@ -100,6 +97,21 @@ pub fn recents_file() -> PathBuf {
         return PathBuf::from(home).join(".local/share/tsuro/recents");
     }
     std::env::temp_dir().join("tsuro-recents")
+}
+
+#[cfg(test)]
+fn test_store_override() -> Option<PathBuf> {
+    if let Some(p) = RECENTS_PATH.with(|slot| slot.borrow().clone()) {
+        return Some(p);
+    }
+    // Sem caminho explícito o teste cai num arquivo temporário do processo:
+    // nunca no store real do usuário nem no TSURO_RECENTS da máquina.
+    Some(std::env::temp_dir().join(format!("tsuro-test-recents-{}", std::process::id())))
+}
+
+#[cfg(not(test))]
+fn test_store_override() -> Option<PathBuf> {
+    None
 }
 
 pub fn read_recents() -> Vec<PathBuf> {
