@@ -7715,17 +7715,27 @@ mod tests {
         let _ = session.update(message);
     }
 
+    /// Recents e posições isolados num arquivo próprio por chamada: sem isso
+    /// a abertura de um doc restaura página do store global que outro teste
+    /// gravou (e os testes sujam o store real do usuário).
     fn isolated<R>(f: impl FnOnce() -> R) -> R {
-        let path = std::env::temp_dir().join(format!(
-            "tsuro-session-recents-{}-{}",
+        static NEXT: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
+        let stamp = format!(
+            "{}-{}-{}",
             std::process::id(),
+            NEXT.fetch_add(1, std::sync::atomic::Ordering::Relaxed),
             std::time::SystemTime::now()
                 .duration_since(std::time::UNIX_EPOCH)
                 .unwrap()
                 .as_nanos()
-        ));
-        let result = crate::browse::with_recents_path(path.clone(), f);
-        let _ = std::fs::remove_file(path);
+        );
+        let recents = std::env::temp_dir().join(format!("tsuro-session-recents-{stamp}"));
+        let positions = std::env::temp_dir().join(format!("tsuro-session-positions-{stamp}"));
+        let result = crate::browse::with_recents_path(recents.clone(), || {
+            crate::positions::with_positions_path(positions.clone(), f)
+        });
+        let _ = std::fs::remove_file(recents);
+        let _ = std::fs::remove_file(positions);
         result
     }
 

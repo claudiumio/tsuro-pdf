@@ -37,6 +37,8 @@ use std::cell::RefCell;
 #[cfg(test)]
 thread_local! {
     static POSITIONS_PATH: RefCell<Option<PathBuf>> = const { RefCell::new(None) };
+    static SCRATCH: crate::test_store::ScratchStore =
+        crate::test_store::ScratchStore::new("tsuro-positions-test");
 }
 
 #[cfg(test)]
@@ -60,18 +62,27 @@ pub fn positions_file() -> PathBuf {
     if let Some(p) = std::env::var_os("TSURO_POSITIONS") {
         return PathBuf::from(p);
     }
-    if cfg!(target_os = "macos") {
-        if let Some(home) = std::env::var_os("HOME") {
-            return PathBuf::from(home).join("Library/Application Support/Tsuro/positions");
+    #[cfg(test)]
+    {
+        // Sem override: arquivo descartável da thread de teste — a suíte não
+        // lê nem grava o store real do usuário.
+        SCRATCH.with(crate::test_store::ScratchStore::path)
+    }
+    #[cfg(not(test))]
+    {
+        if cfg!(target_os = "macos") {
+            if let Some(home) = std::env::var_os("HOME") {
+                return PathBuf::from(home).join("Library/Application Support/Tsuro/positions");
+            }
         }
+        if let Some(xdg) = std::env::var_os("XDG_DATA_HOME") {
+            return PathBuf::from(xdg).join("tsuro/positions");
+        }
+        if let Some(home) = std::env::var_os("HOME").or_else(|| std::env::var_os("USERPROFILE")) {
+            return PathBuf::from(home).join(".local/share/tsuro/positions");
+        }
+        std::env::temp_dir().join("tsuro-positions")
     }
-    if let Some(xdg) = std::env::var_os("XDG_DATA_HOME") {
-        return PathBuf::from(xdg).join("tsuro/positions");
-    }
-    if let Some(home) = std::env::var_os("HOME").or_else(|| std::env::var_os("USERPROFILE")) {
-        return PathBuf::from(home).join(".local/share/tsuro/positions");
-    }
-    std::env::temp_dir().join("tsuro-positions")
 }
 
 /// Tamanho + mtime (nanossegundos desde o epoch) do arquivo; `None` se ilegível.

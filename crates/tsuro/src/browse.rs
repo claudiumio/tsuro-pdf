@@ -14,6 +14,8 @@ pub const RECENTS_CAP: usize = 12;
 #[cfg(test)]
 thread_local! {
     static RECENTS_PATH: RefCell<Option<PathBuf>> = const { RefCell::new(None) };
+    static SCRATCH: crate::test_store::ScratchStore =
+        crate::test_store::ScratchStore::new("tsuro-recents-test");
 }
 
 #[cfg(test)]
@@ -88,18 +90,27 @@ pub fn recents_file() -> PathBuf {
     if let Some(p) = std::env::var_os("TSURO_RECENTS") {
         return PathBuf::from(p);
     }
-    if cfg!(target_os = "macos") {
-        if let Some(home) = std::env::var_os("HOME") {
-            return PathBuf::from(home).join("Library/Application Support/Tsuro/recents");
+    #[cfg(test)]
+    {
+        // Sem override: arquivo descartável da thread de teste — a suíte não
+        // lê nem grava o store real do usuário.
+        SCRATCH.with(crate::test_store::ScratchStore::path)
+    }
+    #[cfg(not(test))]
+    {
+        if cfg!(target_os = "macos") {
+            if let Some(home) = std::env::var_os("HOME") {
+                return PathBuf::from(home).join("Library/Application Support/Tsuro/recents");
+            }
         }
+        if let Some(xdg) = std::env::var_os("XDG_DATA_HOME") {
+            return PathBuf::from(xdg).join("tsuro/recents");
+        }
+        if let Some(home) = std::env::var_os("HOME").or_else(|| std::env::var_os("USERPROFILE")) {
+            return PathBuf::from(home).join(".local/share/tsuro/recents");
+        }
+        std::env::temp_dir().join("tsuro-recents")
     }
-    if let Some(xdg) = std::env::var_os("XDG_DATA_HOME") {
-        return PathBuf::from(xdg).join("tsuro/recents");
-    }
-    if let Some(home) = std::env::var_os("HOME").or_else(|| std::env::var_os("USERPROFILE")) {
-        return PathBuf::from(home).join(".local/share/tsuro/recents");
-    }
-    std::env::temp_dir().join("tsuro-recents")
 }
 
 pub fn read_recents() -> Vec<PathBuf> {
