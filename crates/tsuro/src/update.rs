@@ -865,6 +865,18 @@ mod tests {
     #[cfg(target_os = "macos")]
     impl FakeRelease {
         fn new(version: &str, corrupt_sum: bool) -> Self {
+            // Stale DMG mounts leaked by earlier runs make hdiutil fail;
+            // detach leftovers under /Volumes before creating the fixture.
+            if let Ok(entries) = std::fs::read_dir("/Volumes") {
+                for entry in entries.flatten() {
+                    if entry.file_name().to_string_lossy().starts_with("TsuroPDF") {
+                        let _ = std::process::Command::new("hdiutil")
+                            .args(["detach", "-force"])
+                            .arg(entry.path())
+                            .status();
+                    }
+                }
+            }
             let root = std::env::temp_dir().join(format!(
                 "tsuro-update-test-{}-{version}-{corrupt_sum}",
                 std::process::id()
@@ -874,21 +886,31 @@ mod tests {
             fake_app(&stage.join(APP_NAME), version, "nova");
             let name = format!("TsuroPDF-{version}-aarch64-apple-darwin.dmg");
             let dmg = root.join(&name);
-            let status = std::process::Command::new("hdiutil")
-                .args([
-                    "create",
-                    "-volname",
-                    "TsuroPDF",
-                    "-format",
-                    "UDZO",
-                    "-srcfolder",
-                ])
-                .arg(&stage)
-                .arg(&dmg)
-                .stdout(std::process::Stdio::null())
-                .status()
-                .expect("hdiutil create");
-            assert!(status.success(), "hdiutil create falhou");
+            // hdiutil can transiently fail while other images attach/detach;
+            // retry before giving up so the suite does not go red for free.
+            let mut created = false;
+            for _ in 0..3 {
+                let attempt = std::process::Command::new("hdiutil")
+                    .args([
+                        "create",
+                        "-volname",
+                        "TsuroPDF",
+                        "-format",
+                        "UDZO",
+                        "-srcfolder",
+                    ])
+                    .arg(&stage)
+                    .arg(&dmg)
+                    .stdout(std::process::Stdio::null())
+                    .status()
+                    .expect("hdiutil create");
+                if attempt.success() {
+                    created = true;
+                    break;
+                }
+                std::thread::sleep(std::time::Duration::from_millis(500));
+            }
+            assert!(created, "hdiutil create falhou");
             let sum = if corrupt_sum {
                 "0".repeat(64)
             } else {
