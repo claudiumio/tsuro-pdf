@@ -15044,45 +15044,57 @@ mod tests {
 
     #[test]
     fn reload_failure_keeps_document_and_adopts_identity() {
-        isolated(|| {
-            let Some(ready) = sample_ready() else {
-                return;
-            };
-            let mut session = Session::Empty(EmptyState {
-                theme: Theme::Dark,
-                ..EmptyState::default()
+        // Isola também o store de posições: a abertura chama restore_position,
+        // que lê o store padrão (da máquina ou escrito por outro teste em
+        // paralelo) e faz o documento abrir noutra página, derrubando o
+        // asserto de forma intermitente.
+        let positions = std::env::temp_dir().join(format!(
+            "tsuro-positions-unit-{}-reload-failure",
+            std::process::id()
+        ));
+        let _ = std::fs::remove_file(&positions);
+        crate::positions::with_positions_path(positions.clone(), || {
+            isolated(|| {
+                let Some(ready) = sample_ready() else {
+                    return;
+                };
+                let mut session = Session::Empty(EmptyState {
+                    theme: Theme::Dark,
+                    ..EmptyState::default()
+                });
+                let _ = session.begin_open(ready.source.clone());
+                let gen = match &session {
+                    Session::Loading { gen, .. } => *gen,
+                    other => panic!("esperava Loading, veio {other:?}"),
+                };
+                let _ = session.update(Message::Opened {
+                    gen,
+                    result: Ok(ready),
+                });
+                assert_eq!(
+                    active_ready(&session).disk_identity,
+                    crate::positions::file_identity(&sample_pdf()),
+                    "abertura captura a identidade"
+                );
+                let doc_gen = active_ready(&session).open_gen;
+                // O tique viu outra versão, mas a leitura falhou (meio de escrita).
+                let current = Some((1u64, 2u64));
+                apply(
+                    &mut session,
+                    Message::Reloaded {
+                        doc_gen,
+                        result: Err(OpenError::Io("travado".into())),
+                        identity: current,
+                    },
+                );
+                let doc = active_ready(&session);
+                assert_eq!(doc.disk_identity, current, "adota: sem retry infinito");
+                assert!(!doc.reload_inflight);
+                assert_eq!(doc.save_status.as_deref(), Some("Falha ao recarregar."));
+                assert_eq!(doc.visible, PageNo::first(), "o doc antigo segue na tela");
             });
-            let _ = session.begin_open(ready.source.clone());
-            let gen = match &session {
-                Session::Loading { gen, .. } => *gen,
-                other => panic!("esperava Loading, veio {other:?}"),
-            };
-            let _ = session.update(Message::Opened {
-                gen,
-                result: Ok(ready),
-            });
-            assert_eq!(
-                active_ready(&session).disk_identity,
-                crate::positions::file_identity(&sample_pdf()),
-                "abertura captura a identidade"
-            );
-            let doc_gen = active_ready(&session).open_gen;
-            // O tique viu outra versão, mas a leitura falhou (meio de escrita).
-            let current = Some((1u64, 2u64));
-            apply(
-                &mut session,
-                Message::Reloaded {
-                    doc_gen,
-                    result: Err(OpenError::Io("travado".into())),
-                    identity: current,
-                },
-            );
-            let doc = active_ready(&session);
-            assert_eq!(doc.disk_identity, current, "adota: sem retry infinito");
-            assert!(!doc.reload_inflight);
-            assert_eq!(doc.save_status.as_deref(), Some("Falha ao recarregar."));
-            assert_eq!(doc.visible, PageNo::first(), "o doc antigo segue na tela");
         });
+        let _ = std::fs::remove_file(&positions);
     }
 
     #[test]
