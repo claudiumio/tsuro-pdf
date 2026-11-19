@@ -43,9 +43,10 @@ thread_local! {
 
 #[cfg(test)]
 pub fn with_positions_path<R>(path: PathBuf, f: impl FnOnce() -> R) -> R {
-    POSITIONS_PATH.with(|slot| *slot.borrow_mut() = Some(path));
+    // Bloco aninhado volta ao caminho de fora ao sair, não ao padrão.
+    let previous = POSITIONS_PATH.with(|slot| slot.borrow_mut().replace(path));
     let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(f));
-    POSITIONS_PATH.with(|slot| *slot.borrow_mut() = None);
+    POSITIONS_PATH.with(|slot| *slot.borrow_mut() = previous);
     match result {
         Ok(value) => value,
         Err(panic) => std::panic::resume_unwind(panic),
