@@ -7724,8 +7724,19 @@ mod tests {
                 .unwrap()
                 .as_nanos()
         ));
-        let result = crate::browse::with_recents_path(path.clone(), f);
+        let positions = std::env::temp_dir().join(format!(
+            "tsuro-session-positions-{}-{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        let result = crate::browse::with_recents_path(path.clone(), || {
+            crate::positions::with_positions_path(positions.clone(), f)
+        });
         let _ = std::fs::remove_file(path);
+        let _ = std::fs::remove_file(positions);
         result
     }
 
