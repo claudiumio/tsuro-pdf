@@ -7,6 +7,10 @@ use std::path::PathBuf;
 use std::sync::atomic::{AtomicUsize, Ordering};
 
 /// Arquivo temporário exclusivo da thread de teste; some quando ela termina.
+///
+/// Testes sequenciais na mesma thread dividem o mesmo arquivo (com
+/// `--test-threads=1`, a suíte inteira). Por isso `isolated()` continua
+/// necessário: ele abre um arquivo novo por teste, não o scratch da thread.
 pub(crate) struct ScratchStore(PathBuf);
 
 impl ScratchStore {
