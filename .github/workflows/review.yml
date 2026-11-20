@@ -21,7 +21,7 @@ jobs:
           fetch-depth: 0
       - name: co-author identities
         # Runs before the Rust jobs: a bad trailer is caught in seconds.
-        run: ./scripts/check-coauthors.sh "origin/${{ github.base_ref || 'main' }}"
+        run: sh scripts/check-coauthors.sh "origin/${{ github.base_ref || 'main' }}"
   review:
     runs-on: macos-15
     steps:
