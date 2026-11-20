@@ -3521,12 +3521,20 @@ fn annotations_tab(ready: &Ready, t: Tokens) -> Element<'_, Message> {
         let rows = ready.annotation_rows();
         if rows.is_empty() {
             col = col.push(
-                text(t.lang.pick(
-                    "Nenhum resultado para a busca.",
-                    "No results for this search.",
-                ))
-                .size(12)
-                .color(t.muted),
+                row![
+                    text(t.lang.pick(
+                        "Nenhum resultado para a busca.",
+                        "No results for this search.",
+                    ))
+                    .size(12)
+                    .color(t.muted),
+                    button(text(t.lang.pick("Limpar (Esc)", "Clear (Esc)")).size(11))
+                        .on_press(Message::AnnotQuery(String::new()))
+                        .padding(Padding::from([3, 9]))
+                        .style(kiri::sheet_action_style(t)),
+                ]
+                .spacing(8)
+                .align_y(Alignment::Center),
             );
         } else {
             let focus = ready.annot_focus();
@@ -4700,18 +4708,49 @@ fn source_name(source: &OpenSource) -> String {
         .unwrap_or_else(|| path.display().to_string())
 }
 
-/// Tela de abertura (issue #41): nome do arquivo + "Abrindo…" + barra
-/// indeterminada, no lugar do documento.
+/// Tela de abertura (issue #41): a folha entra em esqueleto — a silhueta da
+/// página no lugar do documento (spec v0.9, estado A) — com o nome do
+/// arquivo, "Abrindo…" e a barra indeterminada logo abaixo.
 fn opening(source: &OpenSource, phase: u16, t: Tokens) -> Element<'_, Message> {
+    let mut lines = column![].spacing(14).padding(Padding::from([56, 52]));
+    for i in 0..9 {
+        let w = match i % 4 {
+            0 => 380.0,
+            1 => 300.0,
+            2 => 350.0,
+            _ => 240.0,
+        };
+        lines = lines.push(skeleton_line(w, t.track));
+    }
+
+    let sheet = container(lines)
+        .width(Length::Fixed(484.0))
+        .height(Length::Fill)
+        .max_height(600.0)
+        .style(move |_| container::Style {
+            background: Some(Background::Color(t.page)),
+            border: Border {
+                width: 1.0,
+                color: t.hairline,
+                radius: 3.0.into(),
+            },
+            ..container::Style::default()
+        });
+
     container(
         column![
-            text(source_name(source)).size(16),
-            text(t.lang.pick("Abrindo…", "Opening…"))
-                .size(13)
-                .color(t.muted),
-            loading_bar(phase, t),
+            row![
+                text(source_name(source)).size(13).color(t.muted),
+                text(t.lang.pick("Abrindo…", "Opening…"))
+                    .size(13)
+                    .color(t.faint),
+            ]
+            .spacing(10)
+            .align_y(Alignment::Center),
+            sheet,
+            container(loading_bar(phase, t)).width(Length::Fixed(484.0)),
         ]
-        .spacing(12)
+        .spacing(14)
         .align_x(Alignment::Center),
     )
     .width(Length::Fill)
@@ -4721,8 +4760,25 @@ fn opening(source: &OpenSource, phase: u16, t: Tokens) -> Element<'_, Message> {
     .into()
 }
 
+/// Barra do esqueleto: bloco arredondado onde o texto da página vai entrar.
+fn skeleton_line(width: f32, color: Color) -> Element<'static, Message> {
+    container(Space::new(Length::Fixed(width), Length::Fixed(9.0)))
+        .width(Length::Fixed(width))
+        .height(Length::Fixed(9.0))
+        .style(move |_| container::Style {
+            background: Some(Background::Color(color)),
+            border: Border {
+                radius: 4.0.into(),
+                ..Border::default()
+            },
+            ..container::Style::default()
+        })
+        .into()
+}
+
 /// Falha ao abrir (issue #41): o erro toma o lugar da barra — nunca spinner
-/// preso; a saída é o topo (Início / abrir outro).
+/// preso. A ação fica na própria tela (spec v0.9, estado B): tentar o mesmo
+/// arquivo de novo ou abrir outro.
 fn failed<'a>(source: &'a OpenSource, message: &'a str, t: Tokens) -> Element<'a, Message> {
     container(
         column![
@@ -4733,6 +4789,17 @@ fn failed<'a>(source: &'a OpenSource, message: &'a str, t: Tokens) -> Element<'a
             .size(16),
             text(source_name(source)).size(13).color(t.muted),
             text(message).size(13).color(t.danger),
+            row![
+                button(text(t.lang.pick("Tentar novamente", "Try again")).size(13))
+                    .on_press(Message::RetryOpen)
+                    .padding(Padding::from([7, 14]))
+                    .style(kiri::sheet_action_style(t)),
+                button(text(t.lang.pick("Abrir outro", "Open another")).size(13))
+                    .on_press(Message::PickFile)
+                    .padding(Padding::from([7, 14]))
+                    .style(kiri::sheet_action_style(t)),
+            ]
+            .spacing(8),
         ]
         .spacing(12)
         .align_x(Alignment::Center),

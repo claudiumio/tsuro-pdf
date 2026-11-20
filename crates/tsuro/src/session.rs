@@ -2539,6 +2539,8 @@ fn render_key(page: PageNo, scale: Scale, rotation: u8) -> (u32, u16, u8) {
 #[derive(Debug, Clone)]
 pub enum Message {
     PickFile,
+    /// Abrir de novo o mesmo arquivo que falhou (spec v0.9, estado B).
+    RetryOpen,
     /// Escolha do seletor nativo (assíncrona): `None` quando o usuário cancela.
     PickedFile(Option<OpenSource>),
     FileDropped(PathBuf),
@@ -2948,6 +2950,16 @@ impl Session {
                     self.close_overflow();
                     self.begin_open(source)
                 }
+            },
+
+            // O erro é da tentativa, não do arquivo: tenta o mesmo de novo.
+            Message::RetryOpen => match self {
+                Session::Failed { source, .. } => {
+                    let source = source.clone();
+                    self.close_overflow();
+                    self.begin_open(source)
+                }
+                _ => Task::none(),
             },
             Message::FileDropped(path) => {
                 if !is_pdf(&path) {
