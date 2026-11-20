@@ -178,7 +178,7 @@ pub fn chrome(session: &Session, theme: Theme, lang: Lang) -> Element<'_, Messag
         let overlay = match home.palette.as_ref() {
             Some(palette) => palette_layer(palette, t),
             None if home.about_open => about_layer(t),
-            None if session.settings().open => settings_layer(session.settings(), t),
+            None if session.settings().open => settings_layer(session.settings(), None, t),
             None => empty(),
         };
         return stack![main, overlay].into();
@@ -228,7 +228,7 @@ pub fn chrome(session: &Session, theme: Theme, lang: Lang) -> Element<'_, Messag
         about_layer(t)
     } else if tabs.settings.open {
         // Configurações (Ajuda): abre por cima do Sobre; fundo e Esc fecham.
-        settings_layer(&tabs.settings, t)
+        settings_layer(&tabs.settings, Some(tabs.active().view_mode), t)
     } else if tabs.overflow_open {
         // Overlay visual: só os botões capturam clique, o resto atravessa.
         overflow_layer(tabs, t)
@@ -2106,7 +2106,11 @@ fn about_card(t: Tokens) -> Element<'static, Message> {
 
 /// Configurações (Ajuda → Configurações): tema, leitor padrão, permissões,
 /// idioma e versão — mesmo padrão do Sobre (fundo fecha, cartão engole).
-fn settings_layer(settings: &SettingsPanel, t: Tokens) -> Element<'static, Message> {
+fn settings_layer(
+    settings: &SettingsPanel,
+    view_mode: Option<ViewMode>,
+    t: Tokens,
+) -> Element<'static, Message> {
     let dim = container(Space::with_width(Length::Fill))
         .width(Length::Fill)
         .height(Length::Fill)
@@ -2114,55 +2118,88 @@ fn settings_layer(settings: &SettingsPanel, t: Tokens) -> Element<'static, Messa
             background: Some(Background::Color(kiri::scrim())),
             ..container::Style::default()
         });
-    let card = container(mouse_area(settings_card(settings, t)).on_press(Message::PrintNop))
-        .width(Length::Fill)
-        .height(Length::Fill)
-        .align_x(Alignment::Center)
-        .align_y(Alignment::Center);
+    let card =
+        container(mouse_area(settings_card(settings, view_mode, t)).on_press(Message::PrintNop))
+            .width(Length::Fill)
+            .height(Length::Fill)
+            .align_x(Alignment::Center)
+            .align_y(Alignment::Center);
     stack![mouse_area(dim).on_press(Message::ToggleSettings), card,].into()
 }
 
 #[allow(clippy::too_many_lines)]
-fn settings_card(settings: &SettingsPanel, t: Tokens) -> Element<'static, Message> {
+fn settings_card(
+    settings: &SettingsPanel,
+    view_mode: Option<ViewMode>,
+    t: Tokens,
+) -> Element<'static, Message> {
     let mut body = column![
-        text(t.lang.pick("Configurações", "Settings"))
-            .size(16)
+        text(t.lang.pick("Ajustes", "Settings"))
+            .size(17)
             .color(t.ink),
-        section_title(t.lang.pick("Tema", "Theme"), t),
+        text(t.lang.pick(
+            "Aparência, leitura e recuperação.",
+            "Look, reading and recovery."
+        ))
+        .size(12)
+        .color(t.muted),
+        Space::with_height(Length::Fixed(4.0)),
+        section_title(t.lang.pick("Aparência", "Appearance"), t),
         row![
-            menu_theme_button(
-                t,
-                t.lang.pick("Sistema", "System"),
-                ThemePref::System,
-                settings.theme_pref == ThemePref::System
-            ),
-            menu_theme_button(
-                t,
-                t.lang.pick("Escuro", "Dark"),
-                ThemePref::Dark,
-                settings.theme_pref == ThemePref::Dark
-            ),
-            menu_theme_button(
+            theme_tile(
                 t,
                 t.lang.pick("Claro", "Light"),
                 ThemePref::Light,
                 settings.theme_pref == ThemePref::Light
             ),
+            theme_tile(
+                t,
+                t.lang.pick("Escuro", "Dark"),
+                ThemePref::Dark,
+                settings.theme_pref == ThemePref::Dark
+            ),
+            theme_tile(
+                t,
+                t.lang.pick("Sistema", "System"),
+                ThemePref::System,
+                settings.theme_pref == ThemePref::System
+            ),
         ]
-        .spacing(4),
-        section_title(t.lang.pick("Leitor padrão", "Default reader"), t),
-        menu_item(
+        .spacing(8),
+        section_title(t.lang.pick("Leitura", "Reading"), t),
+    ]
+    .spacing(8)
+    .align_x(Alignment::Start)
+    .width(Length::Fill);
+    if let Some(mode) = view_mode {
+        body = body.push(switch_row(
+            t,
+            t.lang.pick("Rolagem contínua", "Continuous scroll"),
+            t.lang.pick(
+                "Páginas emendadas, uma após a outra.",
+                "Pages stitched one after another.",
+            ),
+            mode == ViewMode::Continuous,
+            Message::SetViewMode(if mode == ViewMode::Continuous {
+                ViewMode::Single
+            } else {
+                ViewMode::Continuous
+            }),
+        ));
+    }
+    body = body
+        .push(section_title(
+            t.lang.pick("Leitor padrão", "Default reader"),
+            t,
+        ))
+        .push(menu_item(
             t,
             "home",
             t.lang
                 .pick("Definir como leitor padrão…", "Set as default reader…"),
             Message::SetDefaultReader,
             false,
-        ),
-    ]
-    .spacing(8)
-    .align_x(Alignment::Start)
-    .width(300);
+        ));
     #[cfg(target_os = "macos")]
     {
         let label = match settings.permissions {
@@ -2292,17 +2329,169 @@ fn settings_card(settings: &SettingsPanel, t: Tokens) -> Element<'static, Messag
             )),
         UpdateState::Idle | UpdateState::Failed => body,
     };
-    body = body.push(
-        button(text(t.lang.pick("Fechar", "Close")).size(13))
-            .padding(Padding::from([8, 12]))
-            .style(kiri::menu_item_style(t))
-            .on_press(Message::ToggleSettings),
+    body = body.push(Space::with_height(Length::Fixed(4.0))).push(
+        row![
+            Space::with_width(Length::Fill),
+            button(text(t.lang.pick("Concluído", "Done")).size(13))
+                .padding(Padding::from([7, 16]))
+                .style(kiri::sheet_action_style(t))
+                .on_press(Message::ToggleSettings),
+        ]
+        .align_y(Alignment::Center)
+        .width(Length::Fill),
     );
     container(body)
-        .padding(12)
-        .width(324)
+        .padding(24)
+        .width(520)
         .style(kiri::sheet_style(t))
         .into()
+}
+
+/// v0.9: tile de tema da folha — amostra da superfície sob o nome.
+fn theme_tile(
+    t: Tokens,
+    label: &'static str,
+    pref: ThemePref,
+    active: bool,
+) -> Element<'static, Message> {
+    let light = Tokens::for_theme(Theme::Light, t.lang);
+    let dark = Tokens::for_theme(Theme::Dark, t.lang);
+    let preview: Element<'static, Message> = match pref {
+        ThemePref::Light => mini_surface(light),
+        ThemePref::Dark => mini_surface(dark),
+        ThemePref::System => row![mini_surface(light), mini_surface(dark)].into(),
+    };
+    let dot = container(Space::new(Length::Fixed(8.0), Length::Fixed(8.0))).style(move |_| {
+        container::Style {
+            background: Some(Background::Color(if active {
+                t.accent
+            } else {
+                t.hairline
+            })),
+            border: Border {
+                radius: 99.0.into(),
+                ..Border::default()
+            },
+            ..container::Style::default()
+        }
+    });
+    let inner = column![
+        preview,
+        row![
+            text(label)
+                .size(12)
+                .color(if active { t.accent } else { t.ink }),
+            Space::with_width(Length::Fill),
+            dot,
+        ]
+        .align_y(Alignment::Center),
+    ]
+    .spacing(6)
+    .width(Length::Fill);
+    button(inner)
+        .padding(6)
+        .width(Length::Fill)
+        .style(kiri::theme_tile_style(t, active))
+        .on_press(Message::SetTheme(pref))
+        .into()
+}
+
+/// v0.9: amostra 48px de um tema — fundo, folha e duas linhas de texto.
+fn mini_surface(tokens: Tokens) -> Element<'static, Message> {
+    let page = container(
+        column![
+            mini_bar(tokens.ink, 20.0),
+            mini_bar(tokens.muted, 26.0),
+            mini_bar(tokens.muted, 22.0),
+        ]
+        .spacing(3),
+    )
+    .padding(5)
+    .style(move |_| container::Style {
+        background: Some(Background::Color(tokens.elevated)),
+        border: Border {
+            radius: 3.0.into(),
+            ..Border::default()
+        },
+        ..container::Style::default()
+    });
+    container(page)
+        .width(Length::Fill)
+        .height(Length::Fixed(48.0))
+        .align_x(Alignment::Center)
+        .align_y(Alignment::Center)
+        .style(move |_| container::Style {
+            background: Some(Background::Color(tokens.bg)),
+            border: Border {
+                radius: 4.0.into(),
+                width: 1.0,
+                color: tokens.hairline_soft,
+            },
+            ..container::Style::default()
+        })
+        .into()
+}
+
+fn mini_bar(color: Color, width: f32) -> Element<'static, Message> {
+    container(Space::new(Length::Fixed(width), Length::Fixed(2.0)))
+        .style(move |_| container::Style {
+            background: Some(Background::Color(color)),
+            border: Border {
+                radius: 1.0.into(),
+                ..Border::default()
+            },
+            ..container::Style::default()
+        })
+        .into()
+}
+
+/// v0.9: linha da folha com switch de 32x18.
+fn switch_row(
+    t: Tokens,
+    label: &'static str,
+    hint: &'static str,
+    on: bool,
+    message: Message,
+) -> Element<'static, Message> {
+    let knob = container(Space::new(Length::Fixed(14.0), Length::Fixed(14.0))).style(move |_| {
+        container::Style {
+            background: Some(Background::Color(if on { t.accent_contrast } else { t.bg })),
+            border: Border {
+                radius: 99.0.into(),
+                ..Border::default()
+            },
+            ..container::Style::default()
+        }
+    });
+    let track = container(
+        row![
+            Space::with_width(Length::Fixed(if on { 12.0 } else { 2.0 })),
+            knob
+        ]
+        .align_y(Alignment::Center),
+    )
+    .padding(Padding::from([2, 2]))
+    .width(Length::Fixed(32.0))
+    .height(Length::Fixed(18.0))
+    .style(kiri::switch_style(t, on));
+    button(
+        row![
+            column![
+                text(label).size(13).color(t.ink),
+                text(hint).size(11).color(t.muted),
+            ]
+            .spacing(2),
+            Space::with_width(Length::Fill),
+            track,
+        ]
+        .align_y(Alignment::Center)
+        .width(Length::Fill),
+    )
+    .padding(Padding::from([7, 10]))
+    .width(Length::Fill)
+    .style(kiri::menu_row_style(t, false))
+    .on_press(message)
+    .into()
 }
 
 /// Fechar aba, Home ou a janela com marcações não salvas.
@@ -2596,6 +2785,82 @@ impl Program<Message> for EmptyDash {
 /// central com largura máxima.
 /// `tabs_open`: Início por cima das abas — o título não diz "nenhum
 /// documento" com documentos abertos na faixa acima.
+/// Arte de tinta do Início (frame 03): sumi-e desfocado sob um véu da cor da
+/// mesa, para o texto dos cartões seguir legível nos dois temas.
+fn ink_backdrop(t: Tokens) -> Element<'static, Message> {
+    let art = image(image::Handle::from_bytes(
+        &include_bytes!("../assets/ink-home-blur.jpg")[..],
+    ))
+    .width(Length::Fill)
+    .height(Length::Fill)
+    .content_fit(iced::ContentFit::Cover);
+
+    let veil = container(Space::new(Length::Fill, Length::Fill)).style(move |_| container::Style {
+        background: Some(Background::Color(Color {
+            a: 0.88,
+            ..t.sumi_2
+        })),
+        ..container::Style::default()
+    });
+
+    stack![art, veil].into()
+}
+
+/// Rodapé do Início: os atalhos que valem antes de abrir qualquer coisa.
+/// Rótulos do rodapé do Início. Sempre ASCII: o iced 0.13 não tem glifo
+/// para ⌘ no bundle e desenha uma caixa; `Cmd`/`Ctrl` mudam com a
+/// plataforma, como em `shortcut_hint`.
+fn home_cap_keys() -> [&'static str; 3] {
+    if cfg!(target_os = "macos") {
+        ["Cmd+O", "Cmd+F", "Cmd+,"]
+    } else {
+        ["Ctrl+O", "Ctrl+F", "Ctrl+,"]
+    }
+}
+
+fn home_footer(t: Tokens) -> Element<'static, Message> {
+    let caps = home_cap_keys();
+    let cap = move |keys: &'static str, label: &'static str| -> Element<'static, Message> {
+        row![
+            container(text(keys).size(10).color(t.faint))
+                .padding(Padding::from([1, 5]))
+                .style(kiri::key_cap_style(t)),
+            text(label).size(11).color(t.muted),
+        ]
+        .spacing(6)
+        .align_y(Alignment::Center)
+        .into()
+    };
+
+    let rule = container(Space::new(Length::Fill, Length::Fixed(1.0)))
+        .width(Length::Fill)
+        .height(Length::Fixed(1.0))
+        .style(move |_| container::Style {
+            background: Some(Background::Color(t.hairline_soft)),
+            ..container::Style::default()
+        });
+
+    column![
+        rule,
+        container(
+            row![
+                cap(caps[0], t.lang.pick("Abrir", "Open")),
+                cap(caps[1], t.lang.pick("Buscar", "Find")),
+                cap(caps[2], t.lang.pick("Ajustes", "Settings")),
+                Space::with_width(Length::Fill),
+                cap("?", t.lang.pick("Atalhos", "Shortcuts")),
+            ]
+            .spacing(18)
+            .align_y(Alignment::Center),
+        )
+        .width(Length::Fill)
+        .padding(Padding::from([8, 18])),
+    ]
+    .spacing(0)
+    .width(Length::Fill)
+    .into()
+}
+
 fn empty_browser(empty: &EmptyState, tabs_open: bool, t: Tokens) -> Element<'_, Message> {
     let mut content = column![open_bar(tabs_open, t)].spacing(14);
 
@@ -2679,7 +2944,7 @@ fn empty_browser(empty: &EmptyState, tabs_open: bool, t: Tokens) -> Element<'_, 
             })));
     }
 
-    scrollable(
+    let scroller = scrollable(
         container(
             content
                 .max_width(HOME_MAX_W)
@@ -2689,7 +2954,14 @@ fn empty_browser(empty: &EmptyState, tabs_open: bool, t: Tokens) -> Element<'_, 
         .center_x(Length::Fill),
     )
     .width(Length::Fill)
-    .height(Length::Fill)
+    .height(Length::Fill);
+    stack![
+        ink_backdrop(t),
+        column![scroller, home_footer(t)]
+            .width(Length::Fill)
+            .height(Length::Fill)
+            .spacing(0),
+    ]
     .into()
 }
 
@@ -3077,7 +3349,12 @@ fn pages_panel(ready: &Ready, t: Tokens) -> Element<'_, Message> {
         Some(PanelTab::Annotations) => col.push(annotations_tab(ready, t)),
         _ => col.push(thumbs_tab(ready, t)),
     };
-    container(col.width(Length::Fill).height(Length::Fill))
+    let body: Element<'_, Message> = stack![
+        col.width(Length::Fill).height(Length::Fill),
+        column![Space::with_height(Length::Fill), rail_fade(t),],
+    ]
+    .into();
+    container(body)
         .width(Length::Fixed(PAGES_PANEL_W))
         .height(Length::Fill)
         .padding(Padding {
@@ -3261,12 +3538,20 @@ fn annotations_tab(ready: &Ready, t: Tokens) -> Element<'_, Message> {
         let rows = ready.annotation_rows();
         if rows.is_empty() {
             col = col.push(
-                text(t.lang.pick(
-                    "Nenhum resultado para a busca.",
-                    "No results for this search.",
-                ))
-                .size(12)
-                .color(t.muted),
+                row![
+                    text(t.lang.pick(
+                        "Nenhum resultado para a busca.",
+                        "No results for this search.",
+                    ))
+                    .size(12)
+                    .color(t.muted),
+                    button(text(t.lang.pick("Limpar (Esc)", "Clear (Esc)")).size(11))
+                        .on_press(Message::AnnotQuery(String::new()))
+                        .padding(Padding::from([3, 9]))
+                        .style(kiri::sheet_action_style(t)),
+                ]
+                .spacing(8)
+                .align_y(Alignment::Center),
             );
         } else {
             let focus = ready.annot_focus();
@@ -3344,6 +3629,37 @@ fn clip_one_line(text: &str, max: usize) -> String {
         None => one_line,
     }
 }
+/// Miniaturas do rail (frame 06): 64 de largura é o que cabe nos 132 do
+/// painel sem apertar o número da página.
+const RAIL_THUMB_W: f32 = 64.0;
+const RAIL_THUMB_H: f32 = 88.0;
+
+/// Véu no pé do rail: faixas de alfa crescente fazem a coluna de miniaturas
+/// sumir suave no fundo, em vez de cortar num degrau.
+fn rail_fade(t: Tokens) -> Element<'static, Message> {
+    const STEPS: [(f32, f32); 6] = [
+        (16.0, 0.12),
+        (13.0, 0.28),
+        (10.0, 0.48),
+        (8.0, 0.68),
+        (6.0, 0.85),
+        (5.0, 0.97),
+    ];
+    let mut col = column![].spacing(0);
+    for (h, a) in STEPS {
+        col = col.push(
+            container(Space::new(Length::Fill, Length::Fixed(h)))
+                .width(Length::Fill)
+                .height(Length::Fixed(h))
+                .style(move |_| container::Style {
+                    background: Some(Background::Color(Color { a, ..t.panel })),
+                    ..container::Style::default()
+                }),
+        );
+    }
+    col.into()
+}
+
 fn thumbs_tab(ready: &Ready, t: Tokens) -> Element<'_, Message> {
     // Janela virtualizada do remoto: só monta as miniaturas visíveis.
     let window = ready.thumb_page_window();
@@ -3357,11 +3673,18 @@ fn thumbs_tab(ready: &Ready, t: Tokens) -> Element<'_, Message> {
         let page = PageNo::from_index(i);
         let preview: Element<'_, Message> = match ready.thumb_surface(page) {
             Some(surface) => image(surface.image.clone())
-                .width(Length::Fixed(120.0))
+                // Caixa exata 64x88: a foto da página entra em `contain`, então
+                // página fora do A4 não muda a altura da linha do rail.
+                .width(Length::Fixed(RAIL_THUMB_W))
+                .height(Length::Fixed(RAIL_THUMB_H))
+                .content_fit(iced::ContentFit::Contain)
                 .into(),
-            None => container(Space::new(Length::Fixed(120.0), Length::Fixed(150.0)))
-                .style(kiri::panel_thumb_frame_style(t))
-                .into(),
+            None => container(Space::new(
+                Length::Fixed(RAIL_THUMB_W),
+                Length::Fixed(RAIL_THUMB_H),
+            ))
+            .style(kiri::panel_thumb_frame_style(t))
+            .into(),
         };
         let active = ready.visible == page;
         col = col.push(
@@ -3374,8 +3697,8 @@ fn thumbs_tab(ready: &Ready, t: Tokens) -> Element<'_, Message> {
                         container(container(preview).style(kiri::panel_thumb_frame_style(t)),)
                             .padding(2)
                             .style(kiri::panel_thumb_style(t, active)),
-                        text(format!("{} {}", t.lang.pick("Pág.", "Page"), i + 1))
-                            .size(11)
+                        text(format!("{}", i + 1))
+                            .size(10)
                             .font(iced::Font::MONOSPACE)
                             .color(if active { t.accent } else { t.muted }),
                     ]
@@ -4440,18 +4763,49 @@ fn source_name(source: &OpenSource) -> String {
         .unwrap_or_else(|| path.display().to_string())
 }
 
-/// Tela de abertura (issue #41): nome do arquivo + "Abrindo…" + barra
-/// indeterminada, no lugar do documento.
+/// Tela de abertura (issue #41): a folha entra em esqueleto — a silhueta da
+/// página no lugar do documento (spec v0.9, estado A) — com o nome do
+/// arquivo, "Abrindo…" e a barra indeterminada logo abaixo.
 fn opening(source: &OpenSource, phase: u16, t: Tokens) -> Element<'_, Message> {
+    let mut lines = column![].spacing(14).padding(Padding::from([56, 52]));
+    for i in 0..9 {
+        let w = match i % 4 {
+            0 => 380.0,
+            1 => 300.0,
+            2 => 350.0,
+            _ => 240.0,
+        };
+        lines = lines.push(skeleton_line(w, t.track));
+    }
+
+    let sheet = container(lines)
+        .width(Length::Fixed(484.0))
+        .height(Length::Fill)
+        .max_height(600.0)
+        .style(move |_| container::Style {
+            background: Some(Background::Color(t.page)),
+            border: Border {
+                width: 1.0,
+                color: t.hairline,
+                radius: 3.0.into(),
+            },
+            ..container::Style::default()
+        });
+
     container(
         column![
-            text(source_name(source)).size(16),
-            text(t.lang.pick("Abrindo…", "Opening…"))
-                .size(13)
-                .color(t.muted),
-            loading_bar(phase, t),
+            row![
+                text(source_name(source)).size(13).color(t.muted),
+                text(t.lang.pick("Abrindo…", "Opening…"))
+                    .size(13)
+                    .color(t.faint),
+            ]
+            .spacing(10)
+            .align_y(Alignment::Center),
+            sheet,
+            container(loading_bar(phase, t)).width(Length::Fixed(484.0)),
         ]
-        .spacing(12)
+        .spacing(14)
         .align_x(Alignment::Center),
     )
     .width(Length::Fill)
@@ -4461,8 +4815,25 @@ fn opening(source: &OpenSource, phase: u16, t: Tokens) -> Element<'_, Message> {
     .into()
 }
 
+/// Barra do esqueleto: bloco arredondado onde o texto da página vai entrar.
+fn skeleton_line(width: f32, color: Color) -> Element<'static, Message> {
+    container(Space::new(Length::Fixed(width), Length::Fixed(9.0)))
+        .width(Length::Fixed(width))
+        .height(Length::Fixed(9.0))
+        .style(move |_| container::Style {
+            background: Some(Background::Color(color)),
+            border: Border {
+                radius: 4.0.into(),
+                ..Border::default()
+            },
+            ..container::Style::default()
+        })
+        .into()
+}
+
 /// Falha ao abrir (issue #41): o erro toma o lugar da barra — nunca spinner
-/// preso; a saída é o topo (Início / abrir outro).
+/// preso. A ação fica na própria tela (spec v0.9, estado B): tentar o mesmo
+/// arquivo de novo ou abrir outro.
 fn failed<'a>(source: &'a OpenSource, message: &'a str, t: Tokens) -> Element<'a, Message> {
     container(
         column![
@@ -4473,6 +4844,17 @@ fn failed<'a>(source: &'a OpenSource, message: &'a str, t: Tokens) -> Element<'a
             .size(16),
             text(source_name(source)).size(13).color(t.muted),
             text(message).size(13).color(t.danger),
+            row![
+                button(text(t.lang.pick("Tentar novamente", "Try again")).size(13))
+                    .on_press(Message::RetryOpen)
+                    .padding(Padding::from([7, 14]))
+                    .style(kiri::sheet_action_style(t)),
+                button(text(t.lang.pick("Abrir outro", "Open another")).size(13))
+                    .on_press(Message::PickFile)
+                    .padding(Padding::from([7, 14]))
+                    .style(kiri::sheet_action_style(t)),
+            ]
+            .spacing(8),
         ]
         .spacing(12)
         .align_x(Alignment::Center),
@@ -5117,5 +5499,16 @@ mod signature_checks_tests {
             sig_rows(signature, Lang::Pt)[4].severity,
             CheckSeverity::Attention
         );
+    }
+    // O iced 0.13 não tem glifo para ⌘ no bundle e desenha caixa no lugar:
+    // os rótulos do rodapé precisam ser ASCII, como os do menu.
+    #[test]
+    fn home_footer_caps_stay_ascii() {
+        for cap in home_cap_keys() {
+            assert!(
+                cap.is_ascii(),
+                "atalho do rodapé com caractere fora do ASCII: {cap}"
+            );
+        }
     }
 }

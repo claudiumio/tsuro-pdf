@@ -38,8 +38,14 @@ use crate::search::Search;
 use crate::spool::{list_printers, spool_pdf, PrinterInfo};
 use crate::update::{self, release_version, UpdateError};
 
+/// Largura renderizada da miniatura: ~2x os 64 do rail, para a folha ficar
+/// nítida em hidpi. O rail exibe `RAIL_THUMB_W` (`view.rs`).
 pub(crate) const THUMB_WIDTH: f32 = 120.0;
-pub(crate) const THUMB_ROW: f32 = 156.0;
+/// Passo de uma linha do rail em `thumbs_tab`, já com o vão entre linhas:
+/// halo 2+2 + folha 88 + gap 4 + rótulo 12 + vão 8 = 116. A janela
+/// virtualizada usa este passo nos spacers, então ele muda junto com o
+/// layout — senão a rolagem arrasta a janela fora de lugar.
+pub(crate) const THUMB_ROW: f32 = 116.0;
 const THUMB_VISIBLE: u32 = 8;
 const THUMB_PREFETCH: u32 = 3;
 
@@ -60,7 +66,7 @@ pub(crate) const ANNOT_ROW: f32 = 62.0;
 const NEIGHBOR_CACHE_BUDGET: usize = 64 * 1024 * 1024;
 
 /// Larguras do chrome (espelham `view.rs`); base da geometria do contínuo.
-pub(crate) const PAGES_PANEL_W: f32 = 256.0;
+pub(crate) const PAGES_PANEL_W: f32 = 132.0;
 pub(crate) const SIG_PANEL_W: f32 = 220.0;
 const PANES_GAP: f32 = 12.0;
 const CHROME_PAD: f32 = 8.0;
@@ -2539,6 +2545,8 @@ fn render_key(page: PageNo, scale: Scale, rotation: u8) -> (u32, u16, u8) {
 #[derive(Debug, Clone)]
 pub enum Message {
     PickFile,
+    /// Abrir de novo o mesmo arquivo que falhou (spec v0.9, estado B).
+    RetryOpen,
     /// Escolha do seletor nativo (assíncrona): `None` quando o usuário cancela.
     PickedFile(Option<OpenSource>),
     FileDropped(PathBuf),
@@ -2975,6 +2983,16 @@ impl Session {
                     self.close_overflow();
                     self.begin_open(source)
                 }
+            },
+
+            // O erro é da tentativa, não do arquivo: tenta o mesmo de novo.
+            Message::RetryOpen => match self {
+                Session::Failed { source, .. } => {
+                    let source = source.clone();
+                    self.close_overflow();
+                    self.begin_open(source)
+                }
+                _ => Task::none(),
             },
             Message::FileDropped(path) => {
                 if !is_pdf(&path) {
@@ -3984,6 +4002,18 @@ impl Session {
                     ready.save_warning = false;
                     ready.overflow_open = false;
                     ready.about_open = false;
+                    // Esc limpa a busca ativa antes de mexer na seleção: é o
+                    // que o pill "Limpar (Esc)" das marcações promete, e vale
+                    // também para a busca do documento.
+                    if !ready.annot_query.trim().is_empty() {
+                        ready.annot_query.clear();
+                        ready.annot_cursor = None;
+                        return Task::none();
+                    }
+                    if !ready.search.query().trim().is_empty() {
+                        ready.set_query(String::new());
+                        return self.schedule_work();
+                    }
                     // Enviando: ignora (Esc) para não perder o resultado na volta.
                     if ready
                         .print_dialog
