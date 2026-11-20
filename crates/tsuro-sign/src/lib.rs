@@ -157,10 +157,12 @@ pub fn verify_cms(
 
     let digest_ok = match (&parsed.message_digest, provided_digest) {
         (Some(got), Some(expected)) => got.as_slice() == expected,
+        // No messageDigest means we never compared bytes. Do not call the file altered.
         (None, Some(_)) => {
+            info.status = SignatureStatus::Unsupported;
             info.status_detail =
                 "CMS sem atributos assinados; não é o perfil destacado usual de PDF.".into();
-            false
+            return Ok(info);
         }
         _ => {
             info.status = SignatureStatus::Unsupported;
@@ -335,7 +337,10 @@ fn signature_from_dict(
     info.byte_range = byte_range.or(info.byte_range);
     info.covers_whole_document = covers;
 
-    if !covers
+    // Only claim "bytes after the signed range" when a ByteRange was present and
+    // failed the whole-document check. Missing/malformed ByteRange is not a comparison.
+    if byte_range.is_some()
+        && !covers
         && !matches!(
             info.status,
             SignatureStatus::DocumentModified | SignatureStatus::Invalid
@@ -843,6 +848,201 @@ mod tests {
         assert_eq!(
             sig.status_detail,
             "A assinatura não foi verificada porque a chave pública RSA não pôde ser extraída."
+        );
+    }
+
+    fn cms_sha256_without_signed_attrs() -> Vec<u8> {
+        // Same skeleton as cms_sha256_without_certificate, but SignerInfo has no
+        // signedAttrs → message_digest stays None even when a document digest is provided.
+        let sha256 = der_tlv(
+            0x30,
+            &der_cat(&[
+                &der_tlv(
+                    0x06,
+                    &[0x60, 0x86, 0x48, 0x01, 0x65, 0x03, 0x04, 0x02, 0x01],
+                ),
+                &der_tlv(0x05, &[]),
+            ]),
+        );
+        let rsa = der_tlv(
+            0x30,
+            &der_cat(&[
+                &der_tlv(
+                    0x06,
+                    &[0x2a, 0x86, 0x48, 0x86, 0xf7, 0x0d, 0x01, 0x01, 0x01],
+                ),
+                &der_tlv(0x05, &[]),
+            ]),
+        );
+        let sid = der_tlv(
+            0x30,
+            &der_cat(&[
+                &der_tlv(
+                    0x30,
+                    &der_tlv(
+                        0x31,
+                        &der_tlv(
+                            0x30,
+                            &der_cat(&[&der_tlv(0x06, &[0x55, 0x04, 0x06]), &der_tlv(0x13, b"BR")]),
+                        ),
+                    ),
+                ),
+                &der_tlv(0x02, &[1]),
+            ]),
+        );
+        let signer = der_tlv(
+            0x30,
+            &der_cat(&[
+                &der_tlv(0x02, &[1]),
+                &sid,
+                &sha256,
+                // no signedAttrs here
+                &rsa,
+                &der_tlv(0x04, &[0x00]),
+            ]),
+        );
+        let signed_data = der_tlv(
+            0x30,
+            &der_cat(&[
+                &der_tlv(0x02, &[1]),
+                &der_tlv(0x31, &sha256),
+                &der_tlv(
+                    0x30,
+                    &der_tlv(
+                        0x06,
+                        &[0x2a, 0x86, 0x48, 0x86, 0xf7, 0x0d, 0x01, 0x07, 0x01],
+                    ),
+                ),
+                &der_tlv(0x31, &signer),
+            ]),
+        );
+        der_tlv(
+            0x30,
+            &der_cat(&[
+                &der_tlv(
+                    0x06,
+                    &[0x2a, 0x86, 0x48, 0x86, 0xf7, 0x0d, 0x01, 0x07, 0x02],
+                ),
+                &der_tlv(0xa0, &signed_data),
+            ]),
+        )
+    }
+
+    /// CMS without messageDigest must not be reported as an altered document —
+    /// no digest comparison happened (#161 defect 2).
+    #[test]
+    fn cms_without_message_digest_is_not_document_modified() {
+        let digest = [0xAAu8; 32];
+        let cms = cms_sha256_without_signed_attrs();
+        let info = verify_cms(&cms, Some(&digest), None).expect("cms parses");
+        assert_ne!(
+            info.status,
+            SignatureStatus::DocumentModified,
+            "missing messageDigest must not claim the file was altered: {:?}",
+            info
+        );
+        assert!(
+            info.status_detail.contains("CMS sem atributos")
+                || info.status_detail.contains("atributos assinados"),
+            "honest CMS detail expected, got {}",
+            info.status_detail
+        );
+    }
+
+    fn pdf_sig_without_byte_range() -> Vec<u8> {
+        let cms = cms_sha256_without_certificate(&[0x11u8; 32]);
+        let placeholder = format!("<{}>", "0".repeat(cms.len() * 2));
+        let mut file = Vec::new();
+        file.extend_from_slice(
+            b"%PDF-1.4
+",
+        );
+        let obj1 = file.len();
+        file.extend_from_slice(
+            b"1 0 obj
+<< /Type /Catalog /AcroForm 2 0 R /Pages 3 0 R >>
+endobj
+",
+        );
+        let obj2 = file.len();
+        file.extend_from_slice(
+            b"2 0 obj
+<< /Fields [4 0 R] /SigFlags 3 >>
+endobj
+",
+        );
+        let obj3 = file.len();
+        file.extend_from_slice(
+            b"3 0 obj
+<< /Type /Pages /Kids [] /Count 0 >>
+endobj
+",
+        );
+        let obj4 = file.len();
+        file.extend_from_slice(
+            b"4 0 obj
+<< /FT /Sig /T (Sig1) /V 5 0 R >>
+endobj
+",
+        );
+        let obj5 = file.len();
+        file.extend_from_slice(
+            b"5 0 obj
+<< /Type /Sig /Filter /Adobe.PPKLite /SubFilter /adbe.pkcs7.detached /Contents ",
+        );
+        let gap_at = file.len();
+        file.extend_from_slice(placeholder.as_bytes());
+        let after_gap = file.len();
+        file.extend_from_slice(
+            b" >>
+endobj
+",
+        );
+        let xref_at = file.len();
+        let xref = format!(
+            "xref
+0 6
+0000000000 65535 f 
+{obj1:010} 00000 n 
+{obj2:010} 00000 n 
+{obj3:010} 00000 n 
+{obj4:010} 00000 n 
+{obj5:010} 00000 n 
+trailer
+<< /Size 6 /Root 1 0 R >>
+startxref
+{xref_at:010}
+%%EOF
+"
+        );
+        file.extend_from_slice(xref.as_bytes());
+        let contents: String = cms.iter().map(|b| format!("{b:02X}")).collect();
+        let filled = format!("<{contents}>");
+        assert_eq!(filled.len(), placeholder.len());
+        file[gap_at..after_gap].copy_from_slice(filled.as_bytes());
+        file
+    }
+
+    /// A /Sig dictionary with Contents but no ByteRange must not claim the
+    /// document was altered — nothing was compared (#161 defect 1).
+    #[test]
+    fn missing_byte_range_is_not_document_modified() {
+        let pdf = pdf_sig_without_byte_range();
+        let analysis = analyze_pdf(&pdf).expect("pdf parses");
+        assert_eq!(analysis.signatures.len(), 1, "{analysis:?}");
+        let sig = &analysis.signatures[0];
+        assert!(sig.byte_range.is_none(), "{sig:?}");
+        assert!(!sig.covers_whole_document, "{sig:?}");
+        assert_ne!(
+            sig.status,
+            SignatureStatus::DocumentModified,
+            "missing ByteRange must not claim alteration: {:?}",
+            sig
+        );
+        assert!(
+            !sig.status_detail.contains("fora do intervalo assinado"),
+            "must not use the bytes-after-range detail without a range: {}",
+            sig.status_detail
         );
     }
 }
