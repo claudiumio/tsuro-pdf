@@ -2839,10 +2839,37 @@ impl OpenError {
                 "{}: {err}",
                 lang.pick("não foi possível ler o arquivo", "could not read the file")
             ),
-            OpenError::Engine(err) => format!(
-                "{}: {err}",
-                lang.pick("não foi possível abrir o PDF", "could not open the PDF")
-            ),
+            OpenError::Engine(err) => match err.as_str() {
+                "este PDF está protegido por senha" => lang
+                    .pick(
+                        "Este PDF está protegido por senha.",
+                        "This PDF is password protected.",
+                    )
+                    .to_string(),
+                "o arquivo não é um PDF válido" => lang
+                    .pick(
+                        "O arquivo não é um PDF válido.",
+                        "The file is not a valid PDF.",
+                    )
+                    .to_string(),
+                "as configurações de segurança do PDF impedem a abertura" => lang
+                    .pick(
+                        "As configurações de segurança do PDF impedem a abertura.",
+                        "The PDF security settings prevent opening.",
+                    )
+                    .to_string(),
+                // Engine already returned a full sentence (e.g. PDFIUM_MISSING).
+                msg if msg.starts_with("não foi possível")
+                    || msg.starts_with("Não foi possível")
+                    || msg.starts_with("could not") =>
+                {
+                    err.clone()
+                }
+                _ => format!(
+                    "{}: {err}",
+                    lang.pick("não foi possível abrir o PDF", "could not open the PDF")
+                ),
+            },
             OpenError::Sign(err) => format!("{}: {err}", lang.pick("assinaturas", "signatures")),
         }
     }
@@ -7708,6 +7735,23 @@ mod tests {
     fn outline_keyboard_scroll_tracks_row_positions() {
         assert_eq!(outline_row_offset(0), 0.0);
         assert_eq!(outline_row_offset(100), 4000.0);
+    }
+
+    #[test]
+    fn open_error_password_is_human_and_not_prefixed() {
+        let err = OpenError::Engine("este PDF está protegido por senha".into());
+        assert_eq!(err.message(Lang::Pt), "Este PDF está protegido por senha.");
+        assert_eq!(err.message(Lang::En), "This PDF is password protected.");
+        assert!(!err
+            .message(Lang::Pt)
+            .contains("não foi possível abrir o PDF:"));
+        assert!(!err.message(Lang::Pt).contains("Pdfium"));
+    }
+
+    #[test]
+    fn open_error_engine_full_sentence_is_not_double_prefixed() {
+        let err = OpenError::Engine("não foi possível abrir o PDF".into());
+        assert_eq!(err.message(Lang::Pt), "não foi possível abrir o PDF");
     }
     use crate::page::Glyph;
 

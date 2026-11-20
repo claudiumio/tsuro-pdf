@@ -14,6 +14,11 @@ use crate::session::{AnnotKind, Annotation};
 const PDFIUM_MISSING: &str =
     "Não foi possível carregar a biblioteca Pdfium (.dylib/.dll). Coloque-a na pasta do aplicativo ou instale-a no sistema.";
 const WORKER_GONE: &str = "motor PDF encerrado";
+const OPEN_PASSWORD: &str = "este PDF está protegido por senha";
+const OPEN_FORMAT: &str = "o arquivo não é um PDF válido";
+const OPEN_FILE: &str = "não foi possível ler o arquivo PDF";
+const OPEN_SECURITY: &str = "as configurações de segurança do PDF impedem a abertura";
+const OPEN_FAILED: &str = "não foi possível abrir o PDF";
 const DOC_GONE: &str = "documento fechado";
 const RENDER_TOO_LARGE: &str = "página grande demais para renderizar nesta escala";
 const RENDER_INVALID: &str = "dimensão de render inválida";
@@ -204,9 +209,7 @@ fn serve(incoming: mpsc::Receiver<Request>) {
                         let _ = reply.send(Ok((doc_id, count)));
                     }
                     Err(e) => {
-                        let _ = reply.send(Err(EngineError(format!(
-                            "não foi possível abrir o PDF: {e}"
-                        ))));
+                        let _ = reply.send(Err(EngineError(open_pdfium_error(e))));
                     }
                 }
             }
@@ -642,7 +645,7 @@ fn thumbnail_from_file(
 ) -> Result<Bitmap, EngineError> {
     let document = pdfium
         .load_pdf_from_file(path, None)
-        .map_err(|e| EngineError(format!("não foi possível abrir o PDF: {e}")))?;
+        .map_err(|e| EngineError(open_pdfium_error(e)))?;
     let page = document
         .pages()
         .get(0)
@@ -1010,6 +1013,20 @@ fn quad_from_char(ch: &PdfPageTextChar<'_>) -> Quad {
     }
 }
 
+/// Domain message for a Pdfium open failure — no Debug dump, no outer UI prefix.
+fn open_pdfium_error(err: PdfiumError) -> String {
+    match err {
+        PdfiumError::PdfiumLibraryInternalError(inner) => match inner {
+            PdfiumInternalError::PasswordError => OPEN_PASSWORD.to_string(),
+            PdfiumInternalError::FormatError => OPEN_FORMAT.to_string(),
+            PdfiumInternalError::FileError => OPEN_FILE.to_string(),
+            PdfiumInternalError::SecurityError => OPEN_SECURITY.to_string(),
+            _ => OPEN_FAILED.to_string(),
+        },
+        _ => OPEN_FAILED.to_string(),
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1024,6 +1041,16 @@ mod tests {
         assert_eq!(rotation_for(2), PdfPageRenderRotation::Degrees180);
         assert_eq!(rotation_for(3), PdfPageRenderRotation::Degrees270);
         assert_eq!(rotation_for(5), PdfPageRenderRotation::Degrees90);
+    }
+
+    #[test]
+    fn open_pdfium_error_maps_password_without_debug() {
+        let msg = open_pdfium_error(PdfiumError::PdfiumLibraryInternalError(
+            PdfiumInternalError::PasswordError,
+        ));
+        assert_eq!(msg, OPEN_PASSWORD);
+        assert!(!msg.contains("Pdfium"));
+        assert!(!msg.contains("PasswordError"));
     }
 
     #[test]
