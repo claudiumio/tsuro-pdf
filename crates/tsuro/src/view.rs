@@ -2807,7 +2807,19 @@ fn ink_backdrop(t: Tokens) -> Element<'static, Message> {
 }
 
 /// Rodapé do Início: os atalhos que valem antes de abrir qualquer coisa.
+/// Rótulos do rodapé do Início. Sempre ASCII: o iced 0.13 não tem glifo
+/// para ⌘ no bundle e desenha uma caixa; `Cmd`/`Ctrl` mudam com a
+/// plataforma, como em `shortcut_hint`.
+fn home_cap_keys() -> [&'static str; 3] {
+    if cfg!(target_os = "macos") {
+        ["Cmd+O", "Cmd+F", "Cmd+,"]
+    } else {
+        ["Ctrl+O", "Ctrl+F", "Ctrl+,"]
+    }
+}
+
 fn home_footer(t: Tokens) -> Element<'static, Message> {
+    let caps = home_cap_keys();
     let cap = move |keys: &'static str, label: &'static str| -> Element<'static, Message> {
         row![
             container(text(keys).size(10).color(t.faint))
@@ -2832,9 +2844,9 @@ fn home_footer(t: Tokens) -> Element<'static, Message> {
         rule,
         container(
             row![
-                cap("\u{2318}O", t.lang.pick("Abrir", "Open")),
-                cap("\u{2318}F", t.lang.pick("Buscar", "Find")),
-                cap("\u{2318},", t.lang.pick("Ajustes", "Settings")),
+                cap(caps[0], t.lang.pick("Abrir", "Open")),
+                cap(caps[1], t.lang.pick("Buscar", "Find")),
+                cap(caps[2], t.lang.pick("Ajustes", "Settings")),
                 Space::with_width(Length::Fill),
                 cap("?", t.lang.pick("Atalhos", "Shortcuts")),
             ]
@@ -3661,7 +3673,11 @@ fn thumbs_tab(ready: &Ready, t: Tokens) -> Element<'_, Message> {
         let page = PageNo::from_index(i);
         let preview: Element<'_, Message> = match ready.thumb_surface(page) {
             Some(surface) => image(surface.image.clone())
+                // Caixa exata 64x88: a foto da página entra em `contain`, então
+                // página fora do A4 não muda a altura da linha do rail.
                 .width(Length::Fixed(RAIL_THUMB_W))
+                .height(Length::Fixed(RAIL_THUMB_H))
+                .content_fit(iced::ContentFit::Contain)
                 .into(),
             None => container(Space::new(
                 Length::Fixed(RAIL_THUMB_W),
@@ -5483,5 +5499,16 @@ mod signature_checks_tests {
             sig_rows(signature, Lang::Pt)[4].severity,
             CheckSeverity::Attention
         );
+    }
+    // O iced 0.13 não tem glifo para ⌘ no bundle e desenha caixa no lugar:
+    // os rótulos do rodapé precisam ser ASCII, como os do menu.
+    #[test]
+    fn home_footer_caps_stay_ascii() {
+        for cap in home_cap_keys() {
+            assert!(
+                cap.is_ascii(),
+                "atalho do rodapé com caractere fora do ASCII: {cap}"
+            );
+        }
     }
 }

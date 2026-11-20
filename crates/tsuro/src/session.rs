@@ -38,8 +38,14 @@ use crate::search::Search;
 use crate::spool::{list_printers, spool_pdf, PrinterInfo};
 use crate::update::{self, release_version, UpdateError};
 
+/// Largura renderizada da miniatura: ~2x os 64 do rail, para a folha ficar
+/// nítida em hidpi. O rail exibe `RAIL_THUMB_W` (`view.rs`).
 pub(crate) const THUMB_WIDTH: f32 = 120.0;
-pub(crate) const THUMB_ROW: f32 = 108.0;
+/// Passo de uma linha do rail em `thumbs_tab`, já com o vão entre linhas:
+/// halo 2+2 + folha 88 + gap 4 + rótulo 12 + vão 8 = 116. A janela
+/// virtualizada usa este passo nos spacers, então ele muda junto com o
+/// layout — senão a rolagem arrasta a janela fora de lugar.
+pub(crate) const THUMB_ROW: f32 = 116.0;
 const THUMB_VISIBLE: u32 = 8;
 const THUMB_PREFETCH: u32 = 3;
 
@@ -3969,6 +3975,18 @@ impl Session {
                     ready.save_warning = false;
                     ready.overflow_open = false;
                     ready.about_open = false;
+                    // Esc limpa a busca ativa antes de mexer na seleção: é o
+                    // que o pill "Limpar (Esc)" das marcações promete, e vale
+                    // também para a busca do documento.
+                    if !ready.annot_query.trim().is_empty() {
+                        ready.annot_query.clear();
+                        ready.annot_cursor = None;
+                        return Task::none();
+                    }
+                    if !ready.search.query().trim().is_empty() {
+                        ready.set_query(String::new());
+                        return self.schedule_work();
+                    }
                     // Enviando: ignora (Esc) para não perder o resultado na volta.
                     if ready
                         .print_dialog
