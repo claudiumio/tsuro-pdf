@@ -13,6 +13,8 @@ pub(crate) mod engine;
 pub(crate) mod print;
 pub(crate) mod recovery;
 pub(crate) mod spool;
+#[cfg(test)]
+pub(crate) mod test_store;
 pub(crate) mod update;
 
 pub use page::{Bitmap, MediaBox, Outline, OutlineItem, PageNo, Quad, Scale, TextLayer, Viewport};

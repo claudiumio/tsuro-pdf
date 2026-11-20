@@ -26,13 +26,16 @@ pub enum ThemePref {
 #[cfg(test)]
 thread_local! {
     static PREFS_PATH: RefCell<Option<PathBuf>> = const { RefCell::new(None) };
+    static SCRATCH: crate::test_store::ScratchStore =
+        crate::test_store::ScratchStore::new("tsuro-prefs-test");
 }
 
 #[cfg(test)]
 pub fn with_prefs_path<R>(path: PathBuf, f: impl FnOnce() -> R) -> R {
-    PREFS_PATH.with(|slot| *slot.borrow_mut() = Some(path));
+    // Bloco aninhado volta ao caminho de fora ao sair, não ao padrão.
+    let previous = PREFS_PATH.with(|slot| slot.borrow_mut().replace(path));
     let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(f));
-    PREFS_PATH.with(|slot| *slot.borrow_mut() = None);
+    PREFS_PATH.with(|slot| *slot.borrow_mut() = previous);
     match result {
         Ok(value) => value,
         Err(panic) => std::panic::resume_unwind(panic),
@@ -49,18 +52,27 @@ pub fn prefs_file() -> PathBuf {
     if let Some(p) = std::env::var_os("TSURO_PREFS") {
         return PathBuf::from(p);
     }
-    if cfg!(target_os = "macos") {
-        if let Some(home) = std::env::var_os("HOME") {
-            return PathBuf::from(home).join("Library/Application Support/Tsuro/prefs");
+    #[cfg(test)]
+    {
+        // Sem override: arquivo descartável da thread de teste — a suíte não
+        // lê nem grava as preferências reais do usuário.
+        SCRATCH.with(crate::test_store::ScratchStore::path)
+    }
+    #[cfg(not(test))]
+    {
+        if cfg!(target_os = "macos") {
+            if let Some(home) = std::env::var_os("HOME") {
+                return PathBuf::from(home).join("Library/Application Support/Tsuro/prefs");
+            }
         }
+        if let Some(xdg) = std::env::var_os("XDG_DATA_HOME") {
+            return PathBuf::from(xdg).join("tsuro/prefs");
+        }
+        if let Some(home) = std::env::var_os("HOME").or_else(|| std::env::var_os("USERPROFILE")) {
+            return PathBuf::from(home).join(".local/share/tsuro/prefs");
+        }
+        std::env::temp_dir().join("tsuro-prefs")
     }
-    if let Some(xdg) = std::env::var_os("XDG_DATA_HOME") {
-        return PathBuf::from(xdg).join("tsuro/prefs");
-    }
-    if let Some(home) = std::env::var_os("HOME").or_else(|| std::env::var_os("USERPROFILE")) {
-        return PathBuf::from(home).join(".local/share/tsuro/prefs");
-    }
-    std::env::temp_dir().join("tsuro-prefs")
 }
 
 pub fn read_theme_pref() -> ThemePref {
