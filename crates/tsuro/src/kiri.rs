@@ -51,6 +51,17 @@ pub struct Tokens {
     pub mark: Color,
     /// Hit atual da busca (Enter/F3) — âmbar cheio sobre o amarelo claro.
     pub mark_current: Color,
+    // v0.9 — papéis do redesign (ver Roles).
+    pub sumi_2: Color,
+    pub rail: Color,
+    pub panel: Color,
+    pub pop: Color,
+    pub hairline: Color,
+    pub hairline_soft: Color,
+    pub sheet_border: Color,
+    pub on_ink: Color,
+    pub washi_2: Color,
+    pub accent_contrast: Color,
     /// Idioma da interface: textos do chrome saem de `lang.pick(pt, en)`.
     pub lang: Lang,
 }
@@ -84,6 +95,16 @@ impl Tokens {
             page: r.page,
             mark: hex(0xfd, 0xe6, 0x8a),
             mark_current: hex(0xf5, 0x9e, 0x0b),
+            sumi_2: r.sumi_2,
+            rail: r.rail,
+            panel: r.panel,
+            pop: r.pop,
+            hairline: r.hairline,
+            hairline_soft: r.hairline_soft,
+            sheet_border: r.sheet_border,
+            on_ink: r.on_ink,
+            washi_2: r.washi_2,
+            accent_contrast: r.accent_contrast,
         }
     }
 }
@@ -201,6 +222,27 @@ pub struct Roles {
     /// Hover fill, lighter than `fill_1` so a hover never reads as a control
     /// surface [INF].
     pub hover: Color,
+    // v0.9 (spec do Doop: folio refinado)
+    /// Mesa profunda atrás da folha e da arte de tinta do Início.
+    pub sumi_2: Color,
+    /// Trilho de páginas e superfícies rebaixadas.
+    pub rail: Color,
+    /// Superfície de painel.
+    pub panel: Color,
+    /// Superfície flutuante (folha de Ajustes, menu).
+    pub pop: Color,
+    /// Fio de 1 px sobre superfícies escuras.
+    pub hairline: Color,
+    /// Fio suave, para divisórias dentro de um grupo.
+    pub hairline_soft: Color,
+    /// Borda de folha sobre papel.
+    pub sheet_border: Color,
+    /// Texto sobre tinta escura: sempre claro, nos dois temas.
+    pub on_ink: Color,
+    /// Papel de fundo da vista de leitura.
+    pub washi_2: Color,
+    /// Texto sob o accent_kiri.
+    pub accent_contrast: Color,
 }
 
 impl Roles {
@@ -223,6 +265,16 @@ impl Roles {
                 elevated: hex(0x30, 0x30, 0x30),
                 accent_bg: hex(0x1e, 0x33, 0x31),
                 hover: hex(0x2a, 0x2a, 0x2a),
+                sumi_2: hex(0x0f, 0x11, 0x11),
+                rail: hex(0x16, 0x19, 0x19),
+                panel: hex(0x1c, 0x1f, 0x1f),
+                pop: hex(0x23, 0x28, 0x28),
+                hairline: Color::from_rgba(1.0, 1.0, 1.0, 0.08),
+                hairline_soft: Color::from_rgba(1.0, 1.0, 1.0, 0.05),
+                sheet_border: Color::from_rgba(1.0, 1.0, 1.0, 0.10),
+                on_ink: hex(0xec, 0xea, 0xe2),
+                washi_2: hex(0x1a, 0x1d, 0x1c),
+                accent_contrast: hex(0x0b, 0x15, 0x14),
             },
             Theme::Light => Self {
                 label: hex(0x26, 0x26, 0x26),     // #000 85% over #FFF
@@ -241,6 +293,16 @@ impl Roles {
                 elevated: Color::WHITE,
                 accent_bg: hex(0xdf, 0xf1, 0xef),
                 hover: hex(0xee, 0xee, 0xee),
+                sumi_2: hex(0xe9, 0xe3, 0xd3),
+                rail: hex(0xf5, 0xf3, 0xec),
+                panel: hex(0xf8, 0xf7, 0xf3),
+                pop: Color::WHITE,
+                hairline: Color::from_rgba(0.0, 0.0, 0.0, 0.10),
+                hairline_soft: Color::from_rgba(0.0, 0.0, 0.0, 0.06),
+                sheet_border: hex(0xe3, 0xdc, 0xcb),
+                on_ink: hex(0xec, 0xea, 0xe2),
+                washi_2: hex(0xed, 0xe8, 0xd8),
+                accent_contrast: Color::WHITE,
             },
         }
     }
@@ -1715,5 +1777,91 @@ mod tests {
                 scrim: Some(Color::from_rgba(0.0, 0.0, 0.0, 0.25))
             }
         );
+    }
+}
+
+/// v0.9: tile de tema na folha de Ajustes — preview da superfície sob o nome.
+pub fn theme_tile_style(
+    tokens: Tokens,
+    active: bool,
+) -> impl Fn(&iced::Theme, button::Status) -> button::Style {
+    move |_theme, status| {
+        let hovered = matches!(status, button::Status::Hovered | button::Status::Pressed);
+        button::Style {
+            background: Some(Background::Color(if active {
+                tokens.accent_bg
+            } else if hovered {
+                tokens.hover
+            } else {
+                tokens.surface
+            })),
+            text_color: if active { tokens.accent } else { tokens.ink },
+            border: Border {
+                radius: radius(Radius::Item).into(),
+                width: if active { 1.5 } else { 1.0 },
+                color: if active {
+                    tokens.accent
+                } else {
+                    tokens.hairline
+                },
+            },
+            shadow: Shadow::default(),
+        }
+    }
+}
+
+/// v0.9: switch de 30x18 da folha (on = accent-kiri).
+pub fn switch_style(tokens: Tokens, on: bool) -> impl Fn(&iced::Theme) -> container::Style {
+    move |_| container::Style {
+        background: Some(Background::Color(if on {
+            tokens.accent
+        } else {
+            tokens.line
+        })),
+        border: Border {
+            radius: 99.0.into(),
+            ..Border::default()
+        },
+        ..container::Style::default()
+    }
+}
+
+/// v0.9: tecla do rodapé de atalhos do Início — cápsula discreta com fio.
+pub fn key_cap_style(tokens: Tokens) -> impl Fn(&iced::Theme) -> container::Style {
+    move |_| container::Style {
+        background: Some(Background::Color(tokens.rail)),
+        border: Border {
+            radius: 5.0.into(),
+            width: 1.0,
+            color: tokens.hairline,
+        },
+        text_color: Some(tokens.faint),
+        ..container::Style::default()
+    }
+}
+
+/// v0.9: botão primário do rodapé da folha (Concluído).
+pub fn sheet_action_style(
+    tokens: Tokens,
+) -> impl Fn(&iced::Theme, button::Status) -> button::Style {
+    move |_, status| {
+        let bg = match status {
+            button::Status::Hovered | button::Status::Pressed => tokens.accent,
+            _ => tokens.accent_bg,
+        };
+        button::Style {
+            background: Some(Background::Color(bg)),
+            text_color: if matches!(status, button::Status::Hovered | button::Status::Pressed) {
+                tokens.accent_contrast
+            } else {
+                tokens.accent
+            },
+            border: Border {
+                radius: radius(Radius::Button).into(),
+                width: 1.0,
+                color: tokens.accent,
+            },
+            ..button::Style::default()
+        }
     }
 }

@@ -39,7 +39,7 @@ use crate::spool::{list_printers, spool_pdf, PrinterInfo};
 use crate::update::{self, release_version, UpdateError};
 
 pub(crate) const THUMB_WIDTH: f32 = 120.0;
-pub(crate) const THUMB_ROW: f32 = 156.0;
+pub(crate) const THUMB_ROW: f32 = 108.0;
 const THUMB_VISIBLE: u32 = 8;
 const THUMB_PREFETCH: u32 = 3;
 
@@ -60,7 +60,7 @@ pub(crate) const ANNOT_ROW: f32 = 62.0;
 const NEIGHBOR_CACHE_BUDGET: usize = 64 * 1024 * 1024;
 
 /// Larguras do chrome (espelham `view.rs`); base da geometria do contínuo.
-pub(crate) const PAGES_PANEL_W: f32 = 256.0;
+pub(crate) const PAGES_PANEL_W: f32 = 132.0;
 pub(crate) const SIG_PANEL_W: f32 = 220.0;
 const PANES_GAP: f32 = 12.0;
 const CHROME_PAD: f32 = 8.0;
@@ -2539,6 +2539,8 @@ fn render_key(page: PageNo, scale: Scale, rotation: u8) -> (u32, u16, u8) {
 #[derive(Debug, Clone)]
 pub enum Message {
     PickFile,
+    /// Abrir de novo o mesmo arquivo que falhou (spec v0.9, estado B).
+    RetryOpen,
     /// Escolha do seletor nativo (assíncrona): `None` quando o usuário cancela.
     PickedFile(Option<OpenSource>),
     FileDropped(PathBuf),
@@ -2948,6 +2950,16 @@ impl Session {
                     self.close_overflow();
                     self.begin_open(source)
                 }
+            },
+
+            // O erro é da tentativa, não do arquivo: tenta o mesmo de novo.
+            Message::RetryOpen => match self {
+                Session::Failed { source, .. } => {
+                    let source = source.clone();
+                    self.close_overflow();
+                    self.begin_open(source)
+                }
+                _ => Task::none(),
             },
             Message::FileDropped(path) => {
                 if !is_pdf(&path) {
