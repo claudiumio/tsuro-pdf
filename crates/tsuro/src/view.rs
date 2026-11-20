@@ -3337,7 +3337,15 @@ fn pages_panel(ready: &Ready, t: Tokens) -> Element<'_, Message> {
         Some(PanelTab::Annotations) => col.push(annotations_tab(ready, t)),
         _ => col.push(thumbs_tab(ready, t)),
     };
-    container(col.width(Length::Fill).height(Length::Fill))
+    let body: Element<'_, Message> = stack![
+        col.width(Length::Fill).height(Length::Fill),
+        column![
+            Space::with_height(Length::Fill),
+            rail_fade(t),
+        ],
+    ]
+    .into();
+    container(body)
         .width(Length::Fixed(PAGES_PANEL_W))
         .height(Length::Fill)
         .padding(Padding {
@@ -3612,6 +3620,37 @@ fn clip_one_line(text: &str, max: usize) -> String {
         None => one_line,
     }
 }
+/// Miniaturas do rail (frame 06): 64 de largura é o que cabe nos 132 do
+/// painel sem apertar o número da página.
+const RAIL_THUMB_W: f32 = 64.0;
+const RAIL_THUMB_H: f32 = 88.0;
+
+/// Véu no pé do rail: faixas de alfa crescente fazem a coluna de miniaturas
+/// sumir suave no fundo, em vez de cortar num degrau.
+fn rail_fade(t: Tokens) -> Element<'static, Message> {
+    const STEPS: [(f32, f32); 6] = [
+        (16.0, 0.12),
+        (13.0, 0.28),
+        (10.0, 0.48),
+        (8.0, 0.68),
+        (6.0, 0.85),
+        (5.0, 0.97),
+    ];
+    let mut col = column![].spacing(0);
+    for (h, a) in STEPS {
+        col = col.push(
+            container(Space::new(Length::Fill, Length::Fixed(h)))
+                .width(Length::Fill)
+                .height(Length::Fixed(h))
+                .style(move |_| container::Style {
+                    background: Some(Background::Color(Color { a, ..t.panel })),
+                    ..container::Style::default()
+                }),
+        );
+    }
+    col.into()
+}
+
 fn thumbs_tab(ready: &Ready, t: Tokens) -> Element<'_, Message> {
     // Janela virtualizada do remoto: só monta as miniaturas visíveis.
     let window = ready.thumb_page_window();
@@ -3625,9 +3664,12 @@ fn thumbs_tab(ready: &Ready, t: Tokens) -> Element<'_, Message> {
         let page = PageNo::from_index(i);
         let preview: Element<'_, Message> = match ready.thumb_surface(page) {
             Some(surface) => image(surface.image.clone())
-                .width(Length::Fixed(120.0))
+                .width(Length::Fixed(RAIL_THUMB_W))
                 .into(),
-            None => container(Space::new(Length::Fixed(120.0), Length::Fixed(150.0)))
+            None => container(Space::new(
+                Length::Fixed(RAIL_THUMB_W),
+                Length::Fixed(RAIL_THUMB_H),
+            ))
                 .style(kiri::panel_thumb_frame_style(t))
                 .into(),
         };
@@ -3642,8 +3684,8 @@ fn thumbs_tab(ready: &Ready, t: Tokens) -> Element<'_, Message> {
                         container(container(preview).style(kiri::panel_thumb_frame_style(t)),)
                             .padding(2)
                             .style(kiri::panel_thumb_style(t, active)),
-                        text(format!("{} {}", t.lang.pick("Pág.", "Page"), i + 1))
-                            .size(11)
+                        text(format!("{}", i + 1))
+                            .size(10)
                             .font(iced::Font::MONOSPACE)
                             .color(if active { t.accent } else { t.muted }),
                     ]
