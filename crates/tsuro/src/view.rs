@@ -3339,10 +3339,7 @@ fn pages_panel(ready: &Ready, t: Tokens) -> Element<'_, Message> {
     };
     let body: Element<'_, Message> = stack![
         col.width(Length::Fill).height(Length::Fill),
-        column![
-            Space::with_height(Length::Fill),
-            rail_fade(t),
-        ],
+        column![Space::with_height(Length::Fill), rail_fade(t),],
     ]
     .into();
     container(body)
@@ -3670,8 +3667,8 @@ fn thumbs_tab(ready: &Ready, t: Tokens) -> Element<'_, Message> {
                 Length::Fixed(RAIL_THUMB_W),
                 Length::Fixed(RAIL_THUMB_H),
             ))
-                .style(kiri::panel_thumb_frame_style(t))
-                .into(),
+            .style(kiri::panel_thumb_frame_style(t))
+            .into(),
         };
         let active = ready.visible == page;
         col = col.push(
