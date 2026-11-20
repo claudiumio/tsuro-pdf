@@ -12,6 +12,16 @@ concurrency:
   cancel-in-progress: true
 
 jobs:
+  coauthors:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.pull_request.head.sha || github.sha }}
+          fetch-depth: 0
+      - name: co-author identities
+        # Runs before the Rust jobs: a bad trailer is caught in seconds.
+        run: sh scripts/check-coauthors.sh "origin/${{ github.base_ref || 'main' }}"
   review:
     runs-on: macos-15
     steps:
