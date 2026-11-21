@@ -521,19 +521,23 @@ fn hash_byte_range<D: Digest>(bytes: &[u8], br: [i64; 4]) -> Option<Vec<u8>> {
 
 fn format_pdf_date(raw: &str) -> String {
     let s = raw.strip_prefix("D:").unwrap_or(raw);
-    if s.len() >= 14 {
-        format!(
-            "{}-{}-{} {}:{}:{}",
-            &s[0..4],
-            &s[4..6],
-            &s[6..8],
-            &s[8..10],
-            &s[10..12],
-            &s[12..14]
-        )
-    } else {
-        raw.to_string()
+    // A data é sempre ASCII (D:YYYYMMDDHHmmSS…). Fatias por índice de byte em
+    // uma string multibyte panicam; fora do formato, devolvemos a string crua.
+    let bytes = s.as_bytes();
+    if bytes.len() < 14 || !bytes[..14].iter().all(u8::is_ascii_digit) {
+        return raw.to_string();
     }
+    let digits =
+        |range: std::ops::Range<usize>| std::str::from_utf8(&bytes[range]).unwrap_or_default();
+    format!(
+        "{}-{}-{} {}:{}:{}",
+        digits(0..4),
+        digits(4..6),
+        digits(6..8),
+        digits(8..10),
+        digits(10..12),
+        digits(12..14)
+    )
 }
 
 fn hex_decode(s: &str) -> Result<Vec<u8>, String> {
@@ -562,6 +566,37 @@ mod tests {
         let bytes = std::fs::read(fixture("guia-folio.pdf")).expect("guia");
         let analysis = analyze_pdf(&bytes).expect("parse");
         assert!(analysis.signatures.is_empty());
+    }
+
+    #[test]
+    fn multibyte_m_date_does_not_panic() {
+        let mut file = Vec::new();
+        file.extend_from_slice(b"%PDF-1.4\n");
+        let obj1 = file.len();
+        file.extend_from_slice(b"1 0 obj\n<< /Type /Catalog /Pages 2 0 R >>\nendobj\n");
+        let obj2 = file.len();
+        file.extend_from_slice(b"2 0 obj\n<< /Type /Pages /Kids [] /Count 0 >>\nendobj\n");
+        let obj3 = file.len();
+        // "é" (UTF-8, 2 bytes) atravessa o índice de byte 4 da data.
+        file.extend_from_slice(
+            b"3 0 obj\n<< /Type /Sig /Contents <41> /M (D:abc\xc3\xa9abcdefghij) >>\nendobj\n",
+        );
+        let xref_at = file.len();
+        let xref = format!(
+            "xref\n0 4\n0000000000 65535 f \n{obj1:010} 00000 n \n{obj2:010} 00000 n \n{obj3:010} 00000 n \ntrailer\n<< /Size 4 /Root 1 0 R >>\nstartxref\n{xref_at:010}\n%%EOF\n"
+        );
+        file.extend_from_slice(xref.as_bytes());
+
+        let analysis = analyze_pdf(&file).expect("pdf parses");
+        assert_eq!(analysis.signatures.len(), 1, "{analysis:?}");
+        let sig = &analysis.signatures[0];
+        // Data fora do formato degrada para a string crua, sem pânico (#201).
+        assert_eq!(
+            sig.signing_time.as_deref(),
+            Some("D:abc\u{e9}abcdefghij"),
+            "{:?}",
+            sig.signing_time
+        );
     }
 
     #[test]
