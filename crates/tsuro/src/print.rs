@@ -65,21 +65,20 @@ pub fn print_selection_pdf(
 ) -> Result<Vec<u8>, PrintError> {
     let pages = resolve_range(selection.range, engine.page_count())?;
     let scale = print_scale(PRINT_DPI);
-    let mut rendered = Vec::with_capacity(pages.len());
-    for page in pages {
+    // Streaming (#147): renderiza e escreve uma página por vez. O que fica
+    // retido é só o PDF de saída, nunca o intervalo inteiro em RGBA.
+    assemble_pages_streaming(pages.len(), selection.copies, |index| {
+        let page = *pages
+            .get(index)
+            .ok_or_else(|| PrintError("intervalo de páginas inválido".into()))?;
         let media = engine
             .media(page)
             .map_err(|err| PrintError(err.to_string()))?;
         let surface = engine
             .render(page, scale, 0)
             .map_err(|err| PrintError(err.to_string()))?;
-        rendered.push(apply_orientation(
-            &surface.bitmap,
-            media,
-            selection.orientation,
-        )?);
-    }
-    assemble_print_pages(&rendered, selection.copies)
+        apply_orientation(surface.bitmap, media, selection.orientation)
+    })
 }
 
 /// Intervalo → páginas em ordem; valida contra o total (`PageNo` é 0-based).
@@ -104,7 +103,7 @@ pub fn resolve_range(range: PrintRange, page_count: u32) -> Result<Vec<PageNo>, 
 
 /// Retrato gira páginas paisagem (e vice-versa); quadrada e `Auto` não mexem.
 fn apply_orientation(
-    bitmap: &Bitmap,
+    bitmap: Bitmap,
     media: MediaBox,
     orientation: PrintOrientation,
 ) -> Result<(Bitmap, MediaBox), PrintError> {
@@ -115,14 +114,21 @@ fn apply_orientation(
         (PrintOrientation::Portrait, true, _) | (PrintOrientation::Landscape, _, true)
     );
     if !rotate {
-        return Ok((bitmap.clone(), media));
+        // Por valor: a página sem giro não é copiada de novo.
+        return Ok((bitmap, media));
     }
-    let (rgba, width, height) = rotate_rgba_90_cw(&bitmap.rgba, bitmap.width, bitmap.height)?;
+    let Bitmap {
+        width,
+        height,
+        rgba,
+    } = bitmap;
+    let (rotated, width, height) = rotate_rgba_90_cw(&rgba, width, height)?;
+    drop(rgba);
     Ok((
         Bitmap {
             width,
             height,
-            rgba,
+            rgba: rotated,
         },
         MediaBox {
             width: media.height,
@@ -155,12 +161,79 @@ fn rotate_rgba_90_cw(
     Ok((out, height, width))
 }
 
+/// Monta o PDF consumindo uma página por vez (#147).
+///
+/// A ordem dos objetos é a mesma do montador em lote (catálogo, árvore,
+/// todas as imagens, todas as páginas), então a saída continua byte a byte
+/// igual. A diferença é a memória: só o `MediaBox` de cada página fica
+/// retido; o bitmap é escrito no `Pdf` e morre antes da página seguinte.
+fn assemble_pages_streaming<F>(
+    count: usize,
+    copies: u32,
+    mut page: F,
+) -> Result<Vec<u8>, PrintError>
+where
+    F: FnMut(usize) -> Result<(Bitmap, MediaBox), PrintError>,
+{
+    if count == 0 {
+        return Err(PrintError("nenhuma página para imprimir".into()));
+    }
+    let copies = copies.clamp(1, MAX_COPIES) as usize;
+    let total = count
+        .checked_mul(copies)
+        .ok_or_else(|| PrintError("documento grande demais para imprimir".into()))?;
+    let total_count = i32::try_from(total)
+        .map_err(|_| PrintError("documento grande demais para imprimir".into()))?;
+
+    let mut pdf = Pdf::new();
+    let catalog_id = Ref::new(1);
+    let page_tree_id = Ref::new(2);
+    let mut next: i32 = 3;
+    let mut alloc = || {
+        let id = Ref::new(next);
+        next += 1;
+        id
+    };
+
+    let image_ids: Vec<Ref> = (0..count).map(|_| alloc()).collect();
+    let slots: Vec<(Ref, Ref)> = (0..total).map(|_| (alloc(), alloc())).collect();
+    let kids: Vec<Ref> = slots.iter().map(|slot| slot.0).collect();
+
+    pdf.catalog(catalog_id).pages(page_tree_id);
+    pdf.pages(page_tree_id).kids(kids).count(total_count);
+
+    let mut media_boxes = Vec::with_capacity(count);
+    for (index, image_id) in image_ids.iter().enumerate() {
+        let (bitmap, media) = page(index)?;
+        write_print_image(&mut pdf, *image_id, &bitmap)?;
+        drop(bitmap);
+        media_boxes.push(media);
+    }
+    for (slot_index, (page_id, content_id)) in slots.into_iter().enumerate() {
+        let unique = slot_index / copies;
+        write_print_page(
+            &mut pdf,
+            page_tree_id,
+            page_id,
+            content_id,
+            image_ids[unique],
+            unique,
+            &media_boxes[unique],
+        )?;
+    }
+
+    Ok(pdf.finish())
+}
+
+/// Referência do montador em lote. Existe só para provar que o streaming
+/// produz os mesmos bytes (teste `streaming_matches_batch_assembly`).
 #[cfg(test)]
 pub fn assemble_test_pdf(pages: &[(Bitmap, MediaBox)], copies: u32) -> Result<Vec<u8>, PrintError> {
     assemble_print_pages(pages, copies)
 }
 
 /// Páginas únicas → 1 Image XObject cada, compartilhado pelas `copies` cópias.
+#[cfg(test)]
 fn assemble_print_pages(pages: &[(Bitmap, MediaBox)], copies: u32) -> Result<Vec<u8>, PrintError> {
     if pages.is_empty() {
         return Err(PrintError("nenhuma página para imprimir".into()));
@@ -532,30 +605,73 @@ mod tests {
 
     #[test]
     fn orientation_rotates_bitmap_and_media() {
-        let wide = solid_rgba(4, 2, [255, 0, 0]);
         let media = MediaBox {
             width: 400.0,
             height: 200.0,
         };
         // Paisagem pede paisagem: nada muda.
-        let (same, same_media) =
-            apply_orientation(&wide, media, PrintOrientation::Landscape).expect("same");
+        let (same, same_media) = apply_orientation(
+            solid_rgba(4, 2, [255, 0, 0]),
+            media,
+            PrintOrientation::Landscape,
+        )
+        .expect("same");
         assert_eq!((same.width, same.height), (4, 2));
         assert_eq!((same_media.width, same_media.height), (400.0, 200.0));
         // Retrato gira: 4x2 vira 2x4, MediaBox troca.
-        let (tall, tall_media) =
-            apply_orientation(&wide, media, PrintOrientation::Portrait).expect("rot");
+        let (tall, tall_media) = apply_orientation(
+            solid_rgba(4, 2, [255, 0, 0]),
+            media,
+            PrintOrientation::Portrait,
+        )
+        .expect("rot");
         assert_eq!((tall.width, tall.height), (2, 4));
         assert_eq!((tall_media.width, tall_media.height), (200.0, 400.0));
         // Quadrada nunca gira.
-        let square = solid_rgba(3, 3, [0, 0, 255]);
         let sq_media = MediaBox {
             width: 100.0,
             height: 100.0,
         };
-        let (kept, _) =
-            apply_orientation(&square, sq_media, PrintOrientation::Portrait).expect("sq");
+        let (kept, _) = apply_orientation(
+            solid_rgba(3, 3, [0, 0, 255]),
+            sq_media,
+            PrintOrientation::Portrait,
+        )
+        .expect("sq");
         assert_eq!((kept.width, kept.height), (3, 3));
+    }
+
+    #[test]
+    fn streaming_matches_batch_assembly_byte_for_byte() {
+        let pages = vec![
+            (
+                solid_rgba(4, 2, [255, 0, 0]),
+                MediaBox {
+                    width: 40.0,
+                    height: 20.0,
+                },
+            ),
+            (
+                solid_rgba(2, 3, [0, 255, 0]),
+                MediaBox {
+                    width: 20.0,
+                    height: 30.0,
+                },
+            ),
+            (
+                solid_rgba(3, 3, [0, 0, 255]),
+                MediaBox {
+                    width: 30.0,
+                    height: 30.0,
+                },
+            ),
+        ];
+        let batch = assemble_print_pages(&pages, 2).expect("batch");
+        let streamed = assemble_pages_streaming(pages.len(), 2, |index| {
+            Ok((pages[index].0.clone(), pages[index].1))
+        })
+        .expect("streamed");
+        assert_eq!(batch, streamed);
     }
 
     #[test]
