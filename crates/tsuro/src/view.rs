@@ -1367,6 +1367,11 @@ fn menu_disabled(t: Tokens, label: &'static str) -> Element<'static, Message> {
     .into()
 }
 
+/// Largura/padding do cartão de impressão (spec §4): o rodapé usa a largura
+/// interna para a barra de envio (issue #204) encostar nas bordas do conteúdo.
+const PRINT_CARD_W: f32 = 620.0;
+const PRINT_CARD_PAD: f32 = 16.0;
+
 /// Modal de impressão: fundo fecha ao clicar, cartão captura sem efeito —
 /// nada atravessa para o documento atrás.
 fn print_layer<'a>(ready: &'a Ready, dialog: &'a PrintDialog, t: Tokens) -> Element<'a, Message> {
@@ -1416,8 +1421,8 @@ fn print_card<'a>(ready: &'a Ready, dialog: &'a PrintDialog, t: Tokens) -> Eleme
     }
     col = col.push(print_footer(dialog, t));
     container(col)
-        .width(Length::Fixed(620.0))
-        .padding(16)
+        .width(Length::Fixed(PRINT_CARD_W))
+        .padding(PRINT_CARD_PAD)
         .style(kiri::sheet_style(t))
         .into()
 }
@@ -1622,17 +1627,29 @@ fn print_footer(dialog: &PrintDialog, t: Tokens) -> Element<'static, Message> {
             .style(kiri::hud_ghost_style(t))
             .on_press_maybe((!busy).then_some(message))
     };
-    row![
+    let actions = row![
         Space::with_width(Length::Fill),
         secondary(t.lang.pick("Abrir PDF", "Open PDF"), Message::PrintOpenPdf),
         secondary(t.lang.pick("Cancelar", "Cancel"), Message::ClosePrintDialog),
+        // Busy → status `Disabled` (o estilo dim os 40%): o botão parece
+        // desligado em vez de só trocar de rótulo.
         button(text(label).size(13))
             .padding(Padding::from([8, 12]))
             .style(kiri::hud_primary_style(t))
             .on_press_maybe((!busy).then_some(Message::PrintSubmit)),
     ]
     .spacing(8)
-    .align_y(Alignment::Center)
+    .align_y(Alignment::Center);
+    if !busy {
+        return actions.into();
+    }
+    // Envio (issue #204): barra indeterminada sob as ações — não há fração
+    // honesta do job, que depende do documento e da impressora.
+    column![
+        actions,
+        loading_bar(dialog.sending_phase, PRINT_CARD_W - 2.0 * PRINT_CARD_PAD, t),
+    ]
+    .spacing(10)
     .into()
 }
 
@@ -4730,14 +4747,15 @@ pub(crate) const LOADING_STEPS: u16 = 12;
 
 /// X do segmento dentro do trilho: 0 → direita, e volta ao início no ciclo
 /// seguinte. Sem porcentagem falsa: a fase dá a posição, nunca a fração
-/// carregada.
-fn sweep_x(phase: u16) -> f32 {
+/// carregada. `track` é a largura do trilho — o fluxo de abertura usa
+/// `LOADING_BAR_W`; o rodapé de impressão usa a largura interna do cartão.
+fn sweep_x(phase: u16, track: f32) -> f32 {
     let step = f32::from(phase % LOADING_STEPS);
-    (LOADING_BAR_W - LOADING_SEG_W) * step / f32::from(LOADING_STEPS - 1)
+    (track - LOADING_SEG_W).max(0.0) * step / f32::from(LOADING_STEPS - 1)
 }
 
 /// Barra indeterminada: trilho `surface` 2px com segmento `accent` deslizando.
-fn loading_bar(phase: u16, t: Tokens) -> Element<'static, Message> {
+fn loading_bar(phase: u16, track: f32, t: Tokens) -> Element<'static, Message> {
     let segment = container(Space::with_width(Length::Fill))
         .width(Length::Fixed(LOADING_SEG_W))
         .height(Length::Fixed(2.0))
@@ -4745,14 +4763,17 @@ fn loading_bar(phase: u16, t: Tokens) -> Element<'static, Message> {
             background: Some(Background::Color(t.accent)),
             ..container::Style::default()
         });
-    container(row![Space::with_width(Length::Fixed(sweep_x(phase))), segment].spacing(0))
-        .width(Length::Fixed(LOADING_BAR_W))
-        .height(Length::Fixed(2.0))
-        .style(move |_| container::Style {
-            background: Some(Background::Color(t.surface)),
-            ..container::Style::default()
-        })
-        .into()
+    container(row![
+        Space::with_width(Length::Fixed(sweep_x(phase, track))),
+        segment
+    ])
+    .width(Length::Fixed(track))
+    .height(Length::Fixed(2.0))
+    .style(move |_| container::Style {
+        background: Some(Background::Color(t.surface)),
+        ..container::Style::default()
+    })
+    .into()
 }
 
 /// Nome do arquivo no chrome de abertura/falha (o caminho completo não cabe).
@@ -4803,7 +4824,7 @@ fn opening(source: &OpenSource, phase: u16, t: Tokens) -> Element<'_, Message> {
             .spacing(10)
             .align_y(Alignment::Center),
             sheet,
-            container(loading_bar(phase, t)).width(Length::Fixed(484.0)),
+            container(loading_bar(phase, LOADING_BAR_W, t)).width(Length::Fixed(484.0)),
         ]
         .spacing(14)
         .align_x(Alignment::Center),
@@ -4885,6 +4906,7 @@ fn pager_widths(pages: u32) -> (f32, f32) {
 mod tests {
     use super::{
         outline_title, pager_widths, sweep_x, LOADING_BAR_W, LOADING_SEG_W, LOADING_STEPS,
+        PRINT_CARD_PAD, PRINT_CARD_W,
     };
     use crate::i18n::Lang;
 
@@ -4899,20 +4921,37 @@ mod tests {
     }
 
     #[test]
+    fn sending_sweep_fits_the_print_footer_track() {
+        // Trilho do rodapé de impressão: largura interna do cartão.
+        let track = PRINT_CARD_W - 2.0 * PRINT_CARD_PAD;
+        assert_eq!(sweep_x(0, track), 0.0);
+        assert_eq!(sweep_x(LOADING_STEPS - 1, track), track - LOADING_SEG_W);
+        for phase in 0..LOADING_STEPS {
+            assert!(sweep_x(phase, track) <= track - LOADING_SEG_W);
+        }
+    }
+
+    #[test]
     fn opening_sweep_stays_inside_the_track() {
         let travel = LOADING_BAR_W - LOADING_SEG_W;
-        assert_eq!(sweep_x(0), 0.0);
-        assert_eq!(sweep_x(LOADING_STEPS - 1), travel);
+        assert_eq!(sweep_x(0, LOADING_BAR_W), 0.0);
+        assert_eq!(sweep_x(LOADING_STEPS - 1, LOADING_BAR_W), travel);
         let mut last = -1.0;
         for phase in 0..LOADING_STEPS {
-            let x = sweep_x(phase);
+            let x = sweep_x(phase, LOADING_BAR_W);
             assert!(x >= last, "phase {phase} went backwards");
             assert!(x <= travel, "phase {phase} left the track");
             last = x;
         }
         // Vários ciclos: a fase só conta, o `%` fecha o ciclo.
-        assert_eq!(sweep_x(LOADING_STEPS), sweep_x(0));
-        assert_eq!(sweep_x(u16::MAX), sweep_x(u16::MAX % LOADING_STEPS));
+        assert_eq!(
+            sweep_x(LOADING_STEPS, LOADING_BAR_W),
+            sweep_x(0, LOADING_BAR_W)
+        );
+        assert_eq!(
+            sweep_x(u16::MAX, LOADING_BAR_W),
+            sweep_x(u16::MAX % LOADING_STEPS, LOADING_BAR_W)
+        );
     }
 
     #[test]

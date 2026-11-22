@@ -1066,13 +1066,18 @@ pub fn hud_primary_style(tokens: Tokens) -> impl Fn(&iced::Theme, button::Status
 pub fn hud_ghost_style(tokens: Tokens) -> impl Fn(&iced::Theme, button::Status) -> button::Style {
     move |_theme, status| {
         let interactive = matches!(status, button::Status::Hovered | button::Status::Pressed);
+        // Desligado (ex.: envio de impressão, issue #204): afunda para `faint`
+        // em vez de parecer um botão normal que ignora o clique.
+        let disabled = matches!(status, button::Status::Disabled);
         button::Style {
             background: Some(Background::Color(if interactive {
                 tokens.hover
             } else {
                 Color::TRANSPARENT
             })),
-            text_color: if interactive {
+            text_color: if disabled {
+                tokens.faint
+            } else if interactive {
                 tokens.ink
             } else {
                 tokens.muted

@@ -2082,6 +2082,9 @@ pub struct PrintDialog {
     /// Índice na lista resolvida (preview "página X de Y").
     pub preview: usize,
     pub busy: bool,
+    /// Fase da barra indeterminada do rodapé (issue #204). Só avança com
+    /// `busy`: é posição de varredura, nunca fração do job.
+    pub sending_phase: u16,
     pub error: Option<String>,
     lang: Lang,
 }
@@ -2101,6 +2104,7 @@ impl PrintDialog {
             orientation: PrintOrientation::default(),
             preview: 0,
             busy: false,
+            sending_phase: 0,
             error: None,
         }
     }
@@ -2764,6 +2768,9 @@ pub enum Message {
     PrintPreviewNext,
     /// Monta o PDF da seleção e faz spool; `doc_gen` precisa casar na volta.
     PrintSubmit,
+    /// Tique da barra de envio no rodapé do diálogo (view.rs), só enquanto
+    /// `PrintDialog::busy`.
+    PrintSendingTick,
     PrintSubmitted {
         doc_gen: u64,
         printer: String,
@@ -4155,6 +4162,7 @@ impl Session {
                     return Task::none();
                 };
                 dialog.busy = true;
+                dialog.sending_phase = 0;
                 dialog.error = None;
                 let printer_msg = printer.clone();
                 let lang = dialog.lang;
@@ -4228,6 +4236,7 @@ impl Session {
                     }
                 };
                 dialog.busy = true;
+                dialog.sending_phase = 0;
                 dialog.error = None;
                 Task::perform(
                     async move {
@@ -4246,6 +4255,20 @@ impl Session {
                 )
             }
             Message::PrintNop => Task::none(),
+            // Envio em curso (issue #204): só o contador da barra avança; o
+            // diálogo fica de pé até `PrintSubmitted`/`PrintPdfOpened`.
+            Message::PrintSendingTick => {
+                if let Session::Ready(tabs) = self {
+                    for doc in tabs.docs_mut() {
+                        if let Some(dialog) = doc.print_dialog.as_mut() {
+                            if dialog.busy {
+                                dialog.sending_phase = dialog.sending_phase.wrapping_add(1);
+                            }
+                        }
+                    }
+                }
+                Task::none()
+            }
             Message::PrintPdfOpened { doc_gen, result } => {
                 if let Session::Ready(tabs) = self {
                     if let Some(ready) = tabs.by_gen(doc_gen) {
@@ -4504,6 +4527,15 @@ impl Session {
             // Tique do HUD só com ele na tela: escondido, nada roda.
             if tabs.hud.visible() {
                 subs.push(iced::time::every(HUD_TICK).map(|_| Message::HudTick));
+            }
+            // Envio de impressão (issue #204): a barra do rodapé só existe
+            // enquanto o job é preparado, então o tique nasce e morre com ele.
+            let sending = tabs
+                .docs()
+                .iter()
+                .any(|doc| doc.print_dialog.as_ref().is_some_and(|dialog| dialog.busy));
+            if sending {
+                subs.push(iced::time::every(LOADING_TICK).map(|_| Message::PrintSendingTick));
             }
             iced::Subscription::batch(subs)
         } else {
@@ -14085,6 +14117,22 @@ mod tests {
         let d = dialog(&session);
         assert!(!d.busy);
         assert_eq!(d.error.as_deref(), Some("nenhuma impressora selecionada"));
+    }
+
+    #[test]
+    fn sending_tick_advances_phase_only_while_busy() {
+        let Some(mut session) = open_dialog() else {
+            return;
+        };
+        // Fora do envio o tique não mexe em nada.
+        apply(&mut session, Message::PrintSendingTick);
+        assert_eq!(dialog(&session).sending_phase, 0);
+        apply(&mut session, Message::PrintSubmit);
+        assert!(dialog(&session).busy);
+        assert_eq!(dialog(&session).sending_phase, 0);
+        apply(&mut session, Message::PrintSendingTick);
+        apply(&mut session, Message::PrintSendingTick);
+        assert_eq!(dialog(&session).sending_phase, 2);
     }
 
     #[test]
