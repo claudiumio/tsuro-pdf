@@ -1616,10 +1616,18 @@ fn ori_button(
 
 fn print_footer(dialog: &PrintDialog, t: Tokens) -> Element<'static, Message> {
     let busy = dialog.busy;
-    let label = if busy {
-        t.lang.pick("Enviando…", "Sending…")
+    let primary: Element<'static, Message> = if busy {
+        // Rótulo com o modelo `text-dots` (loading-ui): um ponto acende por
+        // vez, no lugar da reticência estática — mesmo espaço, sem salto.
+        row![
+            text(t.lang.pick("Enviando", "Sending")).size(13),
+            sending_dots(dialog.sending_phase, t.bg),
+        ]
+        .spacing(1)
+        .align_y(Alignment::Center)
+        .into()
     } else {
-        t.lang.pick("Imprimir", "Print")
+        text(t.lang.pick("Imprimir", "Print")).size(13).into()
     };
     let secondary = |label: &'static str, message: Message| {
         button(text(label).size(13))
@@ -1633,7 +1641,7 @@ fn print_footer(dialog: &PrintDialog, t: Tokens) -> Element<'static, Message> {
         secondary(t.lang.pick("Cancelar", "Cancel"), Message::ClosePrintDialog),
         // Busy → status `Disabled` (o estilo dim os 40%): o botão parece
         // desligado em vez de só trocar de rótulo.
-        button(text(label).size(13))
+        button(primary)
             .padding(Padding::from([8, 12]))
             .style(kiri::hud_primary_style(t))
             .on_press_maybe((!busy).then_some(Message::PrintSubmit)),
@@ -1644,10 +1652,12 @@ fn print_footer(dialog: &PrintDialog, t: Tokens) -> Element<'static, Message> {
         return actions.into();
     }
     // Envio (issue #204): barra indeterminada sob as ações — não há fração
-    // honesta do job, que depende do documento e da impressora.
+    // honesta do job, que depende do documento e da impressora. Aqui ela usa
+    // o passo com `ease-in-out`, não o linear da abertura (#41).
+    let track = PRINT_CARD_W - 2.0 * PRINT_CARD_PAD;
     column![
         actions,
-        loading_bar(dialog.sending_phase, PRINT_CARD_W - 2.0 * PRINT_CARD_PAD, t),
+        loading_bar_x(sweep_x_eased(dialog.sending_phase, track), track, t),
     ]
     .spacing(10)
     .into()
@@ -4756,6 +4766,12 @@ fn sweep_x(phase: u16, track: f32) -> f32 {
 
 /// Barra indeterminada: trilho `surface` 2px com segmento `accent` deslizando.
 fn loading_bar(phase: u16, track: f32, t: Tokens) -> Element<'static, Message> {
+    loading_bar_x(sweep_x(phase, track), track, t)
+}
+
+/// A mesma barra com o segmento já posicionado — o rodapé de impressão passa
+/// o X do passo com `ease-in-out` (`sweep_x_eased`), a abertura usa o linear.
+fn loading_bar_x(x: f32, track: f32, t: Tokens) -> Element<'static, Message> {
     let segment = container(Space::with_width(Length::Fill))
         .width(Length::Fixed(LOADING_SEG_W))
         .height(Length::Fixed(2.0))
@@ -4763,17 +4779,52 @@ fn loading_bar(phase: u16, track: f32, t: Tokens) -> Element<'static, Message> {
             background: Some(Background::Color(t.accent)),
             ..container::Style::default()
         });
-    container(row![
-        Space::with_width(Length::Fixed(sweep_x(phase, track))),
-        segment
-    ])
-    .width(Length::Fixed(track))
-    .height(Length::Fixed(2.0))
-    .style(move |_| container::Style {
-        background: Some(Background::Color(t.surface)),
-        ..container::Style::default()
-    })
-    .into()
+    container(row![Space::with_width(Length::Fixed(x)), segment])
+        .width(Length::Fixed(track))
+        .height(Length::Fixed(2.0))
+        .style(move |_| container::Style {
+            background: Some(Background::Color(t.surface)),
+            ..container::Style::default()
+        })
+        .into()
+}
+
+/// Varredura com `ease-in-out` (cosseno): parte e chega devagar, sem os degraus
+/// de 47 px que o passo linear do #41 deixa no trilho de 588 px.
+fn sweep_x_eased(phase: u16, track: f32) -> f32 {
+    let step = f32::from(phase % LOADING_STEPS) / f32::from(LOADING_STEPS - 1);
+    let eased = 0.5 - 0.5 * (std::f32::consts::PI * step).cos();
+    (track - LOADING_SEG_W).max(0.0) * eased
+}
+
+/// Ciclo dos pontos do rótulo de envio, em tiques de 90 ms: 12 ≈ 1,1 s, com 4
+/// de atraso (0,36 s) entre um ponto e o seguinte. Atraso de um terço do ciclo
+/// mantém os três exatamente fora de fase: sempre um aceso, os outros dois
+/// apagados — o "um por vez" do `text-dots` do loading-ui, sem os três
+/// brilhando junto.
+const SENDING_DOT_CYCLE: u16 = 12;
+const SENDING_DOT_DELAY: u16 = 4;
+const SENDING_DOTS: u16 = 3;
+
+/// Alpha do ponto `index` na fase: 0 no início do ciclo, 1 na metade, 0 no fim.
+/// A curva é o cosseno do `text-dots` (`opacity 0 → 1 → 0`, `ease-in-out`).
+fn dot_alpha(phase: u16, index: u16) -> f32 {
+    let at = (phase + SENDING_DOT_CYCLE - index * SENDING_DOT_DELAY) % SENDING_DOT_CYCLE;
+    let turn = std::f32::consts::TAU * f32::from(at) / f32::from(SENDING_DOT_CYCLE);
+    0.5 - 0.5 * turn.cos()
+}
+
+/// Pontos do rótulo "Enviando" (issue #204): três pontos no mesmo lugar da
+/// reticência — a fase acende um por vez, sem mexer na largura do botão.
+fn sending_dots(phase: u16, color: Color) -> Element<'static, Message> {
+    let mut dots = row![].spacing(1.0).align_y(Alignment::Center);
+    for index in 0..SENDING_DOTS {
+        dots = dots.push(text(".").size(13).color(Color {
+            a: dot_alpha(phase, index),
+            ..color
+        }));
+    }
+    dots.into()
 }
 
 /// Nome do arquivo no chrome de abertura/falha (o caminho completo não cabe).
@@ -4905,8 +4956,8 @@ fn pager_widths(pages: u32) -> (f32, f32) {
 #[cfg(test)]
 mod tests {
     use super::{
-        outline_title, pager_widths, sweep_x, LOADING_BAR_W, LOADING_SEG_W, LOADING_STEPS,
-        PRINT_CARD_PAD, PRINT_CARD_W,
+        dot_alpha, outline_title, pager_widths, sweep_x, sweep_x_eased, LOADING_BAR_W,
+        LOADING_SEG_W, LOADING_STEPS, PRINT_CARD_PAD, PRINT_CARD_W, SENDING_DOT_CYCLE,
     };
     use crate::i18n::Lang;
 
@@ -4918,6 +4969,35 @@ mod tests {
         assert_eq!(pager_widths(120), (36.0, 38.0));
         assert!(pager_widths(900).1 > pager_widths(9).1);
         assert!(pager_widths(900).0 >= pager_widths(9).0);
+    }
+
+    #[test]
+    fn sending_dots_light_one_at_a_time() {
+        // Cada ponto acende no seu tique do ciclo: fase 6, 10 e 2 em ordem.
+        assert!(dot_alpha(0, 0) < 0.01);
+        assert!((dot_alpha(6, 0) - 1.0).abs() < 0.01);
+        assert!((dot_alpha(10, 1) - 1.0).abs() < 0.01);
+        assert!((dot_alpha(2, 2) - 1.0).abs() < 0.01);
+        // No pico de um, os vizinhos estão apagados: um por vez, não três.
+        assert!(dot_alpha(6, 1) < 0.5);
+        assert!(dot_alpha(6, 2) < 0.5);
+        // O ciclo fecha: a fase seguinte ao último tique é o início.
+        assert!((dot_alpha(SENDING_DOT_CYCLE, 0) - dot_alpha(0, 0)).abs() < 0.01);
+    }
+
+    #[test]
+    fn eased_sweep_stays_inside_the_print_track() {
+        let track = PRINT_CARD_W - 2.0 * PRINT_CARD_PAD;
+        assert_eq!(sweep_x_eased(0, track), 0.0);
+        let last = sweep_x_eased(LOADING_STEPS - 1, track);
+        assert!((last - (track - LOADING_SEG_W)).abs() < 0.01);
+        // Ease-in-out: o primeiro passo anda menos que um passo do meio.
+        let first = sweep_x_eased(1, track);
+        let mid = sweep_x_eased(7, track) - sweep_x_eased(6, track);
+        assert!(first < mid, "ease should start slow");
+        for phase in 0..LOADING_STEPS {
+            assert!(sweep_x_eased(phase, track) <= track - LOADING_SEG_W);
+        }
     }
 
     #[test]
