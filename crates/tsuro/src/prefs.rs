@@ -134,7 +134,7 @@ fn write_prefs(pref: ThemePref, lang: Lang) -> std::io::Result<()> {
         Lang::Pt => "pt",
         Lang::En => "en",
     };
-    std::fs::write(file, format!("theme={theme}\nlang={lang}\n"))
+    crate::io_atomic::write_file(&file, format!("theme={theme}\nlang={lang}\n"))
 }
 
 #[cfg(test)]
@@ -199,6 +199,22 @@ mod tests {
             std::fs::write(&path, "theme=light\n").unwrap();
             assert_eq!(read_theme_pref(), ThemePref::Light);
             assert_eq!(read_lang(), Lang::Pt);
+        });
+        let _ = std::fs::remove_file(&path);
+    }
+
+    #[test]
+    fn write_prefs_leaves_no_tmp() {
+        let path = temp_prefs("no-tmp");
+        let _ = std::fs::remove_file(&path);
+        with_prefs_path(path.clone(), || {
+            save_theme_pref(ThemePref::Dark).unwrap();
+            assert_eq!(read_theme_pref(), ThemePref::Dark);
+            let tmp = path.with_file_name(format!(
+                "{}.tmp",
+                path.file_name().unwrap().to_string_lossy()
+            ));
+            assert!(!tmp.exists());
         });
         let _ = std::fs::remove_file(&path);
     }

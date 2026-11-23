@@ -153,7 +153,7 @@ pub fn save_recents(paths: &[PathBuf]) -> std::io::Result<()> {
         body.push_str(&path.to_string_lossy());
         body.push('\n');
     }
-    std::fs::write(file, body)
+    crate::io_atomic::write_file(&file, body)
 }
 
 pub fn push_recent(mut recents: Vec<PathBuf>, path: PathBuf) -> Vec<PathBuf> {
@@ -517,5 +517,28 @@ mod tests {
         assert_eq!(dir_access(&missing), Err(std::io::ErrorKind::NotFound));
         assert!(!missing.exists());
         assert_eq!(dir_access(Path::new(env!("CARGO_MANIFEST_DIR"))), Ok(()));
+    }
+
+    #[test]
+    fn save_recents_leaves_no_tmp() {
+        let path = std::env::temp_dir().join(format!(
+            "tsuro-recents-no-tmp-{}-{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        let _ = std::fs::remove_file(&path);
+        with_recents_path(path.clone(), || {
+            save_recents(&[PathBuf::from("/tmp/a.pdf")]).unwrap();
+            assert_eq!(read_recents(), vec![PathBuf::from("/tmp/a.pdf")]);
+            let tmp = path.with_file_name(format!(
+                "{}.tmp",
+                path.file_name().unwrap().to_string_lossy()
+            ));
+            assert!(!tmp.exists());
+        });
+        let _ = std::fs::remove_file(&path);
     }
 }

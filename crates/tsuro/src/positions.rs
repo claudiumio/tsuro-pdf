@@ -237,7 +237,7 @@ pub fn save_positions(entries: &[(PathBuf, DocPosition)]) -> std::io::Result<()>
         body.push_str(&encode_entry(path, pos));
         body.push('\n');
     }
-    std::fs::write(file, body)
+    crate::io_atomic::write_file(&file, body)
 }
 
 /// Pura e testável: move `path` para o topo (dedup), limita em 50.
@@ -469,5 +469,21 @@ mod tests {
         )];
         assert_eq!(find_position(&entries, &pdf).map(|p| p.page), Some(4));
         let _ = std::fs::remove_file(&pdf);
+    }
+
+    #[test]
+    fn save_positions_leaves_no_tmp() {
+        let path = temp_positions("no-tmp");
+        let _ = std::fs::remove_file(&path);
+        with_positions_path(path.clone(), || {
+            save_positions(&[(PathBuf::from("/doc/a.pdf"), pos(1))]).unwrap();
+            assert_eq!(read_positions().len(), 1);
+            let tmp = path.with_file_name(format!(
+                "{}.tmp",
+                path.file_name().unwrap().to_string_lossy()
+            ));
+            assert!(!tmp.exists());
+        });
+        let _ = std::fs::remove_file(&path);
     }
 }
