@@ -55,6 +55,43 @@ pub struct CertificateInfo {
     pub is_self_signed: bool,
 }
 
+/// Outcome of comparing the CMS `messageDigest` with the signed bytes.
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub enum DigestCheck {
+    Matched,
+    Mismatched,
+    NotComputed,
+}
+
+/// Outcome of the RSA signature check, kept separate from parse and key errors.
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub enum RsaCheck {
+    Passed,
+    Failed,
+    KeyUnavailable,
+    UnsupportedDigest,
+    NotRun,
+}
+
+/// Outcome of the certificate validity check against the system clock.
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub enum ClockCheck {
+    WithinValidity,
+    Expired,
+    NotYetValid,
+    NotRun,
+}
+
+/// Trust-chain check. No anchor exists in this app, so it never runs.
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub enum ChainCheck {
+    NotRun,
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct SignatureInfo {
@@ -69,10 +106,21 @@ pub struct SignatureInfo {
     pub byte_range: Option<[i64; 4]>,
     pub covers_whole_document: bool,
     pub status: SignatureStatus,
+    /// Language-neutral code describing how the status was reached.
     pub status_detail: String,
     pub certificate: Option<CertificateInfo>,
     pub digest_algorithm: Option<String>,
     pub signature_algorithm: Option<String>,
+    pub digest: DigestCheck,
+    /// `Some(true)` when the file has bytes outside a usable signed range,
+    /// `None` when the range is missing or malformed and nothing was compared.
+    pub bytes_after_signed_range: Option<bool>,
+    pub rsa: RsaCheck,
+    /// Whether the certificate used for verification is the one named by the
+    /// CMS SignerIdentifier.
+    pub signer_cert_matches_sid: Option<bool>,
+    pub clock: ClockCheck,
+    pub chain: ChainCheck,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -147,58 +195,62 @@ pub fn verify_cms(
         certificate: certificate.clone(),
         digest_algorithm: Some(parsed.digest_algorithm.to_string()),
         signature_algorithm: Some(parsed.signature_algorithm.to_string()),
+        digest: DigestCheck::NotComputed,
+        bytes_after_signed_range: None,
+        rsa: RsaCheck::NotRun,
+        signer_cert_matches_sid: parsed.signer_cert_matches_sid,
+        clock: ClockCheck::NotRun,
+        chain: ChainCheck::NotRun,
     };
 
-    let provided_digest: Option<&[u8]> = match parsed.digest_algorithm {
+    // A digest comparison needs signed attributes, the messageDigest attribute
+    // inside them, and the payload being verified. Each missing input is reported
+    // on its own instead of being folded into "document modified".
+    let Some(signed_attrs) = parsed.signed_attrs_for_verify.as_ref() else {
+        info.status_detail = "signed_attributes_missing".into();
+        return Ok(info);
+    };
+    let Some(expected_digest) = parsed.message_digest.as_ref() else {
+        info.status_detail = "message_digest_missing".into();
+        return Ok(info);
+    };
+    let payload = match parsed.digest_algorithm {
         "SHA-256" => sha256,
         "SHA-1" => sha1,
-        _ => None,
-    };
-
-    let digest_ok = match (&parsed.message_digest, provided_digest) {
-        (Some(got), Some(expected)) => got.as_slice() == expected,
-        // No messageDigest means we never compared bytes. Do not call the file altered.
-        (None, Some(_)) => {
-            info.status = SignatureStatus::Unsupported;
-            info.status_detail =
-                "CMS sem atributos assinados; não é o perfil destacado usual de PDF.".into();
-            return Ok(info);
-        }
         _ => {
-            info.status = SignatureStatus::Unsupported;
-            info.status_detail = format!(
-                "Algoritmo de resumo {} sem payload correspondente.",
-                parsed.digest_algorithm
-            );
+            info.status_detail = "digest_algorithm_unsupported".into();
             return Ok(info);
         }
     };
+    let Some(payload) = payload else {
+        info.status_detail = "digest_payload_unavailable".into();
+        return Ok(info);
+    };
 
-    if !digest_ok {
+    if expected_digest.as_slice() != payload {
+        info.digest = DigestCheck::Mismatched;
         info.status = SignatureStatus::DocumentModified;
-        info.status_detail =
-            "O resumo do intervalo assinado não confere. O arquivo foi alterado após a assinatura."
-                .into();
+        info.status_detail = "digest_mismatch".into();
         return Ok(info);
     }
+    info.digest = DigestCheck::Matched;
 
     if parsed.digest_algorithm == "SHA-1" {
         info.status = SignatureStatus::Unsupported;
-        info.status_detail = "SHA-1 não é aceito para verificação de assinatura.".into();
+        info.status_detail = "sha1_unsupported".into();
+        info.rsa = RsaCheck::UnsupportedDigest;
         return Ok(info);
     }
 
-    let Some(signed_attrs) = parsed.signed_attrs_for_verify.as_ref() else {
-        info.status = SignatureStatus::IntactButUntrusted;
-        info.status_detail =
-            "O resumo do documento confere, mas o CMS não traz atributos assinados.".into();
-        return Ok(info);
-    };
     let Some(public) = parsed.public_key else {
         info.status = SignatureStatus::Invalid;
-        info.status_detail =
-            "A assinatura não foi verificada porque a chave pública RSA não pôde ser extraída."
-                .into();
+        info.rsa = RsaCheck::KeyUnavailable;
+        info.status_detail = if parsed.signer_cert_matches_sid == Some(false) {
+            "signer_certificate_not_found"
+        } else {
+            "rsa_key_unavailable"
+        }
+        .into();
         return Ok(info);
     };
 
@@ -208,20 +260,21 @@ pub fn verify_cms(
         "SHA-256" => VerifyingKey::<Sha256>::new(public)
             .verify(signed_attrs, &signature)
             .is_ok(),
-        other => {
-            info.status = SignatureStatus::IntactButUntrusted;
-            info.status_detail = format!(
-                "O documento coberto está íntegro, mas o algoritmo {other} ainda não é verificado."
-            );
+        _ => {
+            info.status = SignatureStatus::Unsupported;
+            info.status_detail = "digest_algorithm_unsupported".into();
+            info.rsa = RsaCheck::UnsupportedDigest;
             return Ok(info);
         }
     };
 
     if !crypto_ok {
         info.status = SignatureStatus::Invalid;
-        info.status_detail = "A criptografia da assinatura não confere.".into();
+        info.status_detail = "signature_mismatch".into();
+        info.rsa = RsaCheck::Failed;
         return Ok(info);
     }
+    info.rsa = RsaCheck::Passed;
 
     if let (Some(not_before), Some(not_after)) = (parsed.cert_not_before, parsed.cert_not_after) {
         let now = std::time::SystemTime::now()
@@ -230,14 +283,17 @@ pub fn verify_cms(
             .unwrap_or(0);
         if now < not_before {
             info.status = SignatureStatus::CertificateNotYetValid;
-            info.status_detail = "O certificado ainda não é válido.".into();
+            info.status_detail = "certificate_not_yet_valid".into();
+            info.clock = ClockCheck::NotYetValid;
             return Ok(info);
         }
         if now > not_after {
             info.status = SignatureStatus::CertificateExpired;
-            info.status_detail = "O certificado expirou.".into();
+            info.status_detail = "certificate_expired".into();
+            info.clock = ClockCheck::Expired;
             return Ok(info);
         }
+        info.clock = ClockCheck::WithinValidity;
     }
 
     info.status = SignatureStatus::IntactButUntrusted;
@@ -246,9 +302,9 @@ pub fn verify_cms(
         .map(|c| c.is_self_signed)
         .unwrap_or(true)
     {
-        info.status_detail = "Assinatura criptograficamente válida, mas o certificado é autoassinado — não há cadeia de confiança pública.".into();
+        info.status_detail = "intact_self_signed".into();
     } else {
-        info.status_detail = "Assinatura íntegra, mas a cadeia do certificado não foi verificada — não há âncora de confiança.".into();
+        info.status_detail = "intact_chain_unverified".into();
     }
 
     Ok(info)
@@ -283,7 +339,17 @@ fn signature_from_dict(
     }
     visited.push(contents.clone());
 
-    let byte_range = parse_byte_range(dict);
+    let declared_range = read_byte_range(dict);
+    let byte_range = declared_range
+        .as_ref()
+        .ok()
+        .copied()
+        .filter(|br| byte_range_slices(bytes, *br).is_some());
+    let byte_range_issue = match (&declared_range, byte_range) {
+        (Err(issue), _) => Some(*issue),
+        (Ok(_), None) => Some(ByteRangeIssue::Malformed),
+        (Ok(_), Some(_)) => None,
+    };
     let covers = byte_range
         .map(|br| covers_whole_document(bytes, br, &contents))
         .unwrap_or(false);
@@ -291,7 +357,9 @@ fn signature_from_dict(
     let sha256 = byte_range.and_then(|br| hash_byte_range::<Sha256>(bytes, br));
     let sha1 = byte_range.and_then(|br| hash_byte_range::<Sha1>(bytes, br));
 
-    let mut info = verify_cms(&contents, sha256.as_deref(), sha1.as_deref()).unwrap_or_else(|e| {
+    let mut cms_parsed = true;
+    let mut info = verify_cms(&contents, sha256.as_deref(), sha1.as_deref()).unwrap_or_else(|_| {
+        cms_parsed = false;
         SignatureInfo {
             field_name: None,
             signer_name: string_of(dict.get(b"Name").ok()),
@@ -304,10 +372,16 @@ fn signature_from_dict(
             byte_range,
             covers_whole_document: covers,
             status: SignatureStatus::Invalid,
-            status_detail: e.to_string(),
+            status_detail: "cms_parse_error".into(),
             certificate: None,
             digest_algorithm: None,
             signature_algorithm: None,
+            digest: DigestCheck::NotComputed,
+            bytes_after_signed_range: None,
+            rsa: RsaCheck::NotRun,
+            signer_cert_matches_sid: None,
+            clock: ClockCheck::NotRun,
+            chain: ChainCheck::NotRun,
         }
     });
 
@@ -336,20 +410,32 @@ fn signature_from_dict(
         name_of(dict.get(b"SubFilter").ok().unwrap_or(&Object::Null)).or(info.sub_filter);
     info.byte_range = byte_range.or(info.byte_range);
     info.covers_whole_document = covers;
+    info.bytes_after_signed_range = byte_range.map(|_| !covers);
 
-    // Only claim "bytes after the signed range" when a ByteRange was present and
-    // failed the whole-document check. Missing/malformed ByteRange is not a comparison.
-    if byte_range.is_some()
-        && !covers
-        && !matches!(
-            info.status,
-            SignatureStatus::DocumentModified | SignatureStatus::Invalid
-        )
-    {
-        info.status = SignatureStatus::DocumentModified;
-        info.status_detail =
-            "Há bytes no arquivo fora do intervalo assinado. O documento foi alterado depois da assinatura."
-                .into();
+    if cms_parsed {
+        if let Some(issue) = byte_range_issue {
+            // Nothing was hashed, so the only honest report is the broken range.
+            info.digest = DigestCheck::NotComputed;
+            info.bytes_after_signed_range = None;
+            if info.status_detail == "digest_payload_unavailable" {
+                info.status = SignatureStatus::Unsupported;
+                info.status_detail = issue.detail().into();
+                info.rsa = RsaCheck::NotRun;
+                info.clock = ClockCheck::NotRun;
+            }
+        } else if !covers
+            && matches!(
+                info.status,
+                SignatureStatus::IntactButUntrusted
+                    | SignatureStatus::CertificateExpired
+                    | SignatureStatus::CertificateNotYetValid
+            )
+        {
+            // The signature verified, but the file carries bytes outside the range
+            // it signed: an incremental update happened after signing.
+            info.status = SignatureStatus::DocumentModified;
+            info.status_detail = "bytes_after_signed_range".into();
+        }
     }
 
     Some(info)
@@ -396,22 +482,42 @@ fn contents_bytes(dict: &Dictionary) -> Option<Vec<u8>> {
     }
 }
 
-fn parse_byte_range(dict: &Dictionary) -> Option<[i64; 4]> {
-    let Object::Array(items) = dict.get(b"ByteRange").ok()? else {
-        return None;
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum ByteRangeIssue {
+    Missing,
+    Malformed,
+}
+
+impl ByteRangeIssue {
+    fn detail(self) -> &'static str {
+        match self {
+            Self::Missing => "byte_range_missing",
+            Self::Malformed => "byte_range_malformed",
+        }
+    }
+}
+
+/// Reads `/ByteRange` as four non-negative integers. `Missing` means the key is
+/// absent; `Malformed` means it exists but cannot be used as a byte range.
+fn read_byte_range(dict: &Dictionary) -> Result<[i64; 4], ByteRangeIssue> {
+    let Ok(object) = dict.get(b"ByteRange") else {
+        return Err(ByteRangeIssue::Missing);
+    };
+    let Object::Array(items) = object else {
+        return Err(ByteRangeIssue::Malformed);
     };
     if items.len() != 4 {
-        return None;
+        return Err(ByteRangeIssue::Malformed);
     }
     let mut out = [0i64; 4];
     for (i, item) in items.iter().enumerate() {
         out[i] = match item {
             Object::Integer(n) if *n >= 0 => *n,
             Object::Real(n) if n.is_finite() && *n >= 0.0 => *n as i64,
-            _ => return None,
+            _ => return Err(ByteRangeIssue::Malformed),
         };
     }
-    Some(out)
+    Ok(out)
 }
 
 fn is_pdf_ws(b: u8) -> bool {
@@ -625,6 +731,11 @@ mod tests {
             .or(sig.signer_name.as_deref())
             .unwrap_or("");
         assert!(cn.contains("Maria"), "{cn}");
+        // The real fixture's SignerIdentifier must resolve to its certificate,
+        // otherwise the RSA check would run against nothing (#161 defect 4).
+        assert_eq!(sig.signer_cert_matches_sid, Some(true), "{sig:?}");
+        assert_eq!(sig.rsa, RsaCheck::Passed, "{sig:?}");
+        assert_eq!(sig.digest, DigestCheck::Matched, "{sig:?}");
     }
 
     #[test]
@@ -868,10 +979,9 @@ mod tests {
         let cms = cms_sha256_without_certificate(&digest);
         let info = verify_cms(&cms, Some(&digest), None).expect("cms parses");
         assert_eq!(info.status, SignatureStatus::Invalid);
-        assert_eq!(
-            info.status_detail,
-            "A assinatura não foi verificada porque a chave pública RSA não pôde ser extraída."
-        );
+        assert_eq!(info.digest, DigestCheck::Matched);
+        assert_eq!(info.rsa, RsaCheck::KeyUnavailable);
+        assert_eq!(info.status_detail, "rsa_key_unavailable");
 
         let pdf = pdf_named_banco_with_matching_digest();
         let analysis = analyze_pdf(&pdf).expect("pdf parses");
@@ -880,10 +990,8 @@ mod tests {
         assert!(sig.covers_whole_document, "{}", sig.status_detail);
         assert_eq!(sig.signer_name.as_deref(), Some("Banco"));
         assert_eq!(sig.status, SignatureStatus::Invalid);
-        assert_eq!(
-            sig.status_detail,
-            "A assinatura não foi verificada porque a chave pública RSA não pôde ser extraída."
-        );
+        assert_eq!(sig.rsa, RsaCheck::KeyUnavailable);
+        assert_eq!(sig.status_detail, "rsa_key_unavailable");
     }
 
     fn cms_sha256_without_signed_attrs() -> Vec<u8> {
@@ -976,16 +1084,16 @@ mod tests {
             "missing messageDigest must not claim the file was altered: {:?}",
             info
         );
-        assert!(
-            info.status_detail.contains("CMS sem atributos")
-                || info.status_detail.contains("atributos assinados"),
-            "honest CMS detail expected, got {}",
-            info.status_detail
-        );
+        assert_eq!(info.digest, DigestCheck::NotComputed);
+        assert_eq!(info.rsa, RsaCheck::NotRun);
+        assert_eq!(info.status_detail, "signed_attributes_missing");
     }
 
     fn pdf_sig_without_byte_range() -> Vec<u8> {
-        let cms = cms_sha256_without_certificate(&[0x11u8; 32]);
+        pdf_sig_with_contents(&cms_sha256_without_certificate(&[0x11u8; 32]))
+    }
+
+    fn pdf_sig_with_contents(cms: &[u8]) -> Vec<u8> {
         let placeholder = format!("<{}>", "0".repeat(cms.len() * 2));
         let mut file = Vec::new();
         file.extend_from_slice(
@@ -1074,10 +1182,607 @@ startxref
             "missing ByteRange must not claim alteration: {:?}",
             sig
         );
-        assert!(
-            !sig.status_detail.contains("fora do intervalo assinado"),
-            "must not use the bytes-after-range detail without a range: {}",
-            sig.status_detail
+        assert_eq!(sig.status, SignatureStatus::Unsupported);
+        assert_eq!(sig.status_detail, "byte_range_missing");
+        assert_eq!(sig.digest, DigestCheck::NotComputed);
+        assert_eq!(sig.bytes_after_signed_range, None);
+        assert_eq!(sig.rsa, RsaCheck::NotRun);
+    }
+
+    // --- Generated fixtures for the #161 cases: every input is built in code,
+    // so no binary test file is versioned for these paths.
+
+    const OID_SHA256: &[u8] = &[0x60, 0x86, 0x48, 0x01, 0x65, 0x03, 0x04, 0x02, 0x01];
+    const OID_RSA_ENCRYPTION: &[u8] = &[0x2a, 0x86, 0x48, 0x86, 0xf7, 0x0d, 0x01, 0x01, 0x01];
+    const OID_SHA256_RSA: &[u8] = &[0x2a, 0x86, 0x48, 0x86, 0xf7, 0x0d, 0x01, 0x01, 0x0b];
+    const OID_DATA: &[u8] = &[0x2a, 0x86, 0x48, 0x86, 0xf7, 0x0d, 0x01, 0x07, 0x01];
+    const OID_SIGNED_DATA: &[u8] = &[0x2a, 0x86, 0x48, 0x86, 0xf7, 0x0d, 0x01, 0x07, 0x02];
+    const OID_MESSAGE_DIGEST: &[u8] = &[0x2a, 0x86, 0x48, 0x86, 0xf7, 0x0d, 0x01, 0x09, 0x04];
+    const OID_CONTENT_TYPE: &[u8] = &[0x2a, 0x86, 0x48, 0x86, 0xf7, 0x0d, 0x01, 0x09, 0x03];
+    const OID_EC_PUBLIC_KEY: &[u8] = &[0x2a, 0x86, 0x48, 0xce, 0x3d, 0x02, 0x01];
+    const OID_PRIME256V1: &[u8] = &[0x2a, 0x86, 0x48, 0xce, 0x3d, 0x03, 0x01, 0x07];
+    const OID_COMMON_NAME: &[u8] = &[0x55, 0x04, 0x03];
+    const OID_SUBJECT_KEY_ID: &[u8] = &[0x55, 0x1d, 0x0e];
+    const CERT_VALID_FROM: &str = "200101000000Z";
+    const CERT_VALID_TO: &str = "491231235959Z";
+
+    fn der_alg_id(oid: &[u8]) -> Vec<u8> {
+        der_tlv(0x30, &der_cat(&[&der_tlv(0x06, oid), &der_tlv(0x05, &[])]))
+    }
+
+    fn der_name(cn: &str) -> Vec<u8> {
+        der_tlv(
+            0x30,
+            &der_tlv(
+                0x31,
+                &der_tlv(
+                    0x30,
+                    &der_cat(&[
+                        &der_tlv(0x06, OID_COMMON_NAME),
+                        &der_tlv(0x0c, cn.as_bytes()),
+                    ]),
+                ),
+            ),
+        )
+    }
+
+    /// DER INTEGER, adding the sign byte when the leading bit is set.
+    fn der_uint(bytes: &[u8]) -> Vec<u8> {
+        let mut value = bytes.to_vec();
+        if value.first().is_some_and(|b| b & 0x80 != 0) {
+            value.insert(0, 0);
+        }
+        der_tlv(0x02, &value)
+    }
+
+    fn rsa_spki(public: &rsa::RsaPublicKey) -> Vec<u8> {
+        use rsa::traits::PublicKeyParts;
+        let key = der_tlv(
+            0x30,
+            &der_cat(&[
+                &der_uint(&public.n().to_bytes_be()),
+                &der_uint(&public.e().to_bytes_be()),
+            ]),
         );
+        let bits = der_tlv(0x03, &der_cat(&[&[0u8], &key]));
+        der_tlv(0x30, &der_cat(&[&der_alg_id(OID_RSA_ENCRYPTION), &bits]))
+    }
+
+    /// An EC key the crate cannot verify: only the algorithm identifier matters.
+    fn ec_spki() -> Vec<u8> {
+        let alg = der_tlv(
+            0x30,
+            &der_cat(&[
+                &der_tlv(0x06, OID_EC_PUBLIC_KEY),
+                &der_tlv(0x06, OID_PRIME256V1),
+            ]),
+        );
+        let mut point = vec![0x04u8];
+        point.extend([0u8; 64]);
+        let bits = der_tlv(0x03, &der_cat(&[&[0u8], &point]));
+        der_tlv(0x30, &der_cat(&[&alg, &bits]))
+    }
+
+    fn subject_key_id_extension(ski: &[u8]) -> Vec<u8> {
+        let extension = der_tlv(
+            0x30,
+            &der_cat(&[
+                &der_tlv(0x06, OID_SUBJECT_KEY_ID),
+                &der_tlv(0x04, &der_tlv(0x04, ski)),
+            ]),
+        );
+        der_tlv(0xa3, &der_tlv(0x30, &extension))
+    }
+
+    /// Minimal X.509 certificate. The verifier never checks the certificate's
+    /// own signature, so a placeholder BIT STRING is enough.
+    fn generate_cert(
+        spki: &[u8],
+        serial: u8,
+        cn: &str,
+        not_before: &str,
+        not_after: &str,
+        ski: Option<&[u8]>,
+    ) -> Vec<u8> {
+        let signature_algorithm = der_alg_id(OID_SHA256_RSA);
+        let issuer = der_name("Test CA");
+        let subject = der_name(cn);
+        let validity = der_tlv(
+            0x30,
+            &der_cat(&[
+                &der_tlv(0x17, not_before.as_bytes()),
+                &der_tlv(0x17, not_after.as_bytes()),
+            ]),
+        );
+        let mut tbs = der_cat(&[
+            &der_tlv(0xa0, &der_tlv(0x02, &[2])),
+            &der_tlv(0x02, &[serial]),
+            &signature_algorithm,
+            &issuer,
+            &validity,
+            &subject,
+            spki,
+        ]);
+        if let Some(ski) = ski {
+            tbs.extend(subject_key_id_extension(ski));
+        }
+        let tbs = der_tlv(0x30, &tbs);
+        der_tlv(
+            0x30,
+            &der_cat(&[&tbs, &signature_algorithm, &der_tlv(0x03, &[0x00, 0x00])]),
+        )
+    }
+
+    fn rsa_keypair() -> (rsa::RsaPrivateKey, rsa::RsaPublicKey) {
+        let private =
+            rsa::RsaPrivateKey::new(&mut rsa::rand_core::OsRng, 1024).expect("generate RSA key");
+        let public = private.to_public_key();
+        (private, public)
+    }
+
+    /// Signs the DER `SET OF Attribute` form, which is what the verifier feeds
+    /// to RSA after rewriting the IMPLICIT tag.
+    fn sign_attrs(private: &rsa::RsaPrivateKey, attrs_inner: &[u8]) -> Vec<u8> {
+        use rsa::signature::{SignatureEncoding, Signer};
+        let key = rsa::pkcs1v15::SigningKey::<Sha256>::new(private.clone());
+        key.sign(&der_tlv(0x31, attrs_inner)).to_vec()
+    }
+
+    /// Concatenated signed attributes (no SET header), with messageDigest.
+    fn message_digest_attrs(digest: &[u8]) -> Vec<u8> {
+        let digest_attr = der_tlv(
+            0x30,
+            &der_cat(&[
+                &der_tlv(0x06, OID_MESSAGE_DIGEST),
+                &der_tlv(0x31, &der_tlv(0x04, digest)),
+            ]),
+        );
+        let content_type = der_tlv(
+            0x30,
+            &der_cat(&[
+                &der_tlv(0x06, OID_CONTENT_TYPE),
+                &der_tlv(0x31, &der_tlv(0x06, OID_DATA)),
+            ]),
+        );
+        der_cat(&[&digest_attr, &content_type])
+    }
+
+    fn signer_id_issuer_serial(issuer_cn: &str, serial: u8) -> Vec<u8> {
+        der_tlv(
+            0x30,
+            &der_cat(&[&der_name(issuer_cn), &der_tlv(0x02, &[serial])]),
+        )
+    }
+
+    /// `signed_attrs` is the concatenation of attributes (no SET header), as it
+    /// travels inside SignerInfo.
+    fn build_cms(
+        certs: &[Vec<u8>],
+        sid: &[u8],
+        signed_attrs: Option<&[u8]>,
+        signature: &[u8],
+    ) -> Vec<u8> {
+        let sha256 = der_alg_id(OID_SHA256);
+        let mut signer = der_cat(&[&der_tlv(0x02, &[1]), sid, &sha256]);
+        if let Some(attrs) = signed_attrs {
+            signer.extend(der_tlv(0xa0, attrs));
+        }
+        signer.extend(der_alg_id(OID_RSA_ENCRYPTION));
+        signer.extend(der_tlv(0x04, signature));
+        let signer = der_tlv(0x30, &signer);
+
+        let mut signed_data = der_cat(&[
+            &der_tlv(0x02, &[1]),
+            &der_tlv(0x31, &sha256),
+            &der_tlv(0x30, &der_tlv(0x06, OID_DATA)),
+        ]);
+        if !certs.is_empty() {
+            let mut blob = Vec::new();
+            for cert in certs {
+                blob.extend_from_slice(cert);
+            }
+            signed_data.extend(der_tlv(0xa0, &blob));
+        }
+        signed_data.extend(der_tlv(0x31, &signer));
+        der_tlv(
+            0x30,
+            &der_cat(&[
+                &der_tlv(0x06, OID_SIGNED_DATA),
+                &der_tlv(0xa0, &der_tlv(0x30, &signed_data)),
+            ]),
+        )
+    }
+
+    struct SignedPdf {
+        bytes: Vec<u8>,
+        gap_at: usize,
+        after_gap: usize,
+        signed_end: usize,
+    }
+
+    impl SignedPdf {
+        fn signed_digest(&self) -> Vec<u8> {
+            let mut hasher = Sha256::new();
+            hasher.update(&self.bytes[..self.gap_at]);
+            hasher.update(&self.bytes[self.after_gap..self.signed_end]);
+            hasher.finalize().to_vec()
+        }
+    }
+
+    /// PDF whose /ByteRange skips only the /Contents hex string. `tail` lands
+    /// after the signed range, simulating bytes written after signing.
+    fn build_signed_pdf(cms: &[u8], tail: &[u8]) -> SignedPdf {
+        let hex: String = cms.iter().map(|b| format!("{b:02X}")).collect();
+        let contents = format!("<{hex}>");
+        let mut file = Vec::new();
+        file.extend_from_slice(b"%PDF-1.4\n");
+        let obj1 = file.len();
+        file.extend_from_slice(b"1 0 obj\n<< /Type /Catalog /Pages 2 0 R >>\nendobj\n");
+        let obj2 = file.len();
+        file.extend_from_slice(b"2 0 obj\n<< /Type /Pages /Kids [] /Count 0 >>\nendobj\n");
+        let obj3 = file.len();
+        file.extend_from_slice(
+            b"3 0 obj\n<< /Type /Sig /Filter /Adobe.PPKLite /SubFilter /adbe.pkcs7.detached /ByteRange ",
+        );
+        let br_at = file.len();
+        file.extend_from_slice(b"[0000000000 0000000000 0000000000 0000000000]");
+        file.extend_from_slice(b" /Contents ");
+        let gap_at = file.len();
+        file.extend_from_slice(contents.as_bytes());
+        let after_gap = file.len();
+        file.extend_from_slice(b" >>\nendobj\n");
+        let xref_at = file.len();
+        let xref = format!(
+            "xref\n0 4\n0000000000 65535 f \n{obj1:010} 00000 n \n{obj2:010} 00000 n \n{obj3:010} 00000 n \ntrailer\n<< /Size 4 /Root 1 0 R >>\nstartxref\n{xref_at:010}\n%%EOF\n"
+        );
+        file.extend_from_slice(xref.as_bytes());
+        let signed_end = file.len();
+        file.extend_from_slice(tail);
+        let br = format!(
+            "[{:010} {:010} {:010} {:010}]",
+            0,
+            gap_at,
+            after_gap,
+            signed_end - after_gap
+        );
+        assert_eq!(br.len(), 45);
+        file[br_at..br_at + br.len()].copy_from_slice(br.as_bytes());
+        SignedPdf {
+            bytes: file,
+            gap_at,
+            after_gap,
+            signed_end,
+        }
+    }
+
+    /// Builds a PDF whose CMS is computed over its own ranges: `make_cms`
+    /// receives the digest of the covered bytes. The CMS length does not depend
+    /// on the digest value, so a probe pass settles the layout first.
+    fn pdf_signed_by(make_cms: impl Fn(&[u8]) -> Vec<u8>, tail: &[u8]) -> Vec<u8> {
+        let probe = build_signed_pdf(&make_cms(&[0u8; 32]), tail);
+        let digest = probe.signed_digest();
+        let pdf = build_signed_pdf(&make_cms(&digest), tail);
+        assert_eq!(pdf.bytes.len(), probe.bytes.len());
+        pdf.bytes
+    }
+
+    fn signed_pdf_by(
+        private: &rsa::RsaPrivateKey,
+        cert: &[u8],
+        sid: &[u8],
+        tail: &[u8],
+    ) -> Vec<u8> {
+        pdf_signed_by(
+            |digest| {
+                let attrs = message_digest_attrs(digest);
+                let signature = sign_attrs(private, &attrs);
+                build_cms(&[cert.to_vec()], sid, Some(&attrs), &signature)
+            },
+            tail,
+        )
+    }
+
+    /// ECDSA signer certificates cannot be verified by the RSA path, and that
+    /// must be reported as a missing key rather than as an altered document.
+    #[test]
+    fn unsupported_public_key_reports_key_unavailable() {
+        let digest = [0x33u8; 32];
+        let cert = generate_cert(
+            &ec_spki(),
+            1,
+            "ECDSA Signer",
+            CERT_VALID_FROM,
+            CERT_VALID_TO,
+            None,
+        );
+        let attrs = message_digest_attrs(&digest);
+        let cms = build_cms(
+            &[cert],
+            &signer_id_issuer_serial("Test CA", 1),
+            Some(&attrs),
+            &[0u8; 128],
+        );
+        let info = verify_cms(&cms, Some(&digest), None).expect("cms parses");
+        assert_eq!(info.digest, DigestCheck::Matched);
+        assert_eq!(info.status, SignatureStatus::Invalid);
+        assert_eq!(info.rsa, RsaCheck::KeyUnavailable);
+        assert_eq!(info.status_detail, "rsa_key_unavailable");
+        assert_eq!(info.signer_cert_matches_sid, Some(true));
+        assert!(info.certificate.is_some(), "{info:?}");
+    }
+
+    /// The certificate named by the SignerIdentifier is used, not the first one
+    /// in the set (#161 defect 4).
+    #[test]
+    fn signer_identifier_selects_the_matching_certificate() {
+        let (_decoy_private, decoy_public) = rsa_keypair();
+        let (private, public) = rsa_keypair();
+        let decoy = generate_cert(
+            &rsa_spki(&decoy_public),
+            41,
+            "Outro signatário",
+            CERT_VALID_FROM,
+            CERT_VALID_TO,
+            None,
+        );
+        let signer = generate_cert(
+            &rsa_spki(&public),
+            42,
+            "Signatário",
+            CERT_VALID_FROM,
+            CERT_VALID_TO,
+            None,
+        );
+        let digest = [0x44u8; 32];
+        let attrs = message_digest_attrs(&digest);
+        let signature = sign_attrs(&private, &attrs);
+        let cms = build_cms(
+            &[decoy, signer],
+            &signer_id_issuer_serial("Test CA", 42),
+            Some(&attrs),
+            &signature,
+        );
+        let info = verify_cms(&cms, Some(&digest), None).expect("cms parses");
+        assert_eq!(info.signer_cert_matches_sid, Some(true));
+        assert_eq!(info.digest, DigestCheck::Matched);
+        assert_eq!(info.rsa, RsaCheck::Passed);
+        assert_eq!(info.clock, ClockCheck::WithinValidity);
+        assert_eq!(info.status, SignatureStatus::IntactButUntrusted);
+        assert_eq!(info.status_detail, "intact_chain_unverified");
+        assert_eq!(
+            info.certificate.as_ref().map(|c| c.serial.as_str()),
+            Some("2a")
+        );
+    }
+
+    /// Without a certificate matching the SignerIdentifier the signature is
+    /// never checked against an unrelated key.
+    #[test]
+    fn signer_identifier_without_match_never_verifies() {
+        let (private, public) = rsa_keypair();
+        let cert = generate_cert(
+            &rsa_spki(&public),
+            43,
+            "Signatário",
+            CERT_VALID_FROM,
+            CERT_VALID_TO,
+            None,
+        );
+        let digest = [0x55u8; 32];
+        let attrs = message_digest_attrs(&digest);
+        let signature = sign_attrs(&private, &attrs);
+        let cms = build_cms(
+            &[cert],
+            &signer_id_issuer_serial("Test CA", 99),
+            Some(&attrs),
+            &signature,
+        );
+        let info = verify_cms(&cms, Some(&digest), None).expect("cms parses");
+        assert_eq!(info.signer_cert_matches_sid, Some(false));
+        assert!(info.certificate.is_none(), "{info:?}");
+        assert_eq!(info.status, SignatureStatus::Invalid);
+        assert_eq!(info.rsa, RsaCheck::KeyUnavailable);
+        assert_eq!(info.status_detail, "signer_certificate_not_found");
+    }
+
+    #[test]
+    fn subject_key_identifier_selects_the_certificate() {
+        let (private, public) = rsa_keypair();
+        let ski = [0xAB, 0xCD, 0xEF];
+        let cert = generate_cert(
+            &rsa_spki(&public),
+            44,
+            "Signatário",
+            CERT_VALID_FROM,
+            CERT_VALID_TO,
+            Some(&ski),
+        );
+        let digest = [0x66u8; 32];
+        let attrs = message_digest_attrs(&digest);
+        let signature = sign_attrs(&private, &attrs);
+        let cms = build_cms(&[cert], &der_tlv(0x80, &ski), Some(&attrs), &signature);
+        let info = verify_cms(&cms, Some(&digest), None).expect("cms parses");
+        assert_eq!(info.signer_cert_matches_sid, Some(true));
+        assert_eq!(info.rsa, RsaCheck::Passed);
+        assert_eq!(info.status, SignatureStatus::IntactButUntrusted);
+    }
+
+    /// A wrong key is a failed RSA check, distinct from a parse error.
+    #[test]
+    fn rsa_mismatch_reports_a_failed_check() {
+        let (private, _public) = rsa_keypair();
+        let (_other_private, other_public) = rsa_keypair();
+        let cert = generate_cert(
+            &rsa_spki(&other_public),
+            45,
+            "Signatário",
+            CERT_VALID_FROM,
+            CERT_VALID_TO,
+            None,
+        );
+        let digest = [0x77u8; 32];
+        let attrs = message_digest_attrs(&digest);
+        let signature = sign_attrs(&private, &attrs);
+        let cms = build_cms(
+            &[cert],
+            &signer_id_issuer_serial("Test CA", 45),
+            Some(&attrs),
+            &signature,
+        );
+        let info = verify_cms(&cms, Some(&digest), None).expect("cms parses");
+        assert_eq!(info.digest, DigestCheck::Matched);
+        assert_eq!(info.status, SignatureStatus::Invalid);
+        assert_eq!(info.rsa, RsaCheck::Failed);
+        assert_eq!(info.status_detail, "signature_mismatch");
+    }
+
+    #[test]
+    fn certificate_clock_states_are_reported() {
+        let (private, public) = rsa_keypair();
+        let spki = rsa_spki(&public);
+        let digest = [0x88u8; 32];
+        let attrs = message_digest_attrs(&digest);
+        let signature = sign_attrs(&private, &attrs);
+
+        let expired = generate_cert(&spki, 46, "Antigo", "200101000000Z", "200201000000Z", None);
+        let cms = build_cms(
+            &[expired],
+            &signer_id_issuer_serial("Test CA", 46),
+            Some(&attrs),
+            &signature,
+        );
+        let info = verify_cms(&cms, Some(&digest), None).expect("cms parses");
+        assert_eq!(info.status, SignatureStatus::CertificateExpired);
+        assert_eq!(info.clock, ClockCheck::Expired);
+        assert_eq!(info.status_detail, "certificate_expired");
+
+        let future = generate_cert(&spki, 47, "Futuro", "491231235959Z", "500101000000Z", None);
+        let cms = build_cms(
+            &[future],
+            &signer_id_issuer_serial("Test CA", 47),
+            Some(&attrs),
+            &signature,
+        );
+        let info = verify_cms(&cms, Some(&digest), None).expect("cms parses");
+        assert_eq!(info.status, SignatureStatus::CertificateNotYetValid);
+        assert_eq!(info.clock, ClockCheck::NotYetValid);
+        assert_eq!(info.status_detail, "certificate_not_yet_valid");
+    }
+
+    /// Signed attributes without messageDigest keep their own explanation
+    /// instead of being overwritten by the document-modified verdict.
+    #[test]
+    fn signed_attributes_without_message_digest_keep_their_own_detail() {
+        let digest = [0x99u8; 32];
+        let content_type = der_tlv(
+            0x30,
+            &der_cat(&[
+                &der_tlv(0x06, OID_CONTENT_TYPE),
+                &der_tlv(0x31, &der_tlv(0x06, OID_DATA)),
+            ]),
+        );
+        let cms = build_cms(
+            &[],
+            &signer_id_issuer_serial("Test CA", 1),
+            Some(&content_type),
+            &[0u8; 128],
+        );
+        let info = verify_cms(&cms, Some(&digest), None).expect("cms parses");
+        assert_eq!(info.digest, DigestCheck::NotComputed);
+        assert_eq!(info.rsa, RsaCheck::NotRun);
+        assert_ne!(info.status, SignatureStatus::DocumentModified);
+        assert_eq!(info.status_detail, "message_digest_missing");
+    }
+
+    #[test]
+    fn unparseable_cms_is_a_parse_error() {
+        let pdf = pdf_sig_with_contents(&[0x30, 0x03, 0x02, 0x01, 0x00]);
+        let analysis = analyze_pdf(&pdf).expect("pdf parses");
+        assert_eq!(analysis.signatures.len(), 1, "{analysis:?}");
+        let sig = &analysis.signatures[0];
+        assert_eq!(sig.status, SignatureStatus::Invalid);
+        assert_eq!(sig.status_detail, "cms_parse_error");
+        assert_eq!(sig.rsa, RsaCheck::NotRun);
+        assert_eq!(sig.digest, DigestCheck::NotComputed);
+        assert!(sig.certificate.is_none(), "{sig:?}");
+    }
+
+    /// A corrupt /ByteRange is reported on its own, never as an alteration.
+    #[test]
+    fn malformed_byte_range_is_reported_on_its_own() {
+        let mut pdf = pdf_named_banco_with_matching_digest();
+        let key = b"/ByteRange ";
+        let key_at = pdf
+            .windows(key.len())
+            .position(|w| w == key)
+            .expect("byte range key");
+        let at = key_at + key.len();
+        let width = 45;
+        assert_eq!(pdf[at], b'[');
+        assert_eq!(pdf[at + width - 1], b']');
+        // Same width keeps every byte offset — and the digest input — untouched.
+        let mut replacement = b"[0 0 0 /X]".to_vec();
+        replacement.resize(width, b' ');
+        pdf[at..at + width].copy_from_slice(&replacement);
+
+        let analysis = analyze_pdf(&pdf).expect("pdf parses");
+        assert_eq!(analysis.signatures.len(), 1, "{analysis:?}");
+        let sig = &analysis.signatures[0];
+        assert_eq!(sig.status, SignatureStatus::Unsupported);
+        assert_eq!(sig.status_detail, "byte_range_malformed");
+        assert_eq!(sig.digest, DigestCheck::NotComputed);
+        assert_eq!(sig.bytes_after_signed_range, None);
+        assert_eq!(sig.rsa, RsaCheck::NotRun);
+    }
+
+    /// End-to-end: a verified signature over the whole file.
+    #[test]
+    fn verified_signature_over_the_whole_document_is_intact() {
+        let (private, public) = rsa_keypair();
+        let cert = generate_cert(
+            &rsa_spki(&public),
+            48,
+            "Signatário",
+            CERT_VALID_FROM,
+            CERT_VALID_TO,
+            None,
+        );
+        let sid = signer_id_issuer_serial("Test CA", 48);
+        let pdf = signed_pdf_by(&private, &cert, &sid, b"");
+        let analysis = analyze_pdf(&pdf).expect("pdf parses");
+        assert_eq!(analysis.signatures.len(), 1, "{analysis:?}");
+        let sig = &analysis.signatures[0];
+        assert!(sig.covers_whole_document, "{}", sig.status_detail);
+        assert_eq!(sig.digest, DigestCheck::Matched);
+        assert_eq!(sig.rsa, RsaCheck::Passed);
+        assert_eq!(sig.signer_cert_matches_sid, Some(true));
+        assert_eq!(sig.bytes_after_signed_range, Some(false));
+        assert_eq!(sig.status, SignatureStatus::IntactButUntrusted);
+        assert_eq!(sig.status_detail, "intact_chain_unverified");
+    }
+
+    /// End-to-end: the signature verifies but the file grew after signing.
+    #[test]
+    fn verified_signature_with_bytes_after_the_range_is_document_modified() {
+        let (private, public) = rsa_keypair();
+        let cert = generate_cert(
+            &rsa_spki(&public),
+            49,
+            "Signatário",
+            CERT_VALID_FROM,
+            CERT_VALID_TO,
+            None,
+        );
+        let sid = signer_id_issuer_serial("Test CA", 49);
+        let pdf = signed_pdf_by(&private, &cert, &sid, b"% incremental update\n");
+        let analysis = analyze_pdf(&pdf).expect("pdf parses");
+        assert_eq!(analysis.signatures.len(), 1, "{analysis:?}");
+        let sig = &analysis.signatures[0];
+        assert!(!sig.covers_whole_document, "{}", sig.status_detail);
+        assert_eq!(sig.digest, DigestCheck::Matched);
+        assert_eq!(sig.rsa, RsaCheck::Passed);
+        assert_eq!(sig.bytes_after_signed_range, Some(true));
+        assert_eq!(sig.status, SignatureStatus::DocumentModified);
+        assert_eq!(sig.status_detail, "bytes_after_signed_range");
     }
 }

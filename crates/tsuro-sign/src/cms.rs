@@ -7,7 +7,8 @@
 use crate::{CertificateInfo, SigError};
 use rsa::BigUint;
 use rsa::RsaPublicKey;
-use x509_parser::prelude::{FromDer, X509Certificate};
+use x509_parser::extensions::ParsedExtension;
+use x509_parser::prelude::{FromDer, X509Certificate, X509Name};
 use x509_parser::public_key::PublicKey;
 
 #[derive(Clone, Copy)]
@@ -27,6 +28,37 @@ pub struct ParsedCms {
     pub signed_attrs_for_verify: Option<Vec<u8>>,
     pub cert_not_before: Option<i64>,
     pub cert_not_after: Option<i64>,
+    /// `Some(true)` when the certificate used for verification matches the
+    /// SignerIdentifier, `Some(false)` when the CMS carries certificates but
+    /// none of them matches, `None` when there is nothing to match against.
+    pub signer_cert_matches_sid: Option<bool>,
+}
+
+/// SignerIdentifier: issuer+serial or a subject key identifier.
+enum SignerId {
+    IssuerAndSerial {
+        issuer_der: Vec<u8>,
+        serial: Vec<u8>,
+    },
+    SubjectKeyId(Vec<u8>),
+}
+
+fn parse_signer_id(tlv: Tlv<'_>) -> Result<SignerId, SigError> {
+    // [0] IMPLICIT SubjectKeyIdentifier (primitive context tag).
+    if tlv.tag == 0x80 {
+        return Ok(SignerId::SubjectKeyId(tlv.value.to_vec()));
+    }
+    expect_tag(tlv, 0x30, "SignerIdentifier")?;
+    let parts = children(tlv)?;
+    if parts.len() != 2 {
+        return Err(SigError::Cms("SignerIdentifier incompleto".into()));
+    }
+    expect_tag(parts[0], 0x30, "issuer do SignerIdentifier")?;
+    expect_tag(parts[1], 0x02, "serial do SignerIdentifier")?;
+    Ok(SignerId::IssuerAndSerial {
+        issuer_der: parts[0].full.to_vec(),
+        serial: parts[1].value.to_vec(),
+    })
 }
 
 pub fn parse_signed_data(pkcs7: &[u8]) -> Result<ParsedCms, SigError> {
@@ -74,6 +106,7 @@ pub fn parse_signed_data(pkcs7: &[u8]) -> Result<ParsedCms, SigError> {
     }
 
     // version, sid, digestAlg, [signedAttrs], sigAlg, signature
+    let sid = parse_signer_id(si[1])?;
     let mut cursor = 2;
     let digest_algorithm = algorithm_name(&si[cursor])?;
     cursor += 1;
@@ -99,10 +132,17 @@ pub fn parse_signed_data(pkcs7: &[u8]) -> Result<ParsedCms, SigError> {
     expect_tag(si[cursor], 0x04, "signature")?;
     let signature = si[cursor].value.to_vec();
 
-    let (certificate, public_key, cert_not_before, cert_not_after) = match certs_blob {
-        Some(blob) => parse_first_cert(blob),
-        None => (None, None, None, None),
+    let selected = match certs_blob {
+        Some(blob) => select_signer_cert(blob, &sid),
+        None => SignerCertificate::default(),
     };
+    let (certificate, public_key, cert_not_before, cert_not_after, signer_cert_matches_sid) = (
+        selected.info,
+        selected.public_key,
+        selected.not_before,
+        selected.not_after,
+        selected.matches_sid,
+    );
 
     Ok(ParsedCms {
         certificate,
@@ -114,17 +154,25 @@ pub fn parse_signed_data(pkcs7: &[u8]) -> Result<ParsedCms, SigError> {
         signed_attrs_for_verify,
         cert_not_before,
         cert_not_after,
+        signer_cert_matches_sid,
     })
 }
 
-fn parse_first_cert(
-    mut data: &[u8],
-) -> (
-    Option<CertificateInfo>,
-    Option<RsaPublicKey>,
-    Option<i64>,
-    Option<i64>,
-) {
+#[derive(Default)]
+struct SignerCertificate {
+    info: Option<CertificateInfo>,
+    public_key: Option<RsaPublicKey>,
+    not_before: Option<i64>,
+    not_after: Option<i64>,
+    matches_sid: Option<bool>,
+}
+
+/// Picks the certificate named by the SignerIdentifier instead of the first one
+/// in the set. Without a match no public key is returned, so a signature is
+/// never verified against an unrelated certificate.
+fn select_signer_cert(blob: &[u8], sid: &SignerId) -> SignerCertificate {
+    let mut saw_certificate = false;
+    let mut data = blob;
     while !data.is_empty() {
         let Ok((tlv, rest)) = read_tlv(data) else {
             break;
@@ -136,6 +184,10 @@ fn parse_first_cert(
         let Ok((_, cert)) = X509Certificate::from_der(tlv.full) else {
             continue;
         };
+        saw_certificate = true;
+        if !signer_id_matches(&cert, sid) {
+            continue;
+        }
         let common_name = cert
             .subject()
             .iter_common_name()
@@ -165,14 +217,54 @@ fn parse_first_cert(
             .ok(),
             _ => None,
         };
-        return (
-            Some(info),
-            key,
-            Some(cert.validity().not_before.timestamp()),
-            Some(cert.validity().not_after.timestamp()),
-        );
+        return SignerCertificate {
+            info: Some(info),
+            public_key: key,
+            not_before: Some(cert.validity().not_before.timestamp()),
+            not_after: Some(cert.validity().not_after.timestamp()),
+            matches_sid: Some(true),
+        };
     }
-    (None, None, None, None)
+    SignerCertificate {
+        matches_sid: if saw_certificate { Some(false) } else { None },
+        ..SignerCertificate::default()
+    }
+}
+
+fn signer_id_matches(cert: &X509Certificate<'_>, sid: &SignerId) -> bool {
+    match sid {
+        SignerId::IssuerAndSerial { issuer_der, serial } => {
+            issuer_matches(cert, issuer_der) && serial_matches(&cert.serial.to_bytes_be(), serial)
+        }
+        SignerId::SubjectKeyId(expected) => cert.extensions().iter().any(|ext| {
+            matches!(
+                ext.parsed_extension(),
+                ParsedExtension::SubjectKeyIdentifier(key) if key.0 == expected.as_slice()
+            )
+        }),
+    }
+}
+
+fn issuer_matches(cert: &X509Certificate<'_>, issuer_der: &[u8]) -> bool {
+    if cert.issuer().as_raw() == issuer_der {
+        return true;
+    }
+    // Encoders sometimes re-encode the same distinguished name, so fall back to
+    // comparing the parsed name (and its display form) instead of raw bytes.
+    match X509Name::from_der(issuer_der) {
+        Ok((_, name)) => name == *cert.issuer() || name.to_string() == cert.issuer().to_string(),
+        Err(_) => false,
+    }
+}
+
+fn serial_matches(cert_serial: &[u8], sid_serial: &[u8]) -> bool {
+    let trim = |mut bytes: &[u8]| {
+        while let Some((&0, rest)) = bytes.split_first() {
+            bytes = rest;
+        }
+        bytes.to_vec()
+    };
+    trim(cert_serial) == trim(sid_serial)
 }
 
 fn extract_message_digest(attrs_blob: &[u8]) -> Result<Option<Vec<u8>>, SigError> {
