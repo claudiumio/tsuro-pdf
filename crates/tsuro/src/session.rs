@@ -37,6 +37,7 @@ use crate::recovery::{self, Abandoned, Checkpoint, CheckpointJob, ContentId, Jou
 use crate::search::Search;
 use crate::spool::{list_printers, spool_pdf, PrinterInfo};
 use crate::update::{self, release_version, UpdateError};
+use crate::view::annot_kind_label;
 
 /// Largura renderizada da miniatura: ~2x os 64 do rail, para a folha ficar
 /// nítida em hidpi. O rail exibe `RAIL_THUMB_W` (`view.rs`).
@@ -1012,6 +1013,8 @@ pub(crate) enum PaletteItem {
         kind: AnnotKind,
         excerpt: Option<String>,
         note: Option<String>,
+        /// "Destaque · 3" — pré-formatado porque subtitle() retorna &str.
+        label: String,
     },
 }
 
@@ -1069,14 +1072,7 @@ impl PaletteItem {
         match self {
             Self::Action { hint, .. } => *hint,
             Self::GlobalHit { path, .. } => path.file_name().and_then(|name| name.to_str()),
-            Self::AnnotHit { excerpt, note, .. } => {
-                // Se tem nota, o título é a nota e o subtítulo é o trecho.
-                if note.is_some() {
-                    excerpt.as_deref()
-                } else {
-                    None
-                }
-            }
+            Self::AnnotHit { label, .. } => Some(label.as_str()),
             Self::DocHit { .. }
             | Self::OutlineRow { .. }
             | Self::Recent { .. }
@@ -1092,7 +1088,12 @@ impl PaletteItem {
             Self::Recent { .. } => "folder",
             Self::File { .. } => "file-text",
             Self::GlobalHit { .. } => "pages",
-            Self::AnnotHit { .. } => "bookmark",
+            Self::AnnotHit { kind, .. } => match kind {
+                AnnotKind::Highlight => "highlighter",
+                AnnotKind::Underline => "underline",
+                AnnotKind::Strikeout => "strike",
+                AnnotKind::Note => "note",
+            },
         }
     }
 
@@ -1378,17 +1379,32 @@ impl PaletteContext {
         self.annots
             .iter()
             .filter_map(|(id, page, kind, excerpt, note)| {
-                let item = PaletteItem::AnnotHit {
-                    id: *id,
-                    page: *page,
-                    kind: *kind,
-                    excerpt: excerpt.clone(),
-                    note: note.clone(),
+                // Casa por nota E trecho; usa o melhor score dos dois.
+                let note_score = note.as_deref().and_then(|t| palette_match(query, t));
+                let excerpt_score = excerpt.as_deref().and_then(|t| palette_match(query, t));
+                let score = match (note_score, excerpt_score) {
+                    (Some(a), Some(b)) => Some(a.min(b)),
+                    (Some(a), None) | (None, Some(a)) => Some(a),
+                    (None, None) => None,
                 };
-                // Casa por nota primeiro; se não tem nota, casa por trecho.
-                let title = item.title();
-                palette_match(query, title).map(|score| (score, SourceRank::Annot, item))
+                score.map(|s| {
+                    let kind_label = annot_kind_label(*kind, Lang::Pt);
+                    let label = format!("{} · {}", kind_label, page.index() + 1);
+                    (
+                        s,
+                        SourceRank::Annot,
+                        PaletteItem::AnnotHit {
+                            id: *id,
+                            page: *page,
+                            kind: *kind,
+                            excerpt: excerpt.clone(),
+                            note: note.clone(),
+                            label,
+                        },
+                    )
+                })
             })
+            .take(PALETTE_SOURCE_CAP)
             .collect()
     }
 }
@@ -1713,11 +1729,21 @@ impl Tabs {
                     }),
             );
         }
-        let annots = ready
-            .annotation_rows()
+        // Coleta todas as marcações sem filtro do painel (annot_query) e sem
+        // cap prematuro: o cap é aplicado nos resultados matched, não na fonte.
+        let mut sorted: Vec<&Annotation> = ready.annotations.iter().collect();
+        sorted.sort_by_key(|annot| (annot.page.index(), annot.range.start));
+        let annots = sorted
             .into_iter()
-            .take(PALETTE_SOURCE_CAP)
-            .map(|row| (row.id, row.page, row.kind, row.excerpt, row.note))
+            .map(|annot| {
+                (
+                    annot.id,
+                    annot.page,
+                    annot.kind,
+                    ready.annot_excerpt(annot),
+                    (!annot.text.trim().is_empty()).then(|| annot.text.trim().to_string()),
+                )
+            })
             .collect();
         PaletteContext {
             lang: ready.lang,
