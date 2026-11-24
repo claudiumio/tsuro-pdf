@@ -10,6 +10,7 @@ pub mod session;
 pub mod view;
 
 pub(crate) mod engine;
+pub(crate) mod io_atomic;
 pub(crate) mod print;
 pub(crate) mod recovery;
 pub(crate) mod spool;
