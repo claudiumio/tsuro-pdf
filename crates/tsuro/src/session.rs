@@ -1088,12 +1088,7 @@ impl PaletteItem {
             Self::Recent { .. } => "folder",
             Self::File { .. } => "file-text",
             Self::GlobalHit { .. } => "pages",
-            Self::AnnotHit { kind, .. } => match kind {
-                AnnotKind::Highlight => "highlighter",
-                AnnotKind::Underline => "underline",
-                AnnotKind::Strikeout => "strike",
-                AnnotKind::Note => "note",
-            },
+            Self::AnnotHit { kind, .. } => crate::view::annot_kind_icon(*kind),
         }
     }
 
@@ -1756,50 +1751,18 @@ impl Tabs {
         }
     }
 
-    /// Constrói um PaletteContext vazio de texto (sem dochits/global) com
-    /// outline, recents, annots e lang do documento ativo. Usado para
-    /// recalcular hits de texto sem reconstruir anotações.
-    fn palette_context_base(&self) -> PaletteContext {
-        let ready = self.active();
-        let current = ready.source.path();
-        let outline = ready
-            .outline_rows()
-            .into_iter()
-            .map(|(_, _, title, page, _)| (title.to_owned(), page))
-            .collect();
-        let recents = ready
-            .recents()
-            .iter()
-            .filter(|entry| entry.as_path() != current)
-            .cloned()
-            .collect();
-        let mut sorted: Vec<&Annotation> = ready.annotations.iter().collect();
-        sorted.sort_by_key(|annot| (annot.page.index(), annot.range.start));
-        let annots = sorted
-            .into_iter()
-            .map(|annot| {
-                (
-                    annot.id,
-                    annot.page,
-                    annot.kind,
-                    ready.annot_excerpt(annot),
-                    (!annot.text.trim().is_empty()).then(|| annot.text.trim().to_string()),
-                )
-            })
-            .collect();
-        PaletteContext {
-            lang: ready.lang,
-            outline,
-            recents,
-            annots,
-            ..PaletteContext::default()
-        }
-    }
 
-    /// Preenche dochits e global no contexto para a query dada.
-    fn fill_text_hits(&self, ctx: &mut PaletteContext, query: &str) {
+    /// Hits de texto para a query: dochits do documento ativo e global das
+    /// outras abas, como dados prontos para o contexto da paleta.
+    fn text_hits(
+        &self,
+        query: &str,
+    ) -> (
+        Vec<(PageNo, TextRange, String)>,
+        Vec<(PathBuf, PageNo, TextRange, String)>,
+    ) {
         let ready = self.active();
-        ctx.dochits = Search::derive_capped(query, &ready.pages.text, PALETTE_SOURCE_CAP)
+        let dochits = Search::derive_capped(query, &ready.pages.text, PALETTE_SOURCE_CAP)
             .hits()
             .iter()
             .map(|hit| (hit.page, hit.range, hit_excerpt(&ready.pages.text, hit)))
@@ -1824,7 +1787,7 @@ impl Tabs {
                     }),
             );
         }
-        ctx.global = global;
+        (dochits, global)
     }
 
     fn active_mut(&mut self) -> &mut Ready {
@@ -5321,26 +5284,35 @@ impl Session {
     }
 
     fn palette_query(&mut self, query: String) -> Task<Message> {
-        // Recalcula dochits e global para a nova query, mas preserva annots,
-        // outline, recents e files cacheados na abertura da paleta.
-        let updated_ctx = match self {
-            Session::Ready(tabs) => {
-                let mut ctx = tabs.palette_context_base();
-                tabs.fill_text_hits(&mut ctx, &query);
-                Some(ctx)
+        // Recalcula os hits que dependem da query preservando fontes
+        // estáticas cacheadas na abertura. Na paleta do documento, annots,
+        // outline e recents ficam cacheados e só dochits/global mudam;
+        // no Início (e no Empty), global depende da query e o contexto é
+        // reconstruído de dados já em memória.
+        if let Session::Ready(tabs) = self {
+            if let Some(home) = tabs.home() {
+                let context = PaletteContext::home(home, tabs.docs(), &query);
+                if let Some(palette) = tabs.palette.as_mut() {
+                    palette.set_query_with(context, query);
+                }
+                return Task::none();
             }
-            _ => None,
-        };
-        if let Some(ctx) = updated_ctx {
-            if let Some(Some(palette)) = self.palette_slot() {
-                palette.context.dochits = ctx.dochits;
-                palette.context.global = ctx.global;
+            let (dochits, global) = tabs.text_hits(&query);
+            if let Some(palette) = tabs.palette.as_mut() {
+                palette.context.dochits = dochits;
+                palette.context.global = global;
                 palette.set_query(query);
+            }
+            return Task::none();
+        }
+        if let Session::Empty(empty) = self {
+            let context = PaletteContext::home(empty, &[], &query);
+            if let Some(palette) = empty.palette.as_mut() {
+                palette.set_query_with(context, query);
             }
         }
         Task::none()
     }
-
     fn palette_move(&mut self, step: i32) -> Task<Message> {
         let Some(Some(palette)) = self.palette_slot() else {
             return Task::none();
