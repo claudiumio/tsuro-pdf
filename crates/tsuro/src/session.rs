@@ -1751,7 +1751,6 @@ impl Tabs {
         }
     }
 
-
     /// Hits de texto para a query: dochits do documento ativo e global das
     /// outras abas, como dados prontos para o contexto da paleta.
     fn text_hits(
