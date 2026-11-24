@@ -410,7 +410,11 @@ fn signature_from_dict(
         name_of(dict.get(b"SubFilter").ok().unwrap_or(&Object::Null)).or(info.sub_filter);
     info.byte_range = byte_range.or(info.byte_range);
     info.covers_whole_document = covers;
-    info.bytes_after_signed_range = byte_range.map(|_| !covers);
+    info.bytes_after_signed_range = byte_range.map(|br| {
+        let [_, _, c, d] = br;
+        let second_end = (c as usize).saturating_add(d as usize);
+        second_end < bytes.len()
+    });
 
     if cms_parsed {
         if let Some(issue) = byte_range_issue {
