@@ -111,7 +111,10 @@ mod tests {
         write_file(&path, b"stable\n").unwrap();
 
         // A leftover old-format .tmp from a previous version must not affect the target.
-        let legacy_tmp = path.with_file_name(format!("{}.tmp", path.file_name().unwrap().to_string_lossy()));
+        let legacy_tmp = path.with_file_name(format!(
+            "{}.tmp",
+            path.file_name().unwrap().to_string_lossy()
+        ));
         fs::write(&legacy_tmp, b"crash-garbage\n").unwrap();
         assert_eq!(fs::read_to_string(&path).unwrap(), "stable\n");
 
