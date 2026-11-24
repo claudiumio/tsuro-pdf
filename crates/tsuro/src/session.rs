@@ -1388,7 +1388,7 @@ impl PaletteContext {
                     (None, None) => None,
                 };
                 score.map(|s| {
-                    let kind_label = annot_kind_label(*kind, Lang::Pt);
+                    let kind_label = annot_kind_label(*kind, self.lang);
                     let label = format!("{} · {}", kind_label, page.index() + 1);
                     (
                         s,
@@ -5250,10 +5250,11 @@ impl Session {
     }
 
     fn palette_query(&mut self, query: String) -> Task<Message> {
-        if let Some(context) = self.palette_context_for(&query) {
-            if let Some(Some(palette)) = self.palette_slot() {
-                palette.set_query_with(context, query);
-            }
+        // Filtra itens cacheados sem reconstruir a coleção de anotações:
+        // o contexto (incluindo annots) foi coletado na abertura da paleta
+        // e só muda quando o documento ativo ou as anotações mudam.
+        if let Some(Some(palette)) = self.palette_slot() {
+            palette.set_query(query);
         }
         Task::none()
     }
