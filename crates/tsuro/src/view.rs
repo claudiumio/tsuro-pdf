@@ -4420,8 +4420,7 @@ fn status_dot(color: Color) -> Element<'static, Message> {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum ContentCheck {
     Matches,
-    /// `DocumentModified` com cobertura total. O mesmo estado vem de um CMS sem
-    /// messageDigest (tsuro-sign #161), então o rótulo não afirma adulteração.
+    /// `DocumentModified` com cobertura total: o digest não confere.
     Altered,
     /// `DocumentModified` com cobertura parcial: o engine não separa alteração
     /// de bytes posteriores, então o rótulo não afirma nenhum dos dois.
@@ -5192,6 +5191,32 @@ mod signature_checks_tests {
             }),
             digest_algorithm: digest.map(str::to_string),
             signature_algorithm: Some("RSA".into()),
+            digest: if status == SignatureStatus::DocumentModified {
+                tsuro_sign::DigestCheck::Mismatched
+            } else if digest.is_some() {
+                tsuro_sign::DigestCheck::Matched
+            } else {
+                tsuro_sign::DigestCheck::NotComputed
+            },
+            bytes_after_signed_range: byte_range.then_some(!covers),
+            rsa: match status {
+                SignatureStatus::IntactButUntrusted
+                | SignatureStatus::CertificateExpired
+                | SignatureStatus::CertificateNotYetValid
+                    if digest == Some("SHA-256") =>
+                {
+                    tsuro_sign::RsaCheck::Passed
+                }
+                SignatureStatus::Invalid if certificate => tsuro_sign::RsaCheck::Failed,
+                SignatureStatus::Invalid => tsuro_sign::RsaCheck::KeyUnavailable,
+                SignatureStatus::Unsupported if digest == Some("SHA-1") => {
+                    tsuro_sign::RsaCheck::UnsupportedDigest
+                }
+                _ => tsuro_sign::RsaCheck::NotRun,
+            },
+            signer_cert_matches_sid: certificate.then_some(true),
+            clock: tsuro_sign::ClockCheck::NotRun,
+            chain: tsuro_sign::ChainCheck::NotRun,
         }
     }
 

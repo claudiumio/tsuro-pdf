@@ -14568,6 +14568,12 @@ mod tests {
             certificate: None,
             digest_algorithm: None,
             signature_algorithm: None,
+            digest: tsuro_sign::DigestCheck::Matched,
+            bytes_after_signed_range: Some(false),
+            rsa: tsuro_sign::RsaCheck::Passed,
+            signer_cert_matches_sid: Some(true),
+            clock: tsuro_sign::ClockCheck::NotRun,
+            chain: tsuro_sign::ChainCheck::NotRun,
         }
     }
 
