@@ -78,7 +78,9 @@ fn sync_dir(dir: &Path) -> io::Result<()> {
 
 #[cfg(test)]
 mod tests {
-    use super::*;
+    use crate::io_atomic::write_file;
+    use std::fs;
+    use std::path::PathBuf;
     use std::time::{SystemTime, UNIX_EPOCH};
 
     fn temp_path(name: &str) -> PathBuf {
@@ -98,36 +100,58 @@ mod tests {
         let _ = std::fs::remove_file(&path);
         write_file(&path, b"alpha\n").unwrap();
         assert_eq!(std::fs::read(&path).unwrap(), b"alpha\n");
-        assert!(!tmp_path(&path).unwrap().exists());
-        let _ = std::fs::remove_file(&path);
+        assert!(!any_tmp_exists(&path));
+        let _ = fs::remove_file(&path);
     }
 
     #[test]
     fn orphan_tmp_does_not_touch_existing_target() {
         let path = temp_path("keep.txt");
-        let _ = std::fs::remove_file(&path);
+        let _ = fs::remove_file(&path);
         write_file(&path, b"stable\n").unwrap();
 
-        let tmp = tmp_path(&path).unwrap();
-        std::fs::write(&tmp, b"crash-garbage\n").unwrap();
-        assert_eq!(std::fs::read_to_string(&path).unwrap(), "stable\n");
+        // A leftover old-format .tmp from a previous version must not affect the target.
+        let legacy_tmp = path.with_file_name(format!("{}.tmp", path.file_name().unwrap().to_string_lossy()));
+        fs::write(&legacy_tmp, b"crash-garbage\n").unwrap();
+        assert_eq!(fs::read_to_string(&path).unwrap(), "stable\n");
 
-        let _ = std::fs::remove_file(&tmp);
-        let _ = std::fs::remove_file(&path);
+        let _ = fs::remove_file(&legacy_tmp);
+        let _ = fs::remove_file(&path);
     }
 
     #[test]
     fn rename_failure_removes_tmp() {
         let dir = temp_path("as-dir");
-        let _ = std::fs::remove_file(&dir);
-        let _ = std::fs::remove_dir_all(&dir);
-        std::fs::create_dir_all(&dir).unwrap();
+        let _ = fs::remove_file(&dir);
+        let _ = fs::remove_dir_all(&dir);
+        fs::create_dir_all(&dir).unwrap();
 
         // `dir` is a directory, so rename(tmp → dir) fails; tmp must go away.
         let err = write_file(&dir, b"nope\n").unwrap_err();
-        assert!(err.kind() != io::ErrorKind::NotFound);
-        assert!(!tmp_path(&dir).unwrap().exists());
+        assert!(err.kind() != std::io::ErrorKind::NotFound);
+        assert!(!any_tmp_exists(&dir));
 
-        let _ = std::fs::remove_dir_all(&dir);
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    /// Check that no temp file matching the new unique naming pattern exists for `path`.
+    fn any_tmp_exists(path: &std::path::Path) -> bool {
+        let parent = match path.parent() {
+            Some(p) if !p.as_os_str().is_empty() => p,
+            _ => return false,
+        };
+        let stem = match path.file_name() {
+            Some(n) => n.to_string_lossy().into_owned(),
+            None => return false,
+        };
+        let prefix = format!("{stem}.");
+        fs::read_dir(parent)
+            .map(|entries| {
+                entries.filter_map(|e| e.ok()).any(|e| {
+                    let name = e.file_name().to_string_lossy().into_owned();
+                    name.starts_with(&prefix) && name.ends_with(".tmp")
+                })
+            })
+            .unwrap_or(false)
     }
 }
