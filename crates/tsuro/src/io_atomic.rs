@@ -6,13 +6,14 @@
 use std::fs::File;
 use std::io::{self, Write};
 use std::path::{Path, PathBuf};
+use std::sync::atomic::{AtomicU64, Ordering};
 
 /// Write `bytes` to `path` so a crash mid-write cannot truncate the old file.
 ///
 /// Steps: sibling `.tmp` → `write_all` → `sync_all` → `rename` → `sync_dir`.
 /// Any failure after creating the temp removes the `.tmp` before returning.
 pub(crate) fn write_file(path: &Path, bytes: impl AsRef<[u8]>) -> io::Result<()> {
-    let tmp = tmp_path(path)?;
+    let tmp = unique_tmp_path(path)?;
     let result = (|| {
         let mut file = File::create(&tmp)?;
         file.write_all(bytes.as_ref())?;
@@ -20,6 +21,11 @@ pub(crate) fn write_file(path: &Path, bytes: impl AsRef<[u8]>) -> io::Result<()>
         drop(file);
         std::fs::rename(&tmp, path)?;
         if let Some(parent) = path.parent() {
+            let parent = if parent.as_os_str().is_empty() {
+                Path::new(".")
+            } else {
+                parent
+            };
             sync_dir(parent)?;
         }
         Ok(())
@@ -31,6 +37,25 @@ pub(crate) fn write_file(path: &Path, bytes: impl AsRef<[u8]>) -> io::Result<()>
     result
 }
 
+static TMP_COUNTER: AtomicU64 = AtomicU64::new(0);
+
+fn unique_tmp_path(path: &Path) -> io::Result<PathBuf> {
+    let name = path.file_name().ok_or_else(|| {
+        io::Error::new(
+            io::ErrorKind::InvalidInput,
+            "atomic write needs a file name",
+        )
+    })?;
+    let seq = TMP_COUNTER.fetch_add(1, Ordering::Relaxed);
+    Ok(path.with_file_name(format!(
+        "{}.{}.{}.tmp",
+        name.to_string_lossy(),
+        std::process::id(),
+        seq
+    )))
+}
+
+#[cfg(test)]
 fn tmp_path(path: &Path) -> io::Result<PathBuf> {
     let name = path.file_name().ok_or_else(|| {
         io::Error::new(
