@@ -1756,6 +1756,77 @@ impl Tabs {
         }
     }
 
+    /// Constrói um PaletteContext vazio de texto (sem dochits/global) com
+    /// outline, recents, annots e lang do documento ativo. Usado para
+    /// recalcular hits de texto sem reconstruir anotações.
+    fn palette_context_base(&self) -> PaletteContext {
+        let ready = self.active();
+        let current = ready.source.path();
+        let outline = ready
+            .outline_rows()
+            .into_iter()
+            .map(|(_, _, title, page, _)| (title.to_owned(), page))
+            .collect();
+        let recents = ready
+            .recents()
+            .iter()
+            .filter(|entry| entry.as_path() != current)
+            .cloned()
+            .collect();
+        let mut sorted: Vec<&Annotation> = ready.annotations.iter().collect();
+        sorted.sort_by_key(|annot| (annot.page.index(), annot.range.start));
+        let annots = sorted
+            .into_iter()
+            .map(|annot| {
+                (
+                    annot.id,
+                    annot.page,
+                    annot.kind,
+                    ready.annot_excerpt(annot),
+                    (!annot.text.trim().is_empty()).then(|| annot.text.trim().to_string()),
+                )
+            })
+            .collect();
+        PaletteContext {
+            lang: ready.lang,
+            outline,
+            recents,
+            annots,
+            ..PaletteContext::default()
+        }
+    }
+
+    /// Preenche dochits e global no contexto para a query dada.
+    fn fill_text_hits(&self, ctx: &mut PaletteContext, query: &str) {
+        let ready = self.active();
+        ctx.dochits = Search::derive_capped(query, &ready.pages.text, PALETTE_SOURCE_CAP)
+            .hits()
+            .iter()
+            .map(|hit| (hit.page, hit.range, hit_excerpt(&ready.pages.text, hit)))
+            .collect();
+        let mut global = Vec::new();
+        for (index, doc) in self.docs.iter().enumerate() {
+            if index == self.active {
+                continue;
+            }
+            let path = doc.source.path().to_path_buf();
+            global.extend(
+                Search::derive_capped(query, &doc.pages.text, PALETTE_SOURCE_CAP)
+                    .hits()
+                    .iter()
+                    .map(|hit| {
+                        (
+                            path.clone(),
+                            hit.page,
+                            hit.range,
+                            hit_excerpt(&doc.pages.text, hit),
+                        )
+                    }),
+            );
+        }
+        ctx.global = global;
+    }
+
     fn active_mut(&mut self) -> &mut Ready {
         let active = self.active;
         &mut self.docs[active]
@@ -5250,11 +5321,22 @@ impl Session {
     }
 
     fn palette_query(&mut self, query: String) -> Task<Message> {
-        // Filtra itens cacheados sem reconstruir a coleção de anotações:
-        // o contexto (incluindo annots) foi coletado na abertura da paleta
-        // e só muda quando o documento ativo ou as anotações mudam.
-        if let Some(Some(palette)) = self.palette_slot() {
-            palette.set_query(query);
+        // Recalcula dochits e global para a nova query, mas preserva annots,
+        // outline, recents e files cacheados na abertura da paleta.
+        let updated_ctx = match self {
+            Session::Ready(tabs) => {
+                let mut ctx = tabs.palette_context_base();
+                tabs.fill_text_hits(&mut ctx, &query);
+                Some(ctx)
+            }
+            _ => None,
+        };
+        if let Some(ctx) = updated_ctx {
+            if let Some(Some(palette)) = self.palette_slot() {
+                palette.context.dochits = ctx.dochits;
+                palette.context.global = ctx.global;
+                palette.set_query(query);
+            }
         }
         Task::none()
     }
