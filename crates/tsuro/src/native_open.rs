@@ -96,7 +96,7 @@ impl Bridge {
             registered: Cell::new(false),
         });
         // NSObject's init returns the initialized retained instance.
-        let handler = unsafe { msg_send![super(allocated), init] };
+        let handler: Retained<TsuroOpenDocuments> = unsafe { msg_send![super(allocated), init] };
         let bridge = Self { handler };
         let name = NSString::from_str("NSApplicationWillFinishLaunchingNotification");
         // The retained target implements the selector's void(NSNotification *) signature.
