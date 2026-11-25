@@ -37,6 +37,7 @@ use crate::recovery::{self, Abandoned, Checkpoint, CheckpointJob, ContentId, Jou
 use crate::search::Search;
 use crate::spool::{list_printers, spool_pdf, PrinterInfo};
 use crate::update::{self, release_version, UpdateError};
+use crate::view::annot_kind_label;
 
 /// Largura renderizada da miniatura: ~2x os 64 do rail, para a folha ficar
 /// nítida em hidpi. O rail exibe `RAIL_THUMB_W` (`view.rs`).
@@ -1005,6 +1006,16 @@ pub(crate) enum PaletteItem {
         range: TextRange,
         excerpt: String,
     },
+    /// Marcação do documento ativo: busca por nota ou trecho.
+    AnnotHit {
+        id: u64,
+        page: PageNo,
+        kind: AnnotKind,
+        excerpt: Option<String>,
+        note: Option<String>,
+        /// "Destaque · 3" — pré-formatado porque subtitle() retorna &str.
+        label: String,
+    },
 }
 
 impl PaletteItem {
@@ -1051,6 +1062,9 @@ impl PaletteItem {
                 .and_then(|name| name.to_str())
                 .or_else(|| path.as_os_str().to_str())
                 .unwrap_or(""),
+            Self::AnnotHit { note, excerpt, .. } => {
+                note.as_deref().or(excerpt.as_deref()).unwrap_or("")
+            }
         }
     }
 
@@ -1058,6 +1072,7 @@ impl PaletteItem {
         match self {
             Self::Action { hint, .. } => *hint,
             Self::GlobalHit { path, .. } => path.file_name().and_then(|name| name.to_str()),
+            Self::AnnotHit { label, .. } => Some(label.as_str()),
             Self::DocHit { .. }
             | Self::OutlineRow { .. }
             | Self::Recent { .. }
@@ -1073,6 +1088,7 @@ impl PaletteItem {
             Self::Recent { .. } => "folder",
             Self::File { .. } => "file-text",
             Self::GlobalHit { .. } => "pages",
+            Self::AnnotHit { kind, .. } => crate::view::annot_kind_icon(*kind),
         }
     }
 
@@ -1105,6 +1121,8 @@ pub(crate) struct PaletteContext {
     global: Vec<(PathBuf, PageNo, TextRange, String)>,
     /// PDFs da pasta aberta (só no Início).
     files: Vec<PathBuf>,
+    /// Marcações do documento ativo (id, página, tipo, trecho, nota).
+    annots: Vec<(u64, PageNo, AnnotKind, Option<String>, Option<String>)>,
     /// Paleta do Início: sem as ações que agem no documento.
     home: bool,
 }
@@ -1172,6 +1190,7 @@ impl PaletteState {
         scored.extend(self.context.outline_scored(query));
         scored.extend(self.context.docs_scored(query));
         scored.extend(self.context.global_scored(query));
+        scored.extend(self.context.annots_scored(query));
         scored.extend(self.context.recents_scored(query));
         scored.extend(self.context.files_scored(query));
         scored
@@ -1221,6 +1240,7 @@ fn palette_scroll_offset(items: &[PaletteItem], selected: usize) -> f32 {
 enum SourceRank {
     Action,
     Outline,
+    Annot,
     Doc,
     Global,
     Recent,
@@ -1346,6 +1366,40 @@ impl PaletteContext {
                 let file = PaletteItem::File { path: path.clone() };
                 palette_match(query, file.title()).map(|score| (score, SourceRank::File, file))
             })
+            .collect()
+    }
+
+    /// Marcações do documento ativo casadas por nota ou trecho.
+    fn annots_scored(&self, query: &str) -> Vec<(u8, SourceRank, PaletteItem)> {
+        self.annots
+            .iter()
+            .filter_map(|(id, page, kind, excerpt, note)| {
+                // Casa por nota E trecho; usa o melhor score dos dois.
+                let note_score = note.as_deref().and_then(|t| palette_match(query, t));
+                let excerpt_score = excerpt.as_deref().and_then(|t| palette_match(query, t));
+                let score = match (note_score, excerpt_score) {
+                    (Some(a), Some(b)) => Some(a.min(b)),
+                    (Some(a), None) | (None, Some(a)) => Some(a),
+                    (None, None) => None,
+                };
+                score.map(|s| {
+                    let kind_label = annot_kind_label(*kind, self.lang);
+                    let label = format!("{} · {}", kind_label, page.index() + 1);
+                    (
+                        s,
+                        SourceRank::Annot,
+                        PaletteItem::AnnotHit {
+                            id: *id,
+                            page: *page,
+                            kind: *kind,
+                            excerpt: excerpt.clone(),
+                            note: note.clone(),
+                            label,
+                        },
+                    )
+                })
+            })
+            .take(PALETTE_SOURCE_CAP)
             .collect()
     }
 }
@@ -1670,14 +1724,69 @@ impl Tabs {
                     }),
             );
         }
+        // Coleta todas as marcações sem filtro do painel (annot_query) e sem
+        // cap prematuro: o cap é aplicado nos resultados matched, não na fonte.
+        let mut sorted: Vec<&Annotation> = ready.annotations.iter().collect();
+        sorted.sort_by_key(|annot| (annot.page.index(), annot.range.start));
+        let annots = sorted
+            .into_iter()
+            .map(|annot| {
+                (
+                    annot.id,
+                    annot.page,
+                    annot.kind,
+                    ready.annot_excerpt(annot),
+                    (!annot.text.trim().is_empty()).then(|| annot.text.trim().to_string()),
+                )
+            })
+            .collect();
         PaletteContext {
             lang: ready.lang,
             outline,
             recents,
             dochits,
             global,
+            annots,
             ..PaletteContext::default()
         }
+    }
+
+    /// Hits de texto para a query: dochits do documento ativo e global das
+    /// outras abas, como dados prontos para o contexto da paleta.
+    fn text_hits(
+        &self,
+        query: &str,
+    ) -> (
+        Vec<(PageNo, TextRange, String)>,
+        Vec<(PathBuf, PageNo, TextRange, String)>,
+    ) {
+        let ready = self.active();
+        let dochits = Search::derive_capped(query, &ready.pages.text, PALETTE_SOURCE_CAP)
+            .hits()
+            .iter()
+            .map(|hit| (hit.page, hit.range, hit_excerpt(&ready.pages.text, hit)))
+            .collect();
+        let mut global = Vec::new();
+        for (index, doc) in self.docs.iter().enumerate() {
+            if index == self.active {
+                continue;
+            }
+            let path = doc.source.path().to_path_buf();
+            global.extend(
+                Search::derive_capped(query, &doc.pages.text, PALETTE_SOURCE_CAP)
+                    .hits()
+                    .iter()
+                    .map(|hit| {
+                        (
+                            path.clone(),
+                            hit.page,
+                            hit.range,
+                            hit_excerpt(&doc.pages.text, hit),
+                        )
+                    }),
+            );
+        }
+        (dochits, global)
     }
 
     fn active_mut(&mut self) -> &mut Ready {
@@ -5174,14 +5283,39 @@ impl Session {
     }
 
     fn palette_query(&mut self, query: String) -> Task<Message> {
-        if let Some(context) = self.palette_context_for(&query) {
-            if let Some(Some(palette)) = self.palette_slot() {
+        // Recalcula os hits que dependem da query preservando fontes
+        // estáticas cacheadas na abertura. Na paleta do documento, annots,
+        // outline e recents ficam cacheados e só dochits/global mudam;
+        // no Início (e no Empty), global depende da query e o contexto é
+        // reconstruído de dados já em memória.
+        if let Session::Ready(tabs) = self {
+            if tabs.home().is_some() {
+                // A paleta do Início vive em tabs.home.palette: reconstrói
+                // o contexto de dados em memória e atualiza lá.
+                let context = PaletteContext::home(tabs.home().unwrap(), tabs.docs(), &query);
+                if let Some(home) = tabs.home.as_mut() {
+                    if let Some(palette) = home.palette.as_mut() {
+                        palette.set_query_with(context, query);
+                    }
+                }
+                return Task::none();
+            }
+            let (dochits, global) = tabs.text_hits(&query);
+            if let Some(palette) = tabs.palette.as_mut() {
+                palette.context.dochits = dochits;
+                palette.context.global = global;
+                palette.set_query(query);
+            }
+            return Task::none();
+        }
+        if let Session::Empty(empty) = self {
+            let context = PaletteContext::home(empty, &[], &query);
+            if let Some(palette) = empty.palette.as_mut() {
                 palette.set_query_with(context, query);
             }
         }
         Task::none()
     }
-
     fn palette_move(&mut self, step: i32) -> Task<Message> {
         let Some(Some(palette)) = self.palette_slot() else {
             return Task::none();
@@ -5231,6 +5365,10 @@ impl Session {
             Some((PaletteItem::Recent { path } | PaletteItem::File { path }, _)) => {
                 let _ = self.palette_close();
                 self.open_or_select(path)
+            }
+            Some((PaletteItem::AnnotHit { id, .. }, _)) => {
+                let _ = self.palette_close();
+                self.annot_activate(id)
             }
             Some((PaletteItem::DocHit { page, range, .. }, query)) => {
                 let _ = self.palette_close();
@@ -5982,27 +6120,25 @@ fn open_url(url: &str) {
 
 /// Tag da latest release no GitHub, via curl do sistema (sem dep nova).
 /// Falha offline/via proxy: o chamador trata como silencioso.
-fn fetch_latest_tag() -> impl std::future::Future<Output = Result<String, String>> + Send {
-    async move {
-        let out = tokio::task::spawn_blocking(|| {
-            std::process::Command::new("curl")
-                .args([
-                    "-fsSL",
-                    "--max-time",
-                    "15",
-                    "https://api.github.com/repos/claudiumio/tsuro-pdf/releases/latest",
-                ])
-                .output()
-                .map_err(|e| e.to_string())
-        })
-        .await
-        .map_err(|e| e.to_string())??;
-        if !out.status.success() {
-            return Err(format!("http {}", out.status));
-        }
-        let body = String::from_utf8(out.stdout).map_err(|e| e.to_string())?;
-        parse_latest_tag(&body).ok_or_else(|| "sem tag_name".to_string())
+async fn fetch_latest_tag() -> Result<String, String> {
+    let out = tokio::task::spawn_blocking(|| {
+        std::process::Command::new("curl")
+            .args([
+                "-fsSL",
+                "--max-time",
+                "15",
+                "https://api.github.com/repos/claudiumio/tsuro-pdf/releases/latest",
+            ])
+            .output()
+            .map_err(|e| e.to_string())
+    })
+    .await
+    .map_err(|e| e.to_string())??;
+    if !out.status.success() {
+        return Err(format!("http {}", out.status));
     }
+    let body = String::from_utf8(out.stdout).map_err(|e| e.to_string())?;
+    parse_latest_tag(&body).ok_or_else(|| "sem tag_name".to_string())
 }
 
 /// Extrai `"tag_name": "vX.Y.Z"` do JSON sem serde (só este campo interessa).
@@ -7470,9 +7606,7 @@ impl Ready {
             return None;
         }
         // Só o tamanho: o texto da página não muda o bitmap.
-        if self.loaded_media(self.visible).is_none() {
-            return None;
-        }
+        self.loaded_media(self.visible)?;
         let page = self.visible;
         let scale = self.page_scale(page);
         let rotation = self.view_rotation;
@@ -16154,6 +16288,7 @@ mod tests {
                         PaletteItem::Recent { .. } => "recent",
                         PaletteItem::File { .. } => "file",
                         PaletteItem::GlobalHit { .. } => "global",
+                        PaletteItem::AnnotHit { .. } => "annot",
                     })
                     .collect();
                 kinds.dedup();
@@ -16365,6 +16500,7 @@ mod tests {
                 PaletteItem::GlobalHit { .. } => "global",
                 PaletteItem::Recent { .. } => "recent",
                 PaletteItem::File { .. } => "file",
+                PaletteItem::AnnotHit { .. } => "annot",
             })
             .collect();
         kinds.dedup();

@@ -3639,7 +3639,17 @@ fn annotation_row(t: Tokens, row: &AnnotationRow, focus: bool) -> Element<'stati
         .into()
 }
 
-fn annot_kind_label(kind: AnnotKind, lang: Lang) -> &'static str {
+/// Ícone da marcação por tipo, para a paleta e o painel.
+pub(crate) fn annot_kind_icon(kind: AnnotKind) -> &'static str {
+    match kind {
+        AnnotKind::Highlight => "highlighter",
+        AnnotKind::Underline => "underline",
+        AnnotKind::Strikeout => "strike",
+        AnnotKind::Note => "note",
+    }
+}
+
+pub(crate) fn annot_kind_label(kind: AnnotKind, lang: Lang) -> &'static str {
     match kind {
         AnnotKind::Highlight => lang.pick("Destaque", "Highlight"),
         AnnotKind::Underline => lang.pick("Sublinhado", "Underline"),
