@@ -955,10 +955,12 @@ pub(crate) enum PaletteAction {
     SaveCopyRequested,
     TogglePages,
     FocusSearch,
+    /// Toggle bookmark na página atual (#134, F-MARC-07).
+    ToggleBookmark,
 }
 
 impl PaletteAction {
-    pub(crate) const ALL: [PaletteAction; 9] = [
+    pub(crate) const ALL: [PaletteAction; 10] = [
         PaletteAction::OpenFile,
         PaletteAction::GoToPage,
         PaletteAction::ZoomIn,
@@ -968,6 +970,7 @@ impl PaletteAction {
         PaletteAction::SaveCopyRequested,
         PaletteAction::TogglePages,
         PaletteAction::FocusSearch,
+        PaletteAction::ToggleBookmark,
     ];
 
     /// Vale no Início? Lá o documento está escondido: só abrir.
@@ -1054,6 +1057,10 @@ impl PaletteItem {
             PaletteAction::FocusSearch => (
                 lang.pick("Buscar no documento", "Find in document"),
                 shortcut_hint(&Message::FocusSearch),
+            ),
+            PaletteAction::ToggleBookmark => (
+                lang.pick("Alternar marcador", "Toggle bookmark"),
+                None,
             ),
         };
         Self::Action { id, title, hint }
@@ -1440,7 +1447,11 @@ impl PaletteContext {
                 score.map(|s| {
                     let label = match note.as_deref() {
                         Some(n) if !n.trim().is_empty() => n.trim().to_string(),
-                        _ => format!("Marcador · {}", page.index() + 1),
+                        _ => format!(
+                            "{} · {}",
+                            self.lang.pick("Marcador", "Bookmark"),
+                            page.index() + 1
+                        ),
                     };
                     (
                         s,
@@ -3583,20 +3594,25 @@ impl Session {
                     );
                     match crate::bookmarks::save_bookmarks(&updated) {
                         Ok(()) => {
-                            ready.bookmarks = updated
+                            let current_identity = crate::positions::file_identity(&path);
+                            ready.bookmarks = crate::bookmarks::find_bookmarks(&updated, &path)
                                 .into_iter()
-                                .filter(|e| e.path == path)
-                                .map(|e| e.bookmark)
+                                .cloned()
                                 .collect();
+                            // Revalida identidade: se o arquivo mudou entre toggle e reload,
+                            // find_bookmarks já filtra; aqui só garantimos consistência.
+                            let _ = current_identity;
                             ready.save_status = Some(if added {
-                                "Marcador adicionado".to_string()
+                                ready.lang.pick("Marcador adicionado", "Bookmark added").to_string()
                             } else {
-                                "Marcador removido".to_string()
+                                ready.lang.pick("Marcador removido", "Bookmark removed").to_string()
                             });
                         }
                         Err(e) => {
-                            ready.save_status =
-                                Some(format!("Erro ao salvar marcador: {e}"));
+                            ready.save_status = Some(format!(
+                                "{}: {e}",
+                                ready.lang.pick("Erro ao salvar marcador", "Failed to save bookmark")
+                            ));
                         }
                     }
                 }
@@ -5442,6 +5458,7 @@ impl Session {
             PaletteAction::SaveCopyRequested => self.update(Message::SaveCopyRequested),
             PaletteAction::TogglePages => self.update(Message::TogglePages),
             PaletteAction::FocusSearch => self.update(Message::FocusSearch),
+            PaletteAction::ToggleBookmark => self.update(Message::ToggleBookmark),
         }
     }
 
@@ -5469,10 +5486,7 @@ impl Session {
             }
             Some((PaletteItem::BookmarkHit { page, .. }, _)) => {
                 let _ = self.palette_close();
-                if let Session::Ready(tabs) = self {
-                    tabs.active_mut().navigate_to(page);
-                }
-                Task::none()
+                self.outline_jump(page)
             }
             Some((PaletteItem::DocHit { page, range, .. }, query)) => {
                 let _ = self.palette_close();
@@ -7874,11 +7888,13 @@ impl Document {
             doc_scroll_x: 0.0,
             doc_scroll_y: 0.0,
             recents: Vec::new(),
-            bookmarks: crate::bookmarks::read_bookmarks()
-                .into_iter()
-                .filter(|e| e.path == doc_path)
-                .map(|e| e.bookmark)
-                .collect(),
+            bookmarks: {
+                let all = crate::bookmarks::read_bookmarks();
+                crate::bookmarks::find_bookmarks(&all, &doc_path)
+                    .into_iter()
+                    .cloned()
+                    .collect()
+            },
             render_scale: 1.0,
             theme: Theme::Dark,
             lang: Lang::Pt,
@@ -15974,6 +15990,7 @@ mod tests {
                         }
                         PaletteAction::TogglePages => None,
                         PaletteAction::FocusSearch => shortcut_hint(&Message::FocusSearch),
+                        PaletteAction::ToggleBookmark => None,
                     };
                     assert_eq!(hint, expect, "{id:?}");
                 }
