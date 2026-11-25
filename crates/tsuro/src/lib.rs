@@ -1,3 +1,4 @@
+pub mod bookmarks;
 pub mod browse;
 pub mod font;
 pub mod i18n;

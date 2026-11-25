@@ -110,6 +110,11 @@ fn mtime_matches(stored: u64, current_ns: u64) -> bool {
     stored == current_ns || (stored < LEGACY_MTIME_SECS_MAX && stored == current_ns / 1_000_000_000)
 }
 
+/// Versão pública de `mtime_matches` para uso em `bookmarks.rs`.
+pub(crate) fn mtime_matches_pub(stored: u64, current_ns: u64) -> bool {
+    mtime_matches(stored, current_ns)
+}
+
 pub(crate) fn escape_path(path: &Path) -> String {
     escape_field(&path.to_string_lossy())
 }

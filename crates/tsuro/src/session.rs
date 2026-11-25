@@ -1016,6 +1016,13 @@ pub(crate) enum PaletteItem {
         /// "Destaque · 3" — pré-formatado porque subtitle() retorna &str.
         label: String,
     },
+    /// Marcador pessoal do documento ativo (#134, F-MARC-07).
+    BookmarkHit {
+        page: PageNo,
+        note: Option<String>,
+        /// "Marcador · 5" — pré-formatado porque subtitle() retorna &str.
+        label: String,
+    },
 }
 
 impl PaletteItem {
@@ -1065,6 +1072,9 @@ impl PaletteItem {
             Self::AnnotHit { note, excerpt, .. } => {
                 note.as_deref().or(excerpt.as_deref()).unwrap_or("")
             }
+            Self::BookmarkHit { note, .. } => {
+                note.as_deref().unwrap_or("")
+            }
         }
     }
 
@@ -1072,7 +1082,9 @@ impl PaletteItem {
         match self {
             Self::Action { hint, .. } => *hint,
             Self::GlobalHit { path, .. } => path.file_name().and_then(|name| name.to_str()),
-            Self::AnnotHit { label, .. } => Some(label.as_str()),
+            Self::AnnotHit { label, .. } | Self::BookmarkHit { label, .. } => {
+                Some(label.as_str())
+            }
             Self::DocHit { .. }
             | Self::OutlineRow { .. }
             | Self::Recent { .. }
@@ -1089,6 +1101,7 @@ impl PaletteItem {
             Self::File { .. } => "file-text",
             Self::GlobalHit { .. } => "pages",
             Self::AnnotHit { kind, .. } => crate::view::annot_kind_icon(*kind),
+            Self::BookmarkHit { .. } => "pages",
         }
     }
 
@@ -1123,6 +1136,8 @@ pub(crate) struct PaletteContext {
     files: Vec<PathBuf>,
     /// Marcações do documento ativo (id, página, tipo, trecho, nota).
     annots: Vec<(u64, PageNo, AnnotKind, Option<String>, Option<String>)>,
+    /// Marcadores pessoais do documento ativo (#134, F-MARC-07): (página, nota).
+    bookmarks: Vec<(PageNo, Option<String>)>,
     /// Paleta do Início: sem as ações que agem no documento.
     home: bool,
 }
@@ -1191,6 +1206,7 @@ impl PaletteState {
         scored.extend(self.context.docs_scored(query));
         scored.extend(self.context.global_scored(query));
         scored.extend(self.context.annots_scored(query));
+        scored.extend(self.context.bookmarks_scored(query));
         scored.extend(self.context.recents_scored(query));
         scored.extend(self.context.files_scored(query));
         scored
@@ -1241,6 +1257,7 @@ enum SourceRank {
     Action,
     Outline,
     Annot,
+    Bookmark,
     Doc,
     Global,
     Recent,
@@ -1395,6 +1412,41 @@ impl PaletteContext {
                             page: *page,
                             kind: *kind,
                             excerpt: excerpt.clone(),
+                            note: note.clone(),
+                            label,
+                        },
+                    )
+                })
+            })
+            .take(PALETTE_SOURCE_CAP)
+            .collect()
+    }
+
+    /// Marcadores pessoais do documento ativo casados com a query (#134).
+    fn bookmarks_scored(&self, query: &str) -> Vec<(u8, SourceRank, PaletteItem)> {
+        self.bookmarks
+            .iter()
+            .filter_map(|(page, note)| {
+                let note_score = note.as_deref().and_then(|t| palette_match(query, t));
+                // Sem nota: casa pela página (label "Marcador · N") quando a
+                // query é numérica ou vazia; caso contrário, descarta.
+                let page_label = format!("{}", page.index() + 1);
+                let page_score = palette_match(query, &page_label);
+                let score = match (note_score, page_score) {
+                    (Some(a), Some(b)) => Some(a.min(b)),
+                    (Some(a), None) | (None, Some(a)) => Some(a),
+                    (None, None) => None,
+                };
+                score.map(|s| {
+                    let label = match note.as_deref() {
+                        Some(n) if !n.trim().is_empty() => n.trim().to_string(),
+                        _ => format!("Marcador · {}", page.index() + 1),
+                    };
+                    (
+                        s,
+                        SourceRank::Bookmark,
+                        PaletteItem::BookmarkHit {
+                            page: *page,
                             note: note.clone(),
                             label,
                         },
@@ -1742,6 +1794,11 @@ impl Tabs {
                 )
             })
             .collect();
+        let bookmarks = ready
+            .bookmarks
+            .iter()
+            .map(|b| (b.page, b.note.clone()))
+            .collect();
         PaletteContext {
             lang: ready.lang,
             outline,
@@ -1749,6 +1806,7 @@ impl Tabs {
             dochits,
             global,
             annots,
+            bookmarks,
             ..PaletteContext::default()
         }
     }
@@ -2130,6 +2188,8 @@ pub struct Ready {
     pub doc_scroll_x: f32,
     pub doc_scroll_y: f32,
     recents: Vec<PathBuf>,
+    /// Marcadores pessoais do documento (#134, F-MARC-07); carregados ao abrir.
+    bookmarks: Vec<crate::bookmarks::Bookmark>,
     /// DPR da janela: bitmap sai em px físicos (zoom CSS × isto).
     pub render_scale: f32,
     open_gen: u64,
@@ -2732,6 +2792,8 @@ pub enum Message {
     ZoomOut,
     /// Ctrl+F (#72): foca o campo de busca da toolbar.
     FocusSearch,
+    /// Toggle bookmark na página atual (#134, F-MARC-07).
+    ToggleBookmark,
     /// Gira a vista 90° no sentido horário (ciclo 0→1→2→3→0).
     RotateView,
     SetViewport(Viewport),
@@ -3501,6 +3563,44 @@ impl Session {
                 } else {
                     Task::none()
                 }
+            }
+            Message::ToggleBookmark => {
+                let _ = self.palette_close();
+                if let Session::Ready(tabs) = self {
+                    let ready = tabs.active_mut();
+                    let page = ready.visible;
+                    let path = ready.source.path().to_path_buf();
+                    let identity = crate::positions::file_identity(&path);
+                    let all = crate::bookmarks::read_bookmarks();
+                    let (updated, added) = crate::bookmarks::toggle_bookmark(
+                        all,
+                        path.clone(),
+                        crate::bookmarks::Bookmark {
+                            page,
+                            note: None,
+                        },
+                        identity.unwrap_or((0, 0)),
+                    );
+                    match crate::bookmarks::save_bookmarks(&updated) {
+                        Ok(()) => {
+                            ready.bookmarks = updated
+                                .into_iter()
+                                .filter(|e| e.path == path)
+                                .map(|e| e.bookmark)
+                                .collect();
+                            ready.save_status = Some(if added {
+                                "Marcador adicionado".to_string()
+                            } else {
+                                "Marcador removido".to_string()
+                            });
+                        }
+                        Err(e) => {
+                            ready.save_status =
+                                Some(format!("Erro ao salvar marcador: {e}"));
+                        }
+                    }
+                }
+                Task::none()
             }
             Message::RotateView => {
                 let follow = if let Session::Ready(ready) = self {
@@ -5366,6 +5466,13 @@ impl Session {
             Some((PaletteItem::AnnotHit { id, .. }, _)) => {
                 let _ = self.palette_close();
                 self.annot_activate(id)
+            }
+            Some((PaletteItem::BookmarkHit { page, .. }, _)) => {
+                let _ = self.palette_close();
+                if let Session::Ready(tabs) = self {
+                    tabs.active_mut().navigate_to(page);
+                }
+                Task::none()
             }
             Some((PaletteItem::DocHit { page, range, .. }, query)) => {
                 let _ = self.palette_close();
@@ -7729,6 +7836,7 @@ impl Document {
             len: bytes.len() as u64,
             pages: engine.page_count(),
         };
+        let doc_path = source.path().to_path_buf();
         let mut ready = Ready {
             source,
             engine,
@@ -7766,6 +7874,11 @@ impl Document {
             doc_scroll_x: 0.0,
             doc_scroll_y: 0.0,
             recents: Vec::new(),
+            bookmarks: crate::bookmarks::read_bookmarks()
+                .into_iter()
+                .filter(|e| e.path == doc_path)
+                .map(|e| e.bookmark)
+                .collect(),
             render_scale: 1.0,
             theme: Theme::Dark,
             lang: Lang::Pt,
@@ -16302,6 +16415,7 @@ mod tests {
                         PaletteItem::File { .. } => "file",
                         PaletteItem::GlobalHit { .. } => "global",
                         PaletteItem::AnnotHit { .. } => "annot",
+                        PaletteItem::BookmarkHit { .. } => "bookmark",
                     })
                     .collect();
                 kinds.dedup();
@@ -16514,6 +16628,7 @@ mod tests {
                 PaletteItem::Recent { .. } => "recent",
                 PaletteItem::File { .. } => "file",
                 PaletteItem::AnnotHit { .. } => "annot",
+                PaletteItem::BookmarkHit { .. } => "bookmark",
             })
             .collect();
         kinds.dedup();
