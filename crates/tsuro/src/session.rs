@@ -5289,10 +5289,14 @@ impl Session {
         // no Início (e no Empty), global depende da query e o contexto é
         // reconstruído de dados já em memória.
         if let Session::Ready(tabs) = self {
-            if let Some(home) = tabs.home() {
-                let context = PaletteContext::home(home, tabs.docs(), &query);
-                if let Some(palette) = tabs.palette.as_mut() {
-                    palette.set_query_with(context, query);
+            if tabs.home().is_some() {
+                // A paleta do Início vive em tabs.home.palette: reconstrói
+                // o contexto de dados em memória e atualiza lá.
+                let context = PaletteContext::home(tabs.home().unwrap(), tabs.docs(), &query);
+                if let Some(home) = tabs.home.as_mut() {
+                    if let Some(palette) = home.palette.as_mut() {
+                        palette.set_query_with(context, query);
+                    }
                 }
                 return Task::none();
             }
