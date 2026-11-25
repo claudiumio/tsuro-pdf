@@ -1249,8 +1249,9 @@ enum SourceRank {
 
 impl PaletteContext {
     /// Fontes do Início: todos os recentes, os PDFs da pasta aberta e o texto
-    /// já extraído das abas abertas (nenhuma está na tela).
-    fn home(home: &EmptyState, docs: &[Ready], query: &str) -> Self {
+    /// já extraído das abas abertas (nenhuma está na tela), no idioma dado —
+    /// `Default` assume PT, então o idioma da sessão entra explícito.
+    fn home(lang: Lang, home: &EmptyState, docs: &[Ready], query: &str) -> Self {
         let files = home
             .listing
             .iter()
@@ -1276,6 +1277,7 @@ impl PaletteContext {
             );
         }
         Self {
+            lang,
             recents: home.recents.clone(),
             files,
             global,
@@ -5250,15 +5252,9 @@ impl Session {
     /// Fontes da paleta da tela para `query`.
     fn palette_context_for(&self, query: &str) -> Option<PaletteContext> {
         match self {
-            Session::Empty(empty) => Some(PaletteContext {
-                lang: empty.lang,
-                ..PaletteContext::home(empty, &[], query)
-            }),
+            Session::Empty(empty) => Some(PaletteContext::home(empty.lang, empty, &[], query)),
             Session::Ready(tabs) => Some(match tabs.home() {
-                Some(home) => PaletteContext {
-                    lang: home.lang,
-                    ..PaletteContext::home(home, tabs.docs(), query)
-                },
+                Some(home) => PaletteContext::home(home.lang, home, tabs.docs(), query),
                 None => tabs.palette_context(query),
             }),
             _ => None,
@@ -5289,10 +5285,11 @@ impl Session {
         // no Início (e no Empty), global depende da query e o contexto é
         // reconstruído de dados já em memória.
         if let Session::Ready(tabs) = self {
-            if tabs.home().is_some() {
+            if let Some(home) = tabs.home() {
                 // A paleta do Início vive em tabs.home.palette: reconstrói
-                // o contexto de dados em memória e atualiza lá.
-                let context = PaletteContext::home(tabs.home().unwrap(), tabs.docs(), &query);
+                // o contexto de dados em memória e atualiza lá, no idioma
+                // da sessão (o default do contexto é PT).
+                let context = PaletteContext::home(home.lang, home, tabs.docs(), &query);
                 if let Some(home) = tabs.home.as_mut() {
                     if let Some(palette) = home.palette.as_mut() {
                         palette.set_query_with(context, query);
@@ -5309,7 +5306,7 @@ impl Session {
             return Task::none();
         }
         if let Session::Empty(empty) = self {
-            let context = PaletteContext::home(empty, &[], &query);
+            let context = PaletteContext::home(empty.lang, empty, &[], &query);
             if let Some(palette) = empty.palette.as_mut() {
                 palette.set_query_with(context, query);
             }
@@ -9366,6 +9363,22 @@ mod tests {
             assert_eq!(tabs.len(), 1);
             assert!(tabs.pending_gen().is_none());
         });
+    }
+
+    #[test]
+    fn home_palette_query_keeps_the_session_language() {
+        let mut session = Session::Empty(EmptyState {
+            lang: Lang::En,
+            ..EmptyState::default()
+        });
+        apply(&mut session, Message::OpenPalette);
+        apply(&mut session, Message::PaletteQuery("open".into()));
+        let palette = home_palette(&session).expect("paleta aberta");
+        let titles: Vec<&str> = palette.items().iter().map(|item| item.title()).collect();
+        assert!(
+            titles.contains(&"Open PDF…"),
+            "títulos das ações seguem o idioma da sessão: {titles:?}"
+        );
     }
 
     fn thumbs(session: &Session) -> Vec<(String, &'static str)> {
