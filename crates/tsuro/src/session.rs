@@ -15950,7 +15950,7 @@ mod tests {
     }
 
     #[test]
-    fn catalog_all_nine_titles() {
+    fn catalog_all_ten_titles() {
         use std::collections::HashSet;
         let titles: HashSet<&str> = PaletteAction::ALL
             .iter()
@@ -15971,9 +15971,10 @@ mod tests {
                 "Salvar cópia com marcações…",
                 "Painel de páginas",
                 "Buscar no documento",
+                "Alternar marcador",
             ])
         );
-        assert_eq!(PaletteAction::ALL.len(), 9);
+        assert_eq!(PaletteAction::ALL.len(), 10);
         for id in PaletteAction::ALL {
             match PaletteItem::action(id, Lang::Pt) {
                 PaletteItem::Action { id: got, hint, .. } => {
