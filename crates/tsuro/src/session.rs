@@ -1058,10 +1058,9 @@ impl PaletteItem {
                 lang.pick("Buscar no documento", "Find in document"),
                 shortcut_hint(&Message::FocusSearch),
             ),
-            PaletteAction::ToggleBookmark => (
-                lang.pick("Alternar marcador", "Toggle bookmark"),
-                None,
-            ),
+            PaletteAction::ToggleBookmark => {
+                (lang.pick("Alternar marcador", "Toggle bookmark"), None)
+            }
         };
         Self::Action { id, title, hint }
     }
@@ -1079,9 +1078,7 @@ impl PaletteItem {
             Self::AnnotHit { note, excerpt, .. } => {
                 note.as_deref().or(excerpt.as_deref()).unwrap_or("")
             }
-            Self::BookmarkHit { note, .. } => {
-                note.as_deref().unwrap_or("")
-            }
+            Self::BookmarkHit { note, .. } => note.as_deref().unwrap_or(""),
         }
     }
 
@@ -1089,9 +1086,7 @@ impl PaletteItem {
         match self {
             Self::Action { hint, .. } => *hint,
             Self::GlobalHit { path, .. } => path.file_name().and_then(|name| name.to_str()),
-            Self::AnnotHit { label, .. } | Self::BookmarkHit { label, .. } => {
-                Some(label.as_str())
-            }
+            Self::AnnotHit { label, .. } | Self::BookmarkHit { label, .. } => Some(label.as_str()),
             Self::DocHit { .. }
             | Self::OutlineRow { .. }
             | Self::Recent { .. }
@@ -3586,10 +3581,7 @@ impl Session {
                     let (updated, added) = crate::bookmarks::toggle_bookmark(
                         all,
                         path.clone(),
-                        crate::bookmarks::Bookmark {
-                            page,
-                            note: None,
-                        },
+                        crate::bookmarks::Bookmark { page, note: None },
                         identity.unwrap_or((0, 0)),
                     );
                     match crate::bookmarks::save_bookmarks(&updated) {
@@ -3603,15 +3595,23 @@ impl Session {
                             // find_bookmarks já filtra; aqui só garantimos consistência.
                             let _ = current_identity;
                             ready.save_status = Some(if added {
-                                ready.lang.pick("Marcador adicionado", "Bookmark added").to_string()
+                                ready
+                                    .lang
+                                    .pick("Marcador adicionado", "Bookmark added")
+                                    .to_string()
                             } else {
-                                ready.lang.pick("Marcador removido", "Bookmark removed").to_string()
+                                ready
+                                    .lang
+                                    .pick("Marcador removido", "Bookmark removed")
+                                    .to_string()
                             });
                         }
                         Err(e) => {
                             ready.save_status = Some(format!(
                                 "{}: {e}",
-                                ready.lang.pick("Erro ao salvar marcador", "Failed to save bookmark")
+                                ready
+                                    .lang
+                                    .pick("Erro ao salvar marcador", "Failed to save bookmark")
                             ));
                         }
                     }

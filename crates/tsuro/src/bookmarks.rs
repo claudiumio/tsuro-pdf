@@ -177,9 +177,9 @@ pub fn find_bookmarks<'a>(entries: &'a [BookmarkEntry], path: &Path) -> Vec<&'a 
 /// Verifica se já existe marcador para esta página neste arquivo.
 pub fn has_bookmark_at(entries: &[BookmarkEntry], path: &Path, page: PageNo) -> bool {
     let identity = file_identity(path);
-    entries.iter().any(|e| {
-        e.path == path && e.bookmark.page == page && identity_matches(e, identity)
-    })
+    entries
+        .iter()
+        .any(|e| e.path == path && e.bookmark.page == page && identity_matches(e, identity))
 }
 
 /// Toggle: adiciona se não existe, remove se já existe na mesma página.
@@ -277,7 +277,10 @@ mod tests {
             let back = read_bookmarks();
             assert_eq!(back.len(), 2);
             assert_eq!(back[0].bookmark.page, PageNo::from_index(5));
-            assert_eq!(back[0].bookmark.note.as_deref(), Some("Capítulo importante"));
+            assert_eq!(
+                back[0].bookmark.note.as_deref(),
+                Some("Capítulo importante")
+            );
             assert_eq!(back[1].bookmark.page, PageNo::from_index(0));
             assert_eq!(back[1].bookmark.note, None);
         });
@@ -372,10 +375,7 @@ mod tests {
                 back[0].bookmark.note.as_deref(),
                 Some("nota\tcom\ttabs\ne\nquebras")
             );
-            assert_eq!(
-                back[0].path,
-                PathBuf::from("/doc/tab\tnl\nslash\\.pdf")
-            );
+            assert_eq!(back[0].path, PathBuf::from("/doc/tab\tnl\nslash\\.pdf"));
         });
         let _ = std::fs::remove_file(&path);
     }
