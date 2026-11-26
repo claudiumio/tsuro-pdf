@@ -3576,24 +3576,33 @@ impl Session {
                     let ready = tabs.active_mut();
                     let page = ready.visible;
                     let path = ready.source.path().to_path_buf();
-                    let identity = crate::positions::file_identity(&path);
+                    // Sem identidade não há como o marcador ser lido de volta
+                    // depois: find_bookmarks descarta tamanho/mtime zero.
+                    let Some(identity) = crate::positions::file_identity(&path) else {
+                        ready.save_status = Some(
+                            ready
+                                .lang
+                                .pick(
+                                    "Não foi possível marcar: arquivo ilegível",
+                                    "Cannot bookmark: unreadable file",
+                                )
+                                .to_string(),
+                        );
+                        return Task::none();
+                    };
                     let all = crate::bookmarks::read_bookmarks();
                     let (updated, added) = crate::bookmarks::toggle_bookmark(
                         all,
                         path.clone(),
                         crate::bookmarks::Bookmark { page, note: None },
-                        identity.unwrap_or((0, 0)),
+                        identity,
                     );
                     match crate::bookmarks::save_bookmarks(&updated) {
                         Ok(()) => {
-                            let current_identity = crate::positions::file_identity(&path);
                             ready.bookmarks = crate::bookmarks::find_bookmarks(&updated, &path)
                                 .into_iter()
                                 .cloned()
                                 .collect();
-                            // Revalida identidade: se o arquivo mudou entre toggle e reload,
-                            // find_bookmarks já filtra; aqui só garantimos consistência.
-                            let _ = current_identity;
                             ready.save_status = Some(if added {
                                 ready
                                     .lang
