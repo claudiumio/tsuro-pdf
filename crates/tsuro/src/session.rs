@@ -2148,6 +2148,9 @@ pub struct Ready {
     render_gen: u64,
     surfaces: SurfaceCache,
     thumbs: ThumbCache,
+    /// Folha da prévia de impressão na escala do painel. Vive fora do cache
+    /// do rail: a miniatura e a prévia dividem a mesma página sem se apagar.
+    print_preview: Option<(PageNo, Scale, CachedSurface)>,
     render_inflight: HashSet<(u32, u16, u8)>,
     render_inflight_gen: HashMap<(u32, u16, u8), u64>,
     render_inflight_doc: HashMap<(u32, u16, u8), u64>,
@@ -2228,6 +2231,15 @@ impl PrintDialog {
 
     pub fn selected_printer(&self) -> Option<&PrinterInfo> {
         self.selected.and_then(|index| self.printers.get(index))
+    }
+
+    /// Reposiciona a prévia ao trocar o intervalo: «Todas» cai na página que
+    /// está sendo lida; os demais modos começam na primeira do intervalo.
+    fn reset_preview(&mut self, current: PageNo) {
+        self.preview = match self.range_mode {
+            RangeMode::All => current.index() as usize,
+            RangeMode::Current | RangeMode::Custom => 0,
+        };
     }
 
     /// Valida o diálogo → seleção assável no PDF.
@@ -3856,12 +3868,15 @@ impl Session {
                             {
                                 if let Some(media) = ready.loaded_media(page) {
                                     let in_preview = ready.print_preview_target() == Some(page);
-                                    let wanted = in_preview
-                                        && ready.print_preview_scale(media) == scale
-                                        || ready.thumb_scale_for(media) == scale
-                                            && (ready.thumb_page_window().contains(&page)
-                                                || in_preview);
-                                    if wanted {
+                                    if in_preview && ready.print_preview_scale(media) == scale {
+                                        ready.print_preview = Some((
+                                            page,
+                                            scale,
+                                            CachedSurface::from_page(surface, 0),
+                                        ));
+                                    } else if ready.thumb_scale_for(media) == scale
+                                        && (ready.thumb_page_window().contains(&page) || in_preview)
+                                    {
                                         ready.thumbs.insert(page, scale, surface);
                                     }
                                 }
@@ -4170,10 +4185,11 @@ impl Session {
             }
             Message::PrintSetRangeMode(mode) => {
                 if let Session::Ready(ready) = self {
+                    let current = ready.visible;
                     if let Some(dialog) = ready.print_dialog.as_mut() {
                         if !dialog.busy {
                             dialog.range_mode = mode;
-                            dialog.preview = 0;
+                            dialog.reset_preview(current);
                             dialog.error = None;
                         }
                     }
@@ -6372,7 +6388,11 @@ impl Ready {
     /// Folha da prévia de impressão na escala própria do painel.
     pub(crate) fn print_preview_surface(&self, page: PageNo) -> Option<&CachedSurface> {
         let media = self.loaded_media(page)?;
-        self.thumbs.get(page, self.print_preview_scale(media))
+        let scale = self.print_preview_scale(media);
+        self.print_preview
+            .as_ref()
+            .filter(|(previewed, at, _)| *previewed == page && *at == scale)
+            .map(|(_, _, surface)| surface)
     }
 
     /// Página atual do preview de impressão (`None` sem diálogo aberto).
@@ -7696,23 +7716,30 @@ impl Ready {
         } else {
             Vec::new()
         };
-        if let Some(target) = self.print_preview_target() {
+        let preview = self.print_preview_target();
+        if let Some(target) = preview {
             if !targets.contains(&target) {
                 targets.insert(0, target);
             }
         }
-        let preview = self.print_preview_target();
+        // O alvo do painel de impressão renderiza na escala da folha da prévia;
+        // o rail continua na escala da miniatura. A página que é as duas coisas
+        // recebe os dois renders — o cache guarda as duas escalas.
+        let mut wanted: Vec<(PageNo, Scale)> = Vec::new();
         for page in targets {
             let Some(media) = self.loaded_media(page) else {
                 continue;
             };
-            // O alvo do painel de impressão renderiza na escala da folha da
-            // prévia; o rail continua na escala da miniatura.
-            let scale = if preview == Some(page) {
-                self.print_preview_scale(media)
+            if preview == Some(page) {
+                wanted.push((page, self.print_preview_scale(media)));
+                if self.pages_open && self.thumb_page_window().contains(&page) {
+                    wanted.push((page, self.thumb_scale_for(media)));
+                }
             } else {
-                self.thumb_scale_for(media)
-            };
+                wanted.push((page, self.thumb_scale_for(media)));
+            }
+        }
+        for (page, scale) in wanted {
             let key = render_key(page, scale, 0);
             if self.thumbs.get(page, scale).is_some() || self.failed.contains(&key) {
                 continue;
@@ -7816,6 +7843,7 @@ impl Document {
             render_gen: 1,
             surfaces: SurfaceCache::default(),
             thumbs: ThumbCache::default(),
+            print_preview: None,
             render_inflight: HashSet::new(),
             render_inflight_gen: HashMap::new(),
             render_inflight_doc: HashMap::new(),
@@ -14615,6 +14643,45 @@ mod tests {
         };
         let media = ready.loaded_media(PageNo::first()).expect("media");
         assert!(ready.print_preview_scale(media).factor() > ready.thumb_scale_for(media).factor());
+    }
+
+    #[test]
+    fn preview_render_keeps_the_rail_thumb_of_the_same_page() {
+        let Some(mut ready) = sample_ready() else {
+            return;
+        };
+        let page = PageNo::first();
+        let media = ready.loaded_media(page).expect("media");
+        let thumb = ready.thumb_scale_for(media);
+        let preview = ready.print_preview_scale(media);
+        ready.thumbs.insert(page, thumb, fake_surface(page, thumb));
+        ready.print_preview = Some((
+            page,
+            preview,
+            CachedSurface::from_page(fake_surface(page, preview), 0),
+        ));
+        // A miniatura do rail e a folha da prévia dividem a página sem se apagar.
+        assert!(ready.thumb_surface(page).is_some());
+        assert!(ready.print_preview_surface(page).is_some());
+    }
+
+    #[test]
+    fn print_all_returns_the_preview_to_the_current_page() {
+        let Some(mut ready) = sample_ready() else {
+            return;
+        };
+        if ready.page_count() < 2 {
+            return;
+        }
+        let media = ready.loaded_media(PageNo::first()).expect("media");
+        ready.pages.media[1] = Some(media);
+        ready.visible = PageNo::from_index(1);
+        let mut session = Session::Ready(Tabs::single(ready));
+        apply(&mut session, Message::OpenPrintDialog);
+        apply(&mut session, Message::PrintSetRangeMode(RangeMode::Current));
+        assert_eq!(dialog(&session).preview, 0);
+        apply(&mut session, Message::PrintSetRangeMode(RangeMode::All));
+        assert_eq!(dialog(&session).preview, 1);
     }
 
     #[test]
