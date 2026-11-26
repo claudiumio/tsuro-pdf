@@ -42,6 +42,10 @@ use crate::view::annot_kind_label;
 /// Largura renderizada da miniatura: ~2x os 64 do rail, para a folha ficar
 /// nítida em hidpi. O rail exibe `RAIL_THUMB_W` (`view.rs`).
 pub(crate) const THUMB_WIDTH: f32 = 120.0;
+/// Largura renderizada da prévia de impressão: a folha do painel tem até 320
+/// px, e a miniatura do rail (120) ficaria borrada nesse tamanho. O render é
+/// próprio, para o cache do rail continuar pequeno.
+pub(crate) const PRINT_PREVIEW_WIDTH: f32 = 320.0;
 /// Passo de uma linha do rail em `thumbs_tab`, já com o vão entre linhas:
 /// halo 2+2 + folha 88 + gap 4 + rótulo 12 + vão 8 = 116. A janela
 /// virtualizada usa este passo nos spacers, então ele muda junto com o
@@ -2213,7 +2217,9 @@ impl PrintDialog {
             to_input: current_1.to_string(),
             copies: 1,
             orientation: PrintOrientation::default(),
-            preview: 0,
+            // Abre na página que está sendo lida: com «Todas» a prévia já
+            // mostra o trecho atual, não a capa.
+            preview: current.index() as usize,
             busy: false,
             sending_phase: 0,
             error: None,
@@ -3849,10 +3855,13 @@ impl Session {
                             } else if ready.pages_open || ready.print_preview_target() == Some(page)
                             {
                                 if let Some(media) = ready.loaded_media(page) {
-                                    if ready.thumb_scale_for(media) == scale
-                                        && (ready.thumb_page_window().contains(&page)
-                                            || ready.print_preview_target() == Some(page))
-                                    {
+                                    let in_preview = ready.print_preview_target() == Some(page);
+                                    let wanted = in_preview
+                                        && ready.print_preview_scale(media) == scale
+                                        || ready.thumb_scale_for(media) == scale
+                                            && (ready.thumb_page_window().contains(&page)
+                                                || in_preview);
+                                    if wanted {
                                         ready.thumbs.insert(page, scale, surface);
                                     }
                                 }
@@ -6315,6 +6324,16 @@ impl Ready {
         Scale::from_factor(thumbnail_scale(media).factor() * dpr)
     }
 
+    /// Escala da folha da prévia de impressão (mesmo DPR das miniaturas).
+    fn print_preview_scale(&self, media: MediaBox) -> Scale {
+        let dpr = if self.render_scale >= 1.0 {
+            self.render_scale
+        } else {
+            1.0
+        };
+        Scale::from_factor((PRINT_PREVIEW_WIDTH / media.width.max(1.0)).clamp(0.05, 3.0) * dpr)
+    }
+
     fn loaded_media(&self, page: PageNo) -> Option<MediaBox> {
         self.pages.media.get(page.index() as usize).and_then(|m| *m)
     }
@@ -6348,6 +6367,12 @@ impl Ready {
     pub(crate) fn thumb_surface(&self, page: PageNo) -> Option<&CachedSurface> {
         let media = self.loaded_media(page)?;
         self.thumbs.get(page, self.thumb_scale_for(media))
+    }
+
+    /// Folha da prévia de impressão na escala própria do painel.
+    pub(crate) fn print_preview_surface(&self, page: PageNo) -> Option<&CachedSurface> {
+        let media = self.loaded_media(page)?;
+        self.thumbs.get(page, self.print_preview_scale(media))
     }
 
     /// Página atual do preview de impressão (`None` sem diálogo aberto).
@@ -7676,11 +7701,18 @@ impl Ready {
                 targets.insert(0, target);
             }
         }
+        let preview = self.print_preview_target();
         for page in targets {
             let Some(media) = self.loaded_media(page) else {
                 continue;
             };
-            let scale = self.thumb_scale_for(media);
+            // O alvo do painel de impressão renderiza na escala da folha da
+            // prévia; o rail continua na escala da miniatura.
+            let scale = if preview == Some(page) {
+                self.print_preview_scale(media)
+            } else {
+                self.thumb_scale_for(media)
+            };
             let key = render_key(page, scale, 0);
             if self.thumbs.get(page, scale).is_some() || self.failed.contains(&key) {
                 continue;
@@ -14495,24 +14527,24 @@ mod tests {
         // Media além da primeira é lazy: semeia como os demais testes de thumb.
         let media = ready.loaded_media(PageNo::first()).expect("media");
         ready.pages.media[1] = Some(media);
-        let thumb_scale = ready.thumb_scale_for(media);
-        assert_ne!(ready.page_scale(page), thumb_scale);
+        let preview_scale = ready.print_preview_scale(media);
+        assert_ne!(ready.page_scale(page), preview_scale);
         let (doc_gen, render_gen) = (ready.open_gen, ready.render_gen);
         apply(
             &mut session,
             Message::Rendered {
                 page,
-                scale: thumb_scale,
+                scale: preview_scale,
                 rotation: 0,
                 doc_gen,
                 render_gen,
-                surface: Some(fake_surface(page, thumb_scale)),
+                surface: Some(fake_surface(page, preview_scale)),
             },
         );
         let Session::Ready(ready) = &session else {
             panic!("expected Ready");
         };
-        assert!(ready.thumb_surface(page).is_some());
+        assert!(ready.print_preview_surface(page).is_some());
     }
 
     #[test]
@@ -14568,11 +14600,37 @@ mod tests {
             .insert(visible, scale, 0, fake_surface(visible, scale));
         let target = PageNo::from_index(0);
         let media = ready.loaded_media(target).expect("media");
-        let key = render_key(target, ready.thumb_scale_for(media), 0);
+        // A prévia renderiza na escala da folha do painel, não na da miniatura.
+        let key = render_key(target, ready.print_preview_scale(media), 0);
         // `open_dialog` já agendou o render da visível; simula a worker livre.
         ready.render_inflight.clear();
         let _ = ready.request_thumb_render();
         assert!(ready.render_inflight.contains(&key));
+    }
+
+    #[test]
+    fn print_preview_renders_sharper_than_the_rail_thumb() {
+        let Some(ready) = sample_ready() else {
+            return;
+        };
+        let media = ready.loaded_media(PageNo::first()).expect("media");
+        assert!(ready.print_preview_scale(media).factor() > ready.thumb_scale_for(media).factor());
+    }
+
+    #[test]
+    fn dialog_opens_the_preview_on_the_current_page() {
+        let Some(mut ready) = sample_ready() else {
+            return;
+        };
+        if ready.page_count() < 2 {
+            return;
+        }
+        let media = ready.loaded_media(PageNo::first()).expect("media");
+        ready.pages.media[1] = Some(media);
+        ready.visible = PageNo::from_index(1);
+        let mut session = Session::Ready(Tabs::single(ready));
+        apply(&mut session, Message::OpenPrintDialog);
+        assert_eq!(dialog(&session).preview, 1);
     }
 
     fn grow_pages(ready: &mut Ready, total: u32) {
