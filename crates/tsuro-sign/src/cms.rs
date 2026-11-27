@@ -5,8 +5,8 @@
 //! that check.
 
 use crate::{CertificateInfo, SigError};
-use rsa::BigUint;
-use rsa::RsaPublicKey;
+use rsa::BoxedUint;
+use rsa::PublicKey as RsaPublicKey;
 use x509_parser::extensions::ParsedExtension;
 use x509_parser::prelude::{FromDer, X509Certificate, X509Name};
 use x509_parser::public_key::PublicKey;
@@ -211,8 +211,8 @@ fn select_signer_cert(blob: &[u8], sid: &SignerId) -> SignerCertificate {
         };
         let key = match cert.public_key().parsed() {
             Ok(PublicKey::RSA(rsa_key)) => RsaPublicKey::new(
-                BigUint::from_bytes_be(rsa_key.modulus),
-                BigUint::from_bytes_be(rsa_key.exponent),
+                BoxedUint::from_be_slice_vartime(rsa_key.modulus),
+                BoxedUint::from_be_slice_vartime(rsa_key.exponent),
             )
             .ok(),
             _ => None,
