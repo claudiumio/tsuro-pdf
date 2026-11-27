@@ -630,6 +630,108 @@ pub enum AnnotKind {
     Note,
 }
 
+/// Cor nomeada de marcação (#132, F-MARC-05). Conjunto fechado sem semântica
+/// imposta (sem "importante" ou "dúvida"); o usuário escolhe pela cor, não
+/// pelo significado. Cada variante mapeia para tokens Kiri em `kiri.rs`.
+///
+/// Persistida como string no arquivo de prefs (`annot_color=`); variantes
+/// desconhecidas caem em `Yellow` (default histórica do highlight).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum AnnotColor {
+    /// Amarelo — default histórico do highlight.
+    Yellow,
+    /// Azul — default histórico do underline.
+    Blue,
+    /// Verde — novo, sem precedente hardcoded.
+    Green,
+    /// Vermelho — default histórico do strikeout.
+    Red,
+    /// Laranja — novo, sem precedente hardcoded.
+    Orange,
+}
+
+impl AnnotColor {
+    /// Default para cada tipo de marcação quando nenhuma preferência existe.
+    pub fn default_for(kind: AnnotKind) -> Self {
+        match kind {
+            AnnotKind::Highlight | AnnotKind::Note => AnnotColor::Yellow,
+            AnnotKind::Underline => AnnotColor::Blue,
+            AnnotKind::Strikeout => AnnotColor::Red,
+        }
+    }
+
+    /// Serializa para prefs (`annot_color=yellow`).
+    pub fn as_str(self) -> &'static str {
+        match self {
+            AnnotColor::Yellow => "yellow",
+            AnnotColor::Blue => "blue",
+            AnnotColor::Green => "green",
+            AnnotColor::Red => "red",
+            AnnotColor::Orange => "orange",
+        }
+    }
+
+    /// Deserializa de prefs; valor desconhecido → `Yellow`.
+    pub fn from_str(raw: &str) -> Self {
+        match raw {
+            "blue" => AnnotColor::Blue,
+            "green" => AnnotColor::Green,
+            "red" => AnnotColor::Red,
+            "orange" => AnnotColor::Orange,
+            _ => AnnotColor::Yellow,
+        }
+    }
+
+    /// Lista todas as variantes na ordem do seletor.
+    pub const ALL: [AnnotColor; 5] = [
+        AnnotColor::Yellow,
+        AnnotColor::Blue,
+        AnnotColor::Green,
+        AnnotColor::Red,
+        AnnotColor::Orange,
+    ];
+
+    /// Cor de renderização para highlight/fill (com alpha). Mapeia para tokens
+    /// Kiri quando disponíveis; fallback para as cores históricas hardcoded.
+    pub fn fill_color(self) -> iced::Color {
+        match self {
+            AnnotColor::Yellow => iced::Color::from_rgba(1.0, 0.85, 0.25, 0.45),
+            AnnotColor::Blue => iced::Color::from_rgba(0.1, 0.35, 0.9, 0.45),
+            AnnotColor::Green => iced::Color::from_rgba(0.2, 0.75, 0.3, 0.40),
+            AnnotColor::Red => iced::Color::from_rgba(0.85, 0.15, 0.2, 0.40),
+            AnnotColor::Orange => iced::Color::from_rgba(0.95, 0.55, 0.1, 0.40),
+        }
+    }
+
+    /// Cor de stroke para underline/strikeout/note (opaca).
+    pub fn stroke_color(self) -> iced::Color {
+        match self {
+            AnnotColor::Yellow => iced::Color::from_rgb(0.85, 0.62, 0.05),
+            AnnotColor::Blue => iced::Color::from_rgb(0.1, 0.35, 0.9),
+            AnnotColor::Green => iced::Color::from_rgb(0.15, 0.6, 0.25),
+            AnnotColor::Red => iced::Color::from_rgb(0.85, 0.15, 0.2),
+            AnnotColor::Orange => iced::Color::from_rgb(0.9, 0.45, 0.05),
+        }
+    }
+
+    /// Rótulo acessível bilíngue (sem impor semântica).
+    pub fn label(self, lang: crate::i18n::Lang) -> &'static str {
+        use crate::i18n::Lang;
+        match (self, lang) {
+            (AnnotColor::Yellow, Lang::Pt) => "Amarelo",
+            (AnnotColor::Yellow, Lang::En) => "Yellow",
+            (AnnotColor::Blue, Lang::Pt) => "Azul",
+            (AnnotColor::Blue, Lang::En) => "Blue",
+            (AnnotColor::Green, Lang::Pt) => "Verde",
+            (AnnotColor::Green, Lang::En) => "Green",
+            (AnnotColor::Red, Lang::Pt) => "Vermelho",
+            (AnnotColor::Red, Lang::En) => "Red",
+            (AnnotColor::Orange, Lang::Pt) => "Laranja",
+            (AnnotColor::Orange, Lang::En) => "Orange",
+        }
+    }
+}
+
 /// Marcação sobre um trecho: um retângulo por linha do texto (nunca um
 /// bloco único — padrão dos leitores), em espaço da mídia original.
 #[derive(Debug, Clone, PartialEq)]
@@ -639,6 +741,9 @@ pub struct Annotation {
     pub range: TextRange,
     pub quads: Vec<Quad>,
     pub kind: AnnotKind,
+    /// Cor nomeada desta marcação (#132). Cada anotação guarda sua cor;
+    /// mudar a preferência não altera marcações existentes.
+    pub color: AnnotColor,
     /// Texto da nota ("" para highlight/underline/strikeout).
     pub text: String,
     /// Canto do marcador da nota (espaço de página, mesma página), quando ele
@@ -2064,6 +2169,9 @@ pub struct Ready {
     page_input: String,
     pub search: Search,
     pub selection: Option<Selection>,
+    /// Cor preferida para novas marcações (#132, F-MARC-05). `None` = usar
+    /// o default por tipo (`AnnotColor::default_for`). Persistido em prefs.
+    pub annot_color_pref: Option<AnnotColor>,
     /// Marcações da sessão (issue #30); zera ao abrir. Sem persistência na v1.
     pub annotations: Vec<Annotation>,
     /// Cópia de `annotations` no último save bem-sucedido. O ponto da pílula
@@ -2765,6 +2873,8 @@ pub enum Message {
     ExportAnnotations,
     /// Marca a seleção atual (H/U/S ou menu ⋯); ignora sem seleção.
     Annotate(AnnotKind),
+    /// Escolhe a cor nomeada para novas marcações (#132, F-MARC-05).
+    SetAnnotColor(AnnotColor),
     /// Janela perdeu o foco no meio do drag: o Up nunca chega, então a
     /// âncora morre aqui (senão o hover passa a estender a seleção).
     DragCancelled,
@@ -3752,6 +3862,14 @@ impl Session {
                         ready.selection = None;
                         ready.press_anchor = None;
                     }
+                }
+                Task::none()
+            }
+            Message::SetAnnotColor(color) => {
+                if let Session::Ready(ready) = self {
+                    ready.annot_color_pref = Some(color);
+                    // Persiste a preferência para futuras sessões (#132).
+                    let _ = crate::prefs::save_annot_color_pref(color);
                 }
                 Task::none()
             }
@@ -6577,12 +6695,16 @@ impl Ready {
         if quads.is_empty() {
             return false;
         }
+        let color = self
+            .annot_color_pref
+            .unwrap_or_else(|| AnnotColor::default_for(kind));
         let annot = Annotation {
             id: self.next_annot_id,
             page: sel.page,
             range: sel.range,
             quads,
             kind,
+            color,
             // H/U/S não carregam texto; apenas notas (`save_note_draft`).
             text: String::new(),
             // Só nota tem marcador (e ele nasce no trecho: `marker: None`).
@@ -6767,14 +6889,20 @@ impl Ready {
                 id
             }
         };
+        // Nota nova herda a cor da preferência; nota editada preserva a cor original.
+        let color = previous.as_ref().map(|old| old.color).unwrap_or_else(|| {
+            self.annot_color_pref
+                .unwrap_or(AnnotColor::default_for(AnnotKind::Note))
+        });
         let annot = Annotation {
             id,
             page: draft.page,
             range: draft.range,
             quads: draft.quads,
             kind: AnnotKind::Note,
+            color,
             text,
-            marker: previous.and_then(|old| old.marker),
+            marker: previous.as_ref().and_then(|old| old.marker),
         };
         self.apply_annot_action(AnnotAction::Add(annot.clone()));
         self.annot_undo.push(AnnotAction::Add(annot));
@@ -7742,6 +7870,7 @@ impl Document {
             page_input: String::new(),
             search: Search::derive("", &[]),
             selection: None,
+            annot_color_pref: crate::prefs::read_annot_color_pref(),
             annotations: Vec::new(),
             next_annot_id: 0,
             press_anchor: None,
@@ -10568,6 +10697,7 @@ mod tests {
             range: TextRange { start, end },
             quads: Vec::new(),
             kind,
+            color: AnnotColor::default_for(kind),
             text: text.into(),
             marker: None,
         }
@@ -12613,6 +12743,7 @@ mod tests {
             range,
             quads: Vec::new(),
             kind,
+            color: AnnotColor::default_for(kind),
             text: text.into(),
             marker: None,
         }
@@ -12923,6 +13054,7 @@ mod tests {
             range: TextRange { start: 0, end: 4 },
             quads: vec![quad],
             kind: AnnotKind::Highlight,
+            color: AnnotColor::Yellow,
             text: String::new(),
             marker: None,
         }
@@ -14867,6 +14999,7 @@ mod tests {
             },
             quads,
             kind: AnnotKind::Highlight,
+            color: AnnotColor::Yellow,
             text: String::new(),
             marker: None,
         };
@@ -15175,6 +15308,7 @@ mod tests {
             range: TextRange { start: 0, end: 2 },
             quads: Vec::new(),
             kind: AnnotKind::Highlight,
+            color: AnnotColor::Yellow,
             text: String::new(),
             marker: None,
         }
@@ -16967,6 +17101,7 @@ mod tests {
             range: TextRange { start: 0, end: 4 },
             quads: vec![Quad::from_rect(10.0, 20.0, 110.0, 32.5)],
             kind: AnnotKind::Highlight,
+            color: AnnotColor::Yellow,
             text: text.to_string(),
             marker: None,
         }

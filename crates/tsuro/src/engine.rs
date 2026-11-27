@@ -1358,6 +1358,7 @@ mod tests {
                 },
                 quads: quads.clone(),
                 kind: AnnotKind::Highlight,
+                color: crate::session::AnnotColor::Yellow,
                 text: String::new(),
                 marker: None,
             },
@@ -1367,6 +1368,7 @@ mod tests {
                 range: TextRange { start: 0, end: 1 },
                 quads: vec![first],
                 kind: AnnotKind::Note,
+                color: crate::session::AnnotColor::Yellow,
                 text: "nota do teste".into(),
                 marker: None,
             },
@@ -1458,6 +1460,7 @@ mod tests {
             range,
             quads,
             kind: AnnotKind::Highlight,
+            color: crate::session::AnnotColor::Yellow,
             text: String::new(),
             marker: None,
         }];
@@ -1534,6 +1537,7 @@ mod tests {
             },
             quads,
             kind: AnnotKind::Note,
+            color: crate::session::AnnotColor::Yellow,
             text: "nota movida".into(),
             marker: Some(marker),
         }];
@@ -1592,6 +1596,7 @@ mod tests {
                 range: TextRange { start: 0, end: 1 },
                 quads: Vec::new(),
                 kind: AnnotKind::Highlight,
+                color: crate::session::AnnotColor::Yellow,
                 text: String::new(),
                 marker: None,
             }])
@@ -1622,6 +1627,7 @@ mod tests {
             },
             quads,
             kind: AnnotKind::Highlight,
+            color: crate::session::AnnotColor::Yellow,
             text: String::new(),
             marker: None,
         }];

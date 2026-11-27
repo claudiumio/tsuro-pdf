@@ -89,7 +89,7 @@ pub fn read_theme_pref() -> ThemePref {
 }
 
 pub fn save_theme_pref(pref: ThemePref) -> std::io::Result<()> {
-    write_prefs(pref, read_lang())
+    write_prefs(pref, read_lang(), read_annot_color_pref())
 }
 
 pub fn read_lang() -> Lang {
@@ -105,7 +105,20 @@ pub fn read_lang() -> Lang {
 }
 
 pub fn save_lang(lang: Lang) -> std::io::Result<()> {
-    write_prefs(read_theme_pref(), lang)
+    write_prefs(read_theme_pref(), lang, read_annot_color_pref())
+}
+
+/// Cor preferida para novas marcações (#132, F-MARC-05). `None` = sem
+/// preferência salva (usa default por tipo). Valor desconhecido → `None`.
+pub fn read_annot_color_pref() -> Option<crate::session::AnnotColor> {
+    pairs()
+        .into_iter()
+        .find(|(k, _)| k == "annot_color")
+        .map(|(_, v)| crate::session::AnnotColor::from_str(&v))
+}
+
+pub fn save_annot_color_pref(color: crate::session::AnnotColor) -> std::io::Result<()> {
+    write_prefs(read_theme_pref(), read_lang(), Some(color))
 }
 
 fn pairs() -> Vec<(String, String)> {
@@ -120,7 +133,11 @@ fn pairs() -> Vec<(String, String)> {
         .collect()
 }
 
-fn write_prefs(pref: ThemePref, lang: Lang) -> std::io::Result<()> {
+fn write_prefs(
+    pref: ThemePref,
+    lang: Lang,
+    annot_color: Option<crate::session::AnnotColor>,
+) -> std::io::Result<()> {
     let file = prefs_file();
     if let Some(parent) = file.parent() {
         std::fs::create_dir_all(parent)?;
@@ -134,7 +151,11 @@ fn write_prefs(pref: ThemePref, lang: Lang) -> std::io::Result<()> {
         Lang::Pt => "pt",
         Lang::En => "en",
     };
-    crate::io_atomic::write_file(&file, format!("theme={theme}\nlang={lang}\n"))
+    let mut body = format!("theme={theme}\nlang={lang}\n");
+    if let Some(color) = annot_color {
+        body.push_str(&format!("annot_color={}\n", color.as_str()));
+    }
+    crate::io_atomic::write_file(&file, body)
 }
 
 #[cfg(test)]

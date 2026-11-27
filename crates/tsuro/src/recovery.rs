@@ -470,6 +470,9 @@ fn decode_annot(line: &str) -> Option<Annotation> {
     if tag != "annot" {
         return None;
     }
+    let annot_kind = kind_from_token(kind)?;
+    // Anotações antigas sem cor persistida usam o default do tipo (#132).
+    let color = crate::session::AnnotColor::default_for(annot_kind);
     Some(Annotation {
         id: id.parse().ok()?,
         page: PageNo::from_index(page.parse().ok()?),
@@ -478,7 +481,8 @@ fn decode_annot(line: &str) -> Option<Annotation> {
             end: end.parse().ok()?,
         },
         quads: decode_quads(quads)?,
-        kind: kind_from_token(kind)?,
+        kind: annot_kind,
+        color,
         text: unescape_field(text),
         marker: decode_marker(marker)?,
     })
@@ -716,6 +720,7 @@ mod tests {
             range: TextRange { start: 3, end: 17 },
             quads: vec![Quad::from_rect(10.0, 20.0, 110.0, 32.5)],
             kind,
+            color: crate::session::AnnotColor::default_for(kind),
             text: text.to_string(),
             marker: None,
         }
