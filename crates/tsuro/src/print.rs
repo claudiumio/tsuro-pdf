@@ -53,6 +53,38 @@ pub struct PrintSelection {
     pub orientation: PrintOrientation,
 }
 
+/// Por onde as marcações da sessão entram na prévia e na saída (issue #148).
+///
+/// Uma política só, guardada no diálogo e lida pelos dois lados: a prévia e a
+/// impressão rasterizam o mesmo documento, então o que a folha mostra é o que
+/// sai. A opção não toca no original nem apaga marcações da sessão — a de
+/// `Omit` só deixa de escolher a cópia marcada como origem.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum PrintMarks {
+    #[default]
+    Include,
+    Omit,
+}
+
+impl PrintMarks {
+    pub fn includes_session(self) -> bool {
+        matches!(self, PrintMarks::Include)
+    }
+}
+
+/// Documento que a prévia e a saída rasterizam: a cópia marcada quando a
+/// política inclui as marcações da sessão, o original quando não.
+///
+/// Anotações padrão já embutidas no PDF e marcas achatadas no conteúdo da
+/// página não são escolhidas aqui: as duas vêm dos pixels de qualquer um dos
+/// dois documentos, e a política não as remove.
+pub fn print_source<'a, E>(marks: PrintMarks, plain: &'a E, marked: Option<&'a E>) -> &'a E {
+    match marked {
+        Some(marked) if marks.includes_session() => marked,
+        _ => plain,
+    }
+}
+
 pub fn print_scale(dpi: f32) -> Scale {
     Scale::from_factor(dpi / PDF_USER_SPACE_DPI)
 }
@@ -497,6 +529,25 @@ mod tests {
             rest = &rest[open + 1 + close..];
         }
         out
+    }
+
+    #[test]
+    fn marks_policy_picks_the_marked_copy_only_when_it_includes() {
+        let plain = "original";
+        let marked = "marcado";
+        assert_eq!(
+            print_source(PrintMarks::Include, &plain, Some(&marked)),
+            &marked
+        );
+        assert_eq!(
+            print_source(PrintMarks::Omit, &plain, Some(&marked)),
+            &plain
+        );
+        // Sem cópia marcada (nenhuma marcação na sessão ou preparo falhou),
+        // incluir não tem o que escolher: a origem é a mesma do omitir.
+        assert_eq!(print_source(PrintMarks::Include, &plain, None), &plain);
+        assert_eq!(print_source(PrintMarks::Omit, &plain, None), &plain);
+        assert!(PrintMarks::default().includes_session());
     }
 
     #[test]

@@ -16,7 +16,7 @@ use crate::i18n::Lang;
 use crate::kiri::{self, CheckSeverity, Theme, Tokens};
 use crate::page::{MediaBox, PageNo, Viewport};
 use crate::prefs::ThemePref;
-use crate::print::{PrintOrientation, MAX_COPIES};
+use crate::print::{PrintMarks, PrintOrientation, MAX_COPIES};
 use crate::search::Search;
 #[cfg(target_os = "macos")]
 use crate::session::PermissionsState;
@@ -1394,10 +1394,10 @@ const PRINT_BODY_MIN_H: f32 = 180.0;
 const PRINT_PREVIEW_INSET: f32 = 12.0;
 /// Abaixo desta largura o formulário não cabe ao lado da prévia.
 const PRINT_CONTROLS_MIN_W: f32 = 288.0;
-/// Altura dos controles (rótulos, campos, segmentados, resumo). Define o corpo
-/// quando ele é o mais alto da linha: janelas mais baixas rolam os controles
-/// em vez de cortá-los.
-const PRINT_CONTROLS_H: f32 = 348.0;
+/// Altura dos controles (rótulos, campos, segmentados, resumo, marcações).
+/// Define o corpo quando ele é o mais alto da linha: janelas mais baixas rolam
+/// os controles em vez de cortá-los.
+const PRINT_CONTROLS_H: f32 = 470.0;
 
 /// Geometria do painel orçada a partir do painel do documento.
 #[derive(Debug, Clone, Copy, PartialEq)]
@@ -1518,7 +1518,15 @@ fn print_card<'a>(ready: &'a Ready, dialog: &'a PrintDialog, t: Tokens) -> Eleme
     ]
     .align_y(Alignment::Start);
 
-    let controls = print_controls(dialog, count, pages.len(), range_error.clone(), t);
+    let controls = print_controls(
+        dialog,
+        count,
+        pages.len(),
+        range_error.clone(),
+        ready.annotations.len(),
+        ready.print_marks_pending(),
+        t,
+    );
     let controls: Element<'a, Message> = if layout.body_h + 0.5 < PRINT_CONTROLS_H {
         scrollable(controls)
             .height(Length::Fixed(layout.body_h))
@@ -1545,10 +1553,18 @@ fn print_card<'a>(ready: &'a Ready, dialog: &'a PrintDialog, t: Tokens) -> Eleme
     if let Some(message) = banner {
         col = col.push(print_banner(&message, t));
     }
-    // Sem impressora ou com intervalo inválido o botão principal não age: o
-    // erro fica na linha do intervalo e a rota «Abrir PDF» continua aberta.
-    let can_submit = selection.is_ok() && dialog.selected_printer().is_some();
-    col = col.push(print_footer(dialog, layout.card_w, can_submit, t));
+    // Sem impressora, intervalo inválido ou marcações a caminho o botão não
+    // age: o erro fica na linha do intervalo e a rota «Abrir PDF» continua
+    // aberta (com as marcações, ela também espera a mesma origem da prévia).
+    let marks_pending = ready.print_marks_pending();
+    let can_submit = selection.is_ok() && dialog.selected_printer().is_some() && !marks_pending;
+    col = col.push(print_footer(
+        dialog,
+        layout.card_w,
+        can_submit,
+        marks_pending,
+        t,
+    ));
     container(col)
         .width(Length::Fixed(layout.card_w))
         .padding(PRINT_CARD_PAD)
@@ -1711,6 +1727,8 @@ fn print_controls<'a>(
     count: u32,
     selected: usize,
     range_error: Option<String>,
+    marks_count: usize,
+    marks_pending: bool,
     t: Tokens,
 ) -> Element<'a, Message> {
     let busy = dialog.busy;
@@ -1916,9 +1934,61 @@ fn print_controls<'a>(
     ]
     .spacing(8);
 
-    let controls = column![printer_block, pages_block, copies_block, orientation_block]
-        .spacing(16)
-        .width(Length::Fill);
+    // Marcações da sessão (issue #148): uma política só, e a nota abaixo diz
+    // o que ela não decide — anotação padrão do PDF e marca achatada na
+    // página vêm nos pixels do documento, com ou sem esta opção.
+    let has_marks = marks_count > 0;
+    let can_pick = has_marks && !busy && !marks_pending;
+    let marks_group = print_seg_group(
+        t,
+        vec![
+            print_seg(
+                t,
+                t.lang.pick("Incluir", "Include"),
+                dialog.marks.includes_session(),
+                can_pick.then_some(Message::PrintSetMarks(PrintMarks::Include)),
+            ),
+            print_seg(
+                t,
+                t.lang.pick("Omitir", "Omit"),
+                !dialog.marks.includes_session(),
+                can_pick.then_some(Message::PrintSetMarks(PrintMarks::Omit)),
+            ),
+        ],
+    );
+    let marks_hint = if !has_marks {
+        t.lang
+            .pick("Sem marcações nesta sessão.", "No marks in this session.")
+    } else if marks_pending {
+        t.lang
+            .pick("Preparando as marcações…", "Preparing the marks…")
+    } else if dialog.marks.includes_session() {
+        t.lang.pick(
+            "Anotações padrão do PDF e marcas já achatadas na página fazem parte do documento e continuam na impressão.",
+            "Standard PDF annotations and marks already flattened into the page are part of the document and stay in the print.",
+        )
+    } else {
+        t.lang.pick(
+            "A sessão mantém as marcações; elas só não vão para a prévia nem para a impressão. Anotações padrão e marcas achatadas continuam.",
+            "The session keeps its marks; they just stay out of the preview and the print. Standard annotations and flattened marks remain.",
+        )
+    };
+    let marks_block = column![
+        print_field_label(t.lang.pick("Marcações da sessão", "Session marks"), t),
+        marks_group,
+        styled(marks_hint, kiri::TextKind::Subheadline, false, t.muted),
+    ]
+    .spacing(8);
+
+    let controls = column![
+        printer_block,
+        pages_block,
+        copies_block,
+        orientation_block,
+        marks_block
+    ]
+    .spacing(16)
+    .width(Length::Fill);
     controls.into()
 }
 
@@ -1992,6 +2062,7 @@ fn print_footer(
     dialog: &PrintDialog,
     card_w: f32,
     can_submit: bool,
+    marks_pending: bool,
     t: Tokens,
 ) -> Element<'static, Message> {
     let busy = dialog.busy;
@@ -2016,7 +2087,12 @@ fn print_footer(
     };
     let actions = row![
         Space::with_width(Length::Fill),
-        secondary(t.lang.pick("Abrir PDF", "Open PDF"), Message::PrintOpenPdf),
+        // «Abrir PDF» espera a mesma origem da prévia: com as marcações ainda
+        // em preparo, o PDF aberto sairia de outro documento.
+        button(text(t.lang.pick("Abrir PDF", "Open PDF")).size(13))
+            .padding(Padding::from([8, 12]))
+            .style(kiri::hud_ghost_style(t))
+            .on_press_maybe((!busy && !marks_pending).then_some(Message::PrintOpenPdf)),
         secondary(t.lang.pick("Cancelar", "Cancel"), Message::ClosePrintDialog),
         // Sem impressora ou com intervalo inválido o botão não age: sai do
         // acento para superfície neutra, para não parecer o CTA da tela.
