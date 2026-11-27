@@ -1385,13 +1385,18 @@ const PRINT_CHROME_H: f32 = 196.0;
 const PRINT_PAGER_H: f32 = 62.0;
 const PRINT_PAGE_MAX_W: f32 = 320.0;
 const PRINT_PAGE_MAX_H: f32 = 420.0;
-const PRINT_PAGE_MIN_W: f32 = 104.0;
+/// Piso de utilidade da folha: abaixo disto a miniatura não deixa reconhecer a
+/// página e só rouba largura do formulário, então a coluna da prévia sai.
+const PRINT_PREVIEW_MIN_W: f32 = 180.0;
+/// Piso do corpo em janelas baixas: abaixo dele os ajustes rolam.
+const PRINT_BODY_MIN_H: f32 = 180.0;
 /// Borda da mesa em volta da folha da prévia.
 const PRINT_PREVIEW_INSET: f32 = 12.0;
 /// Abaixo desta largura o formulário não cabe ao lado da prévia.
 const PRINT_CONTROLS_MIN_W: f32 = 288.0;
-/// Altura dos controles (rótulos, campos, segmentados, resumo). É o piso do
-/// corpo: janelas mais baixas rolam os controles em vez de cortá-los.
+/// Altura dos controles (rótulos, campos, segmentados, resumo). Define o corpo
+/// quando ele é o mais alto da linha: janelas mais baixas rolam os controles
+/// em vez de cortá-los.
 const PRINT_CONTROLS_H: f32 = 348.0;
 
 /// Geometria do painel orçada a partir do painel do documento.
@@ -1409,29 +1414,38 @@ struct PrintLayout {
 fn print_layout(viewport: Viewport, aspect: f32) -> PrintLayout {
     let card_w = (viewport.width - 2.0 * PRINT_MARGIN).clamp(PRINT_CARD_MIN_W, PRINT_CARD_W);
     let inner_w = card_w - 2.0 * PRINT_CARD_PAD;
-    let body_h = (viewport.height - 2.0 * PRINT_MARGIN - PRINT_CHROME_H).max(180.0);
+    // Espaço que a janela oferece ao corpo. Não é o corpo: uma janela alta não
+    // deve esticar o cartão além do conteúdo.
+    let available = (viewport.height - 2.0 * PRINT_MARGIN - PRINT_CHROME_H).max(PRINT_BODY_MIN_H);
     let aspect = if aspect.is_finite() {
         aspect.clamp(0.3, 3.0)
     } else {
         0.707
     };
     let room_w = inner_w - PRINT_GAP - PRINT_CONTROLS_MIN_W - 2.0 * PRINT_PREVIEW_INSET;
-    let room_h = (body_h - PRINT_PAGER_H).max(0.0);
+    let room_h = (available - PRINT_PAGER_H).max(0.0);
     let page_w = PRINT_PAGE_MAX_W
         .min(room_w)
         .min(room_h * aspect)
         .min(PRINT_PAGE_MAX_H * aspect);
-    let preview = page_w >= PRINT_PAGE_MIN_W;
+    let preview = page_w >= PRINT_PREVIEW_MIN_W;
     let (page_w, page_h) = if preview {
         (page_w, (page_w / aspect).min(PRINT_PAGE_MAX_H))
     } else {
         (0.0, 0.0)
     };
+    // O corpo vale o conteúdo — a maior coluna da linha, prévia com pager ou
+    // ajustes — e nunca mais que o espaço que a janela dá.
+    let content_h = if preview {
+        PRINT_CONTROLS_H.max(page_h + PRINT_PAGER_H)
+    } else {
+        PRINT_CONTROLS_H
+    };
     PrintLayout {
         card_w,
         page_w,
         page_h,
-        body_h,
+        body_h: available.min(content_h),
         preview,
     }
 }
@@ -1514,12 +1528,14 @@ fn print_card<'a>(ready: &'a Ready, dialog: &'a PrintDialog, t: Tokens) -> Eleme
         controls
     };
     let body: Element<'a, Message> = if layout.preview {
+        // A prévia é a coluna alta; os ajustes se ancoram no meio dela para o
+        // respiro acima e abaixo ficar igual em vez de sobrar vazio no pé.
         row![
             print_preview(ready, dialog, &pages, at, count, &layout, t),
             controls
         ]
         .spacing(PRINT_GAP)
-        .align_y(Alignment::Start)
+        .align_y(Alignment::Center)
         .into()
     } else {
         controls
@@ -1998,11 +2014,11 @@ fn print_footer(
         Space::with_width(Length::Fill),
         secondary(t.lang.pick("Abrir PDF", "Open PDF"), Message::PrintOpenPdf),
         secondary(t.lang.pick("Cancelar", "Cancel"), Message::ClosePrintDialog),
-        // Busy → status `Disabled` (o estilo dim os 40%): o botão parece
-        // desligado em vez de só trocar de rótulo.
+        // Sem impressora ou com intervalo inválido o botão não age: sai do
+        // acento para superfície neutra, para não parecer o CTA da tela.
         button(primary)
             .padding(Padding::from([8, 12]))
-            .style(kiri::hud_primary_style(t))
+            .style(kiri::panel_primary_style(t, busy))
             .on_press_maybe((!busy && can_submit).then_some(Message::PrintSubmit)),
     ]
     .spacing(8)
@@ -5335,7 +5351,8 @@ mod tests {
         dot_alpha, outline_title, pager_widths, print_layout, sweep_x, sweep_x_eased,
         LOADING_BAR_W, LOADING_SEG_W, LOADING_STEPS, PRINT_CARD_MIN_W, PRINT_CARD_PAD,
         PRINT_CARD_W, PRINT_CHROME_H, PRINT_CONTROLS_H, PRINT_CONTROLS_MIN_W, PRINT_GAP,
-        PRINT_MARGIN, PRINT_PAGER_H, PRINT_PREVIEW_INSET, SENDING_DOT_CYCLE,
+        PRINT_MARGIN, PRINT_PAGER_H, PRINT_PAGE_MAX_H, PRINT_PREVIEW_INSET, PRINT_PREVIEW_MIN_W,
+        SENDING_DOT_CYCLE,
     };
     use crate::i18n::Lang;
     use crate::page::Viewport;
@@ -5404,6 +5421,58 @@ mod tests {
         );
         assert!(short.body_h < PRINT_CONTROLS_H, "{short:?}");
         assert!(PRINT_CHROME_H + short.body_h <= 500.0 - 2.0 * PRINT_MARGIN + 0.01);
+    }
+
+    /// Janela alta não estica o cartão: o corpo para na coluna mais alta.
+    #[test]
+    fn print_layout_stops_growing_past_the_content() {
+        let a4 = 0.707;
+        let tall = print_layout(
+            Viewport {
+                width: 1440.0,
+                height: 1400.0,
+            },
+            a4,
+        );
+        let normal = print_layout(
+            Viewport {
+                width: 1440.0,
+                height: 900.0,
+            },
+            a4,
+        );
+        assert_eq!(tall.body_h, normal.body_h, "{tall:?} vs {normal:?}");
+        assert!(tall.page_h <= PRINT_PAGE_MAX_H + 0.01, "{tall:?}");
+        // O corpo é a prévia com o pager, que aqui é a coluna mais alta.
+        assert_eq!(
+            tall.body_h,
+            (tall.page_h + PRINT_PAGER_H).max(PRINT_CONTROLS_H)
+        );
+        assert!(PRINT_CHROME_H + tall.body_h <= 1400.0 - 2.0 * PRINT_MARGIN);
+    }
+
+    /// O piso útil da prévia é o breakpoint: acima dele a folha fica e nunca
+    /// desce do mínimo; abaixo, a coluna sai e a largura vai para o formulário.
+    #[test]
+    fn print_layout_drops_the_preview_below_the_useful_floor() {
+        let a4 = 0.707;
+        for (width, height) in [(1040.0, 807.0), (900.0, 620.0), (780.0, 600.0)] {
+            let layout = print_layout(Viewport { width, height }, a4);
+            assert!(layout.preview, "{width}x{height}: {layout:?}");
+            assert!(
+                layout.page_w >= PRINT_PREVIEW_MIN_W,
+                "{width}x{height}: {layout:?}"
+            );
+        }
+        for (width, height) in [(1024.0, 500.0), (1040.0, 540.0)] {
+            let layout = print_layout(Viewport { width, height }, a4);
+            assert!(!layout.preview, "{width}x{height}: {layout:?}");
+            assert_eq!(layout.page_w, 0.0, "{width}x{height}: {layout:?}");
+            assert!(
+                layout.body_h < PRINT_CONTROLS_H,
+                "{width}x{height}: {layout:?}"
+            );
+        }
     }
 
     #[test]
