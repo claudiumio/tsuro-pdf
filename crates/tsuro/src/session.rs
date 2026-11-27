@@ -6395,6 +6395,9 @@ impl Ready {
             .as_ref()
             .filter(|(previewed, at, _)| *previewed == page && *at == scale)
             .map(|(_, _, surface)| surface)
+            // Quando a escala da prévia coincide com a da página na tela (ou do
+            // prefetch), o render cai no cache de páginas: é a mesma superfície.
+            .or_else(|| self.surface(page, scale))
     }
 
     /// Página atual do preview de impressão (`None` sem diálogo aberto).
@@ -7755,7 +7758,10 @@ impl Ready {
                 || self
                     .print_preview
                     .as_ref()
-                    .is_some_and(|(previewed, at, _)| *previewed == page && *at == scale);
+                    .is_some_and(|(previewed, at, _)| *previewed == page && *at == scale)
+                // A prévia também se serve da superfície da página quando as
+                // escalas coincidem; sem isto o render entraria no laço.
+                || self.surface(page, scale).is_some();
             if cached || self.failed.contains(&key) {
                 continue;
             }
@@ -14705,6 +14711,31 @@ mod tests {
         ready.render_inflight.clear();
         let _ = ready.request_thumb_render();
         // Sem esta guarda o alvo seria re-renderizado sem parar: nada em voo.
+        assert!(ready.render_inflight.is_empty());
+    }
+
+    #[test]
+    fn preview_at_the_page_scale_uses_the_page_surface_without_a_loop() {
+        let Some(mut session) = open_dialog() else {
+            return;
+        };
+        let Session::Ready(ready) = &mut session else {
+            panic!("expected Ready");
+        };
+        let target = ready.print_preview_target().expect("alvo do preview");
+        let media = ready.loaded_media(target).expect("media");
+        let preview_scale = ready.print_preview_scale(media);
+        // O render cai no cache de páginas quando a escala coincide: a prévia
+        // lê a mesma superfície e o render não é pedido de novo.
+        ready.surfaces.insert(
+            target,
+            preview_scale,
+            0,
+            fake_surface(target, preview_scale),
+        );
+        assert!(ready.print_preview_surface(target).is_some());
+        ready.render_inflight.clear();
+        let _ = ready.request_thumb_render();
         assert!(ready.render_inflight.is_empty());
     }
 
