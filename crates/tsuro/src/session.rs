@@ -6397,7 +6397,7 @@ impl Ready {
             .map(|(_, _, surface)| surface)
             // Quando a escala da prévia coincide com a da página na tela (ou do
             // prefetch), o render cai no cache de páginas: é a mesma superfície.
-            .or_else(|| self.surface(page, scale))
+            .or_else(|| self.surfaces.get(page, scale, 0))
     }
 
     /// Página atual do preview de impressão (`None` sem diálogo aberto).
@@ -7734,34 +7734,37 @@ impl Ready {
         }
         // O alvo do painel de impressão renderiza na escala da folha da prévia;
         // o rail continua na escala da miniatura. A página que é as duas coisas
-        // recebe os dois renders — o cache guarda as duas escalas.
-        let mut wanted: Vec<(PageNo, Scale)> = Vec::new();
+        // recebe os dois renders — o cache guarda as duas escalas. O terceiro
+        // campo diz qual entrada é a da prévia: só ela pode se servir da
+        // superfície da página, que é sempre renderizada sem rotação.
+        let mut wanted: Vec<(PageNo, Scale, bool)> = Vec::new();
         for page in targets {
             let Some(media) = self.loaded_media(page) else {
                 continue;
             };
             if preview == Some(page) {
-                wanted.push((page, self.print_preview_scale(media)));
+                wanted.push((page, self.print_preview_scale(media), true));
                 if self.pages_open && self.thumb_page_window().contains(&page) {
-                    wanted.push((page, self.thumb_scale_for(media)));
+                    wanted.push((page, self.thumb_scale_for(media), false));
                 }
             } else {
-                wanted.push((page, self.thumb_scale_for(media)));
+                wanted.push((page, self.thumb_scale_for(media), false));
             }
         }
-        for (page, scale) in wanted {
+        for (page, scale, in_preview) in wanted {
             let key = render_key(page, scale, 0);
             // A folha da prévia não mora no `thumbs`: sem consultá-la aqui o
             // alvo seria re-renderizado sem parar enquanto o diálogo estivesse
-            // aberto.
+            // aberto. Quando a escala coincide com a da página na tela, o render
+            // cai no cache de páginas em rotação 0 — é a mesma folha que o
+            // painel mostra. O rail não usa esse atalho: ele lê só `thumbs`.
             let cached = self.thumbs.get(page, scale).is_some()
-                || self
-                    .print_preview
-                    .as_ref()
-                    .is_some_and(|(previewed, at, _)| *previewed == page && *at == scale)
-                // A prévia também se serve da superfície da página quando as
-                // escalas coincidem; sem isto o render entraria no laço.
-                || self.surface(page, scale).is_some();
+                || in_preview
+                    && (self
+                        .print_preview
+                        .as_ref()
+                        .is_some_and(|(previewed, at, _)| *previewed == page && *at == scale)
+                        || self.surfaces.get(page, scale, 0).is_some());
             if cached || self.failed.contains(&key) {
                 continue;
             }
@@ -14737,6 +14740,53 @@ mod tests {
         ready.render_inflight.clear();
         let _ = ready.request_thumb_render();
         assert!(ready.render_inflight.is_empty());
+    }
+
+    #[test]
+    fn preview_lookup_ignores_the_view_rotation() {
+        let Some(mut session) = open_dialog() else {
+            return;
+        };
+        let Session::Ready(ready) = &mut session else {
+            panic!("expected Ready");
+        };
+        let page = ready.print_preview_target().expect("alvo do preview");
+        let media = ready.loaded_media(page).expect("media");
+        let scale = ready.print_preview_scale(media);
+        // A folha da prévia é renderizada sempre sem rotação: com a vista
+        // girada, a superfície em rotação 0 é a única que serve ao painel.
+        ready.view_rotation = 1;
+        ready
+            .surfaces
+            .insert(page, scale, 0, fake_surface(page, scale));
+        assert!(ready.print_preview_surface(page).is_some());
+    }
+
+    #[test]
+    fn rail_thumb_still_renders_when_the_page_surface_matches_its_scale() {
+        let Some(mut session) = open_dialog() else {
+            return;
+        };
+        apply(&mut session, Message::ClosePrintDialog);
+        let Session::Ready(ready) = &mut session else {
+            panic!("expected Ready");
+        };
+        ready.pages_open = true;
+        ready.pages_scroll_y = 0.0;
+        let visible = ready.visible;
+        let media = ready.loaded_media(visible).expect("media");
+        let thumb = ready.thumb_scale_for(media);
+        // A página visível já tem superfície justo na escala da miniatura, mas
+        // o rail lê só `thumbs`: o atalho da prévia não pode valer para ele.
+        ready
+            .surfaces
+            .insert(visible, thumb, 0, fake_surface(visible, thumb));
+        ready.thumbs.clear();
+        ready.render_inflight.clear();
+        let _ = ready.request_thumb_render();
+        assert!(ready
+            .render_inflight
+            .contains(&render_key(visible, thumb, 0)));
     }
 
     #[test]
