@@ -14,7 +14,7 @@ use tsuro_sign::{SignatureInfo, SignatureStatus};
 use crate::browse::{EmptyState, FsEntry, Thumb};
 use crate::i18n::Lang;
 use crate::kiri::{self, CheckSeverity, Theme, Tokens};
-use crate::page::{MediaBox, PageNo};
+use crate::page::{MediaBox, PageNo, Viewport};
 use crate::prefs::ThemePref;
 use crate::print::{PrintOrientation, MAX_COPIES};
 use crate::search::Search;
@@ -1367,10 +1367,88 @@ fn menu_disabled(t: Tokens, label: &'static str) -> Element<'static, Message> {
     .into()
 }
 
-/// Largura/padding do cartão de impressão (spec §4): o rodapé usa a largura
-/// interna para a barra de envio (issue #204) encostar nas bordas do conteúdo.
-const PRINT_CARD_W: f32 = 620.0;
-const PRINT_CARD_PAD: f32 = 16.0;
+/// Painel de impressão (spec §4): folha com padding 20, prévia à esquerda e
+/// configuração à direita. O cartão encolhe até caber na janela e a prévia é
+/// a primeira a ceder espaço — o rodapé e os controles nunca saem da tela.
+const PRINT_CARD_W: f32 = 860.0;
+const PRINT_CARD_MIN_W: f32 = 520.0;
+const PRINT_CARD_PAD: f32 = 20.0;
+/// Respiro entre a prévia e os controles, e entre grupos de campos.
+const PRINT_GAP: f32 = 18.0;
+/// Margem entre o cartão e a borda do painel do documento.
+const PRINT_MARGIN: f32 = 16.0;
+/// Altura do cartão que não é corpo: padding 2×20, cabeçalho 46, respiro
+/// acima e abaixo do corpo 2×18, rodapé 58 e banner de erro 16 — o banner
+/// entra no orçamento para o erro não espremer a prévia quando aparece.
+const PRINT_CHROME_H: f32 = 196.0;
+/// Setas da prévia mais o rótulo e o respiro até a mesa.
+const PRINT_PAGER_H: f32 = 62.0;
+const PRINT_PAGE_MAX_W: f32 = 320.0;
+const PRINT_PAGE_MAX_H: f32 = 420.0;
+/// Piso de utilidade da folha: abaixo disto a miniatura não deixa reconhecer a
+/// página e só rouba largura do formulário, então a coluna da prévia sai.
+const PRINT_PREVIEW_MIN_W: f32 = 180.0;
+/// Piso do corpo em janelas baixas: abaixo dele os ajustes rolam.
+const PRINT_BODY_MIN_H: f32 = 180.0;
+/// Borda da mesa em volta da folha da prévia.
+const PRINT_PREVIEW_INSET: f32 = 12.0;
+/// Abaixo desta largura o formulário não cabe ao lado da prévia.
+const PRINT_CONTROLS_MIN_W: f32 = 288.0;
+/// Altura dos controles (rótulos, campos, segmentados, resumo). Define o corpo
+/// quando ele é o mais alto da linha: janelas mais baixas rolam os controles
+/// em vez de cortá-los.
+const PRINT_CONTROLS_H: f32 = 348.0;
+
+/// Geometria do painel orçada a partir do painel do documento.
+#[derive(Debug, Clone, Copy, PartialEq)]
+struct PrintLayout {
+    card_w: f32,
+    /// Folha da prévia em px (0 quando a prévia sai de cena).
+    page_w: f32,
+    page_h: f32,
+    /// Altura disponível para o corpo do cartão.
+    body_h: f32,
+    preview: bool,
+}
+
+fn print_layout(viewport: Viewport, aspect: f32) -> PrintLayout {
+    let card_w = (viewport.width - 2.0 * PRINT_MARGIN).clamp(PRINT_CARD_MIN_W, PRINT_CARD_W);
+    let inner_w = card_w - 2.0 * PRINT_CARD_PAD;
+    // Espaço que a janela oferece ao corpo. Não é o corpo: uma janela alta não
+    // deve esticar o cartão além do conteúdo.
+    let available = (viewport.height - 2.0 * PRINT_MARGIN - PRINT_CHROME_H).max(PRINT_BODY_MIN_H);
+    let aspect = if aspect.is_finite() {
+        aspect.clamp(0.3, 3.0)
+    } else {
+        0.707
+    };
+    let room_w = inner_w - PRINT_GAP - PRINT_CONTROLS_MIN_W - 2.0 * PRINT_PREVIEW_INSET;
+    let room_h = (available - PRINT_PAGER_H).max(0.0);
+    let page_w = PRINT_PAGE_MAX_W
+        .min(room_w)
+        .min(room_h * aspect)
+        .min(PRINT_PAGE_MAX_H * aspect);
+    let preview = page_w >= PRINT_PREVIEW_MIN_W;
+    let (page_w, page_h) = if preview {
+        (page_w, (page_w / aspect).min(PRINT_PAGE_MAX_H))
+    } else {
+        (0.0, 0.0)
+    };
+    // O corpo vale o conteúdo — a maior coluna da linha, prévia com pager ou
+    // ajustes — e nunca mais que o espaço que a janela dá.
+    let content_h = if preview {
+        PRINT_CONTROLS_H.max(page_h + PRINT_PAGER_H)
+    } else {
+        PRINT_CONTROLS_H
+    };
+    PrintLayout {
+        card_w,
+        page_w,
+        page_h,
+        body_h: available.min(content_h),
+        preview,
+    }
+}
 
 /// Modal de impressão: fundo fecha ao clicar, cartão captura sem efeito —
 /// nada atravessa para o documento atrás.
@@ -1391,230 +1469,531 @@ fn print_layer<'a>(ready: &'a Ready, dialog: &'a PrintDialog, t: Tokens) -> Elem
 }
 
 fn print_card<'a>(ready: &'a Ready, dialog: &'a PrintDialog, t: Tokens) -> Element<'a, Message> {
-    let pages = dialog.preview_pages(ready.page_count(), ready.visible);
+    let count = ready.page_count();
+    let current = ready.visible;
+    let pages = dialog.preview_pages(count, current);
     let at = dialog.preview.min(pages.len().saturating_sub(1));
-    let mut col = column![
-        row![
-            text(t.lang.pick("Imprimir", "Print")).size(16),
-            Space::with_width(Length::Fill),
-            button(text(t.lang.pick("Fechar", "Close")).size(13))
-                .style(kiri::menu_item_style(t))
-                .on_press_maybe((!dialog.busy).then_some(Message::ClosePrintDialog)),
+    let media = ready.media(pages.get(at).copied().unwrap_or(current));
+    let layout = print_layout(ready.viewport(), media.width / media.height.max(0.01));
+    let selection = dialog.selection(count, current);
+    let range_error = selection.as_ref().err().cloned();
+    // Intervalo inválido fala na linha do próprio intervalo; o banner do rodapé
+    // fica para a falha do envio (impressora, spooler), que não tem outro lugar.
+    let banner = if range_error.is_some() {
+        None
+    } else {
+        dialog.error.clone()
+    };
+
+    let header = row![
+        column![
+            styled(
+                t.lang.pick("Imprimir", "Print"),
+                kiri::TextKind::Title3,
+                true,
+                t.ink
+            ),
+            styled(
+                format!(
+                    "{} · {} {}",
+                    short_name(ready.source.path()),
+                    count,
+                    t.lang.pick("páginas", "pages")
+                ),
+                kiri::TextKind::Callout,
+                false,
+                t.muted
+            ),
         ]
-        .align_y(Alignment::Center),
-        row![
-            print_preview(ready, dialog, &pages, at, t),
-            print_controls(dialog, t),
-        ]
-        .spacing(16),
+        .spacing(2),
+        Space::with_width(Length::Fill),
+        button(kiri::ori_icon(
+            "x",
+            kiri::Metrics::current().icon(),
+            t.muted
+        ))
+        .padding(Padding::from([6, 6]))
+        .style(kiri::ibtn_style(t, false))
+        .on_press_maybe((!dialog.busy).then_some(Message::ClosePrintDialog)),
     ]
-    .spacing(12);
-    if let Some(err) = &dialog.error {
-        col = col.push(
-            text(format!(
-                "{}: {err}",
-                t.lang.pick("Não foi possível imprimir", "Could not print")
-            ))
-            .size(13)
-            .color(t.danger),
-        );
+    .align_y(Alignment::Start);
+
+    let controls = print_controls(dialog, count, pages.len(), range_error.clone(), t);
+    let controls: Element<'a, Message> = if layout.body_h + 0.5 < PRINT_CONTROLS_H {
+        scrollable(controls)
+            .height(Length::Fixed(layout.body_h))
+            .width(Length::Fill)
+            .into()
+    } else {
+        controls
+    };
+    let body: Element<'a, Message> = if layout.preview {
+        // A prévia é a coluna alta; os ajustes se ancoram no meio dela para o
+        // respiro acima e abaixo ficar igual em vez de sobrar vazio no pé.
+        row![
+            print_preview(ready, dialog, &pages, at, count, &layout, t),
+            controls
+        ]
+        .spacing(PRINT_GAP)
+        .align_y(Alignment::Center)
+        .into()
+    } else {
+        controls
+    };
+
+    let mut col = column![header, body].spacing(PRINT_GAP);
+    if let Some(message) = banner {
+        col = col.push(print_banner(&message, t));
     }
-    col = col.push(print_footer(dialog, t));
+    // Sem impressora ou com intervalo inválido o botão principal não age: o
+    // erro fica na linha do intervalo e a rota «Abrir PDF» continua aberta.
+    let can_submit = selection.is_ok() && dialog.selected_printer().is_some();
+    col = col.push(print_footer(dialog, layout.card_w, can_submit, t));
     container(col)
-        .width(Length::Fixed(PRINT_CARD_W))
+        .width(Length::Fixed(layout.card_w))
         .padding(PRINT_CARD_PAD)
         .style(kiri::sheet_style(t))
         .into()
 }
 
-/// Preview reaproveita o thumb do cache (escala de tela, sem render novo).
+/// Prévia: folha sobre a mesa, setas e a posição dentro do que será impresso.
 fn print_preview<'a>(
     ready: &'a Ready,
     dialog: &'a PrintDialog,
     pages: &[PageNo],
     at: usize,
+    count: u32,
+    layout: &PrintLayout,
     t: Tokens,
 ) -> Element<'a, Message> {
-    let thumb: Element<'a, Message> =
-        match pages.get(at).and_then(|page| ready.thumb_surface(*page)) {
-            Some(surface) => image(surface.image.clone())
-                .width(Length::Fixed(220.0))
+    let page = pages.get(at).copied();
+    let surface = page.and_then(|page| ready.print_preview_surface(page));
+    let sheet = |content: Element<'a, Message>| {
+        container(content)
+            .width(Length::Fixed(layout.page_w))
+            .height(Length::Fixed(layout.page_h))
+            .style(kiri::page_frame(&t))
+            .into()
+    };
+    let paper: Element<'a, Message> = match surface {
+        Some(surface) => sheet(
+            image(surface.image.clone())
+                .content_fit(iced::ContentFit::Contain)
+                .width(Length::Fill)
+                .height(Length::Fill)
                 .into(),
-            None => container(
-                text(t.lang.pick("carregando…", "loading…"))
-                    .size(13)
-                    .color(t.muted),
-            )
-            .width(Length::Fixed(220.0))
-            .height(Length::Fixed(280.0))
+        ),
+        None => sheet(
+            container(styled(
+                t.lang.pick("Gerando prévia…", "Rendering preview…"),
+                kiri::TextKind::Subheadline,
+                false,
+                t.muted,
+            ))
+            .width(Length::Fill)
+            .height(Length::Fill)
             .align_x(Alignment::Center)
             .align_y(Alignment::Center)
             .into(),
-        };
+        ),
+    };
+    let mesa_w = layout.page_w + 2.0 * PRINT_PREVIEW_INSET;
+    let mesa = container(paper)
+        .padding(PRINT_PREVIEW_INSET)
+        .style(move |_| container::Style {
+            background: Some(Background::Color(t.bg)),
+            border: Border {
+                color: t.hairline,
+                width: 1.0,
+                radius: 12.0.into(),
+            },
+            ..container::Style::default()
+        });
+
+    let can_prev = !dialog.busy && at > 0;
+    let can_next = !dialog.busy && at + 1 < pages.len();
+    let arrow =
+        |file: &'static str, on: bool| kiri::ori_icon(file, 14.0, if on { t.ink } else { t.faint });
     let pager = row![
-        button(kiri::ori!("chevron-left", t.accent))
+        button(arrow("chevron-left", can_prev))
+            .padding(Padding::from([6, 8]))
             .style(kiri::ibtn_style(t, false))
-            .on_press_maybe((!dialog.busy && at > 0).then_some(Message::PrintPreviewPrev)),
-        text(format!(
-            "{} {} {}",
-            at + 1,
-            t.lang.pick("de", "of"),
-            pages.len().max(1)
-        ))
-        .size(13),
-        button(kiri::ori!("chevron-right", t.accent))
-            .style(kiri::ibtn_style(t, false))
-            .on_press_maybe(
-                (!dialog.busy && at + 1 < pages.len()).then_some(Message::PrintPreviewNext)
+            .on_press_maybe(can_prev.then_some(Message::PrintPreviewPrev)),
+        styled(
+            format!(
+                "{} {} {} {}",
+                t.lang.pick("Página", "Page"),
+                at + 1,
+                t.lang.pick("de", "of"),
+                pages.len().max(1)
             ),
+            kiri::TextKind::Body,
+            true,
+            t.ink
+        ),
+        button(arrow("chevron-right", can_next))
+            .padding(Padding::from([6, 8]))
+            .style(kiri::ibtn_style(t, false))
+            .on_press_maybe(can_next.then_some(Message::PrintPreviewNext)),
     ]
     .spacing(8)
     .align_y(Alignment::Center);
-    column![thumb, pager]
-        .spacing(8)
-        .align_x(Alignment::Center)
+
+    let mut col = column![mesa, pager].spacing(10).align_x(Alignment::Center);
+    if let Some(page) = page.filter(|_| pages.len() < count as usize) {
+        col = col.push(styled(
+            format!(
+                "{} {} {}",
+                t.lang.pick("página", "document page"),
+                page.index().saturating_add(1),
+                t.lang.pick("no documento", "of the document")
+            ),
+            kiri::TextKind::Subheadline,
+            false,
+            t.muted,
+        ));
+    }
+    col.width(Length::Fixed(mesa_w)).into()
+}
+
+/// Rótulo de grupo: 11/14 w700 com um fio até a borda — dá estrutura ao
+/// formulário sem caixa alta.
+fn print_field_label(label: &'static str, t: Tokens) -> Element<'static, Message> {
+    row![
+        styled(label, kiri::TextKind::Section, false, t.muted),
+        container(Space::with_height(Length::Fixed(1.0)))
+            .width(Length::Fill)
+            .height(Length::Fixed(1.0))
+            .style(move |_| container::Style {
+                background: Some(Background::Color(t.hairline_soft)),
+                ..container::Style::default()
+            }),
+    ]
+    .spacing(10)
+    .align_y(Alignment::Center)
+    .into()
+}
+
+/// Segmento de um controle segmentado (spec §5): o ativo é a pílula elevada.
+fn print_seg<'a>(
+    t: Tokens,
+    label: &'static str,
+    active: bool,
+    on_press: Option<Message>,
+) -> Element<'a, Message> {
+    // O rótulo toma a altura da pílula e se centra nos dois eixos: sem o
+    // `Fill` de altura ele encosta no topo e o texto sobe em relação à pílula.
+    button(
+        container(styled(label, kiri::TextKind::Body, active, t.ink))
+            .width(Length::Fill)
+            .height(Length::Fill)
+            .align_x(Alignment::Center)
+            .align_y(Alignment::Center),
+    )
+    .width(Length::Fill)
+    .height(Length::Fixed(kiri::Metrics::current().control))
+    .padding(Padding::from([0, 6]))
+    .style(kiri::panel_seg_style(t, active))
+    .on_press_maybe(on_press)
+    .into()
+}
+
+fn print_seg_group<'a>(t: Tokens, segs: Vec<Element<'a, Message>>) -> Element<'a, Message> {
+    container(row(segs))
+        .padding(Padding::from(2))
+        .width(Length::Fill)
+        .style(kiri::panel_seg_track_style(t))
         .into()
 }
 
-fn print_controls(dialog: &PrintDialog, t: Tokens) -> Element<'_, Message> {
+fn print_controls<'a>(
+    dialog: &'a PrintDialog,
+    count: u32,
+    selected: usize,
+    range_error: Option<String>,
+    t: Tokens,
+) -> Element<'a, Message> {
     let busy = dialog.busy;
-    let printer: Element<'_, Message> = if dialog.printers_loading {
-        text(t.lang.pick("Carregando impressoras…", "Loading printers…"))
-            .size(13)
-            .color(t.muted)
-            .into()
+    let printer: Element<'a, Message> = if dialog.printers_loading {
+        styled(
+            t.lang.pick("Carregando impressoras…", "Loading printers…"),
+            kiri::TextKind::Body,
+            false,
+            t.muted,
+        )
     } else if dialog.printers.is_empty() {
-        text(
+        styled(
             t.lang
                 .pick("Nenhuma impressora encontrada", "No printer found"),
+            kiri::TextKind::Body,
+            false,
+            t.warn,
         )
-        .size(13)
-        .color(t.warn)
-        .into()
     } else {
         let names: Vec<String> = dialog.printers.iter().map(|p| p.name.clone()).collect();
         let selected = dialog.selected_printer().map(|p| p.name.clone());
         pick_list(names.clone(), selected, move |name: String| {
             Message::PrintSelectPrinter(names.iter().position(|n| *n == name).unwrap_or(0))
         })
-        .placeholder(t.lang.pick("Impressora", "Printer"))
+        .text_size(kiri::text_style(kiri::TextKind::Body, false).size)
+        .padding(Padding::from([6, 8]))
         .width(Length::Fill)
         .into()
     };
-    let mut col = column![
-        section_title(t.lang.pick("Impressora", "Printer"), t),
+    let printer_hint: Element<'a, Message> =
+        if dialog.printers.is_empty() && !dialog.printers_loading {
+            styled(
+                t.lang.pick(
+                    "Use «Abrir PDF» para imprimir pelo sistema.",
+                    "Use “Open PDF” to print through the system.",
+                ),
+                kiri::TextKind::Subheadline,
+                false,
+                t.muted,
+            )
+        } else if dialog
+            .selected_printer()
+            .is_some_and(|printer| printer.is_default)
+        {
+            styled(
+                t.lang.pick("Impressora padrão", "Default printer"),
+                kiri::TextKind::Subheadline,
+                false,
+                t.muted,
+            )
+        } else {
+            Space::new(Length::Shrink, Length::Shrink).into()
+        };
+    let printer_block = column![
+        print_field_label(t.lang.pick("Impressora", "Printer"), t),
         printer,
-        section_title(t.lang.pick("Páginas", "Pages"), t),
-        row![
-            seg_button(t, t.lang.pick("Todas", "All"), RangeMode::All, dialog, busy),
-            seg_button(
-                t,
-                t.lang.pick("Atual", "Current"),
-                RangeMode::Current,
-                dialog,
-                busy
-            ),
-            seg_button(
-                t,
-                t.lang.pick("De–Até", "From–To"),
-                RangeMode::Custom,
-                dialog,
-                busy
-            ),
-        ]
-        .spacing(4),
+        printer_hint,
     ]
     .spacing(6);
+
+    let range_group = print_seg_group(
+        t,
+        vec![
+            print_seg(
+                t,
+                t.lang.pick("Todas", "All"),
+                dialog.range_mode == RangeMode::All,
+                (!busy).then_some(Message::PrintSetRangeMode(RangeMode::All)),
+            ),
+            print_seg(
+                t,
+                t.lang.pick("Atual", "Current"),
+                dialog.range_mode == RangeMode::Current,
+                (!busy).then_some(Message::PrintSetRangeMode(RangeMode::Current)),
+            ),
+            print_seg(
+                t,
+                t.lang.pick("De–Até", "From–To"),
+                dialog.range_mode == RangeMode::Custom,
+                (!busy).then_some(Message::PrintSetRangeMode(RangeMode::Custom)),
+            ),
+        ],
+    );
+    let mut pages_block = column![
+        print_field_label(t.lang.pick("Páginas", "Pages"), t),
+        range_group
+    ]
+    .spacing(8);
     if dialog.range_mode == RangeMode::Custom {
-        col = col.push(
+        // Campo com superfície própria: o `bar_input_style` é transparente
+        // (na barra ele mora dentro da pílula de busca) e sozinho no cartão
+        // não teria onde clicar.
+        let field =
+            |placeholder: &'static str, value: &'a String, on_input: fn(String) -> Message| {
+                container(
+                    text_input(placeholder, value)
+                        .on_input(on_input)
+                        .style(kiri::bar_input_style(t))
+                        .padding(Padding::from([4, 8]))
+                        .size(kiri::text_style(kiri::TextKind::Body, false).size)
+                        .width(Length::Fixed(44.0)),
+                )
+                .padding(Padding::from([2, 6]))
+                .style(kiri::panel_seg_track_style(t))
+            };
+        pages_block = pages_block.push(
             row![
-                text_input(t.lang.pick("De", "From"), &dialog.from_input)
-                    .on_input(Message::PrintSetFromInput)
-                    .width(Length::Fixed(64.0)),
-                text(t.lang.pick("até", "to")).size(13).color(t.muted),
-                text_input(t.lang.pick("Até", "To"), &dialog.to_input)
-                    .on_input(Message::PrintSetToInput)
-                    .width(Length::Fixed(64.0)),
+                field(
+                    t.lang.pick("De", "From"),
+                    &dialog.from_input,
+                    Message::PrintSetFromInput
+                ),
+                styled(
+                    t.lang.pick("até", "to"),
+                    kiri::TextKind::Body,
+                    false,
+                    t.muted
+                ),
+                field(
+                    t.lang.pick("Até", "To"),
+                    &dialog.to_input,
+                    Message::PrintSetToInput
+                ),
+                styled(
+                    format!("{} {count}", t.lang.pick("de", "of")),
+                    kiri::TextKind::Callout,
+                    false,
+                    t.muted
+                ),
             ]
-            .spacing(8)
+            .spacing(6)
             .align_y(Alignment::Center),
         );
     }
-    col = col.push(section_title(t.lang.pick("Cópias", "Copies"), t));
-    col = col.push(
+    pages_block = pages_block.push(print_summary(dialog, selected, range_error, t));
+
+    let can_minus = !busy && dialog.copies > 1;
+    let can_plus = !busy && dialog.copies < MAX_COPIES;
+    let copy_arrow =
+        |file: &'static str, on: bool| kiri::ori_icon(file, 14.0, if on { t.ink } else { t.faint });
+    let stepper = container(
         row![
-            button(kiri::ori!("minus", t.accent))
+            button(copy_arrow("minus", can_minus))
+                .padding(Padding::from([4, 6]))
                 .style(kiri::ibtn_style(t, false))
-                .on_press_maybe((!busy && dialog.copies > 1).then_some(Message::PrintCopiesMinus)),
-            container(text(dialog.copies.to_string()).size(14))
-                .width(Length::Fixed(32.0))
-                .align_x(Alignment::Center),
-            button(kiri::ori!("plus", t.accent))
+                .on_press_maybe(can_minus.then_some(Message::PrintCopiesMinus)),
+            container(styled(
+                dialog.copies.to_string(),
+                kiri::TextKind::Body,
+                true,
+                t.ink
+            ))
+            .width(Length::Fixed(32.0))
+            .align_x(Alignment::Center),
+            button(copy_arrow("plus", can_plus))
+                .padding(Padding::from([4, 6]))
                 .style(kiri::ibtn_style(t, false))
-                .on_press_maybe(
-                    (!busy && dialog.copies < MAX_COPIES).then_some(Message::PrintCopiesPlus)
-                ),
+                .on_press_maybe(can_plus.then_some(Message::PrintCopiesPlus)),
         ]
-        .spacing(4)
+        .spacing(2)
         .align_y(Alignment::Center),
-    );
-    col = col.push(section_title(t.lang.pick("Orientação", "Orientation"), t));
-    col = col.push(
-        row![
-            ori_button(
+    )
+    .padding(Padding::from(2))
+    .style(kiri::panel_seg_track_style(t));
+    let copies_block = row![
+        styled(
+            t.lang.pick("Cópias", "Copies"),
+            kiri::TextKind::Section,
+            false,
+            t.muted
+        ),
+        Space::with_width(Length::Fill),
+        stepper,
+    ]
+    .align_y(Alignment::Center);
+
+    let orientation_group = print_seg_group(
+        t,
+        vec![
+            print_seg(
                 t,
                 t.lang.pick("Automática", "Automatic"),
-                PrintOrientation::Auto,
-                dialog,
-                busy
+                dialog.orientation == PrintOrientation::Auto,
+                (!busy).then_some(Message::PrintSetOrientation(PrintOrientation::Auto)),
             ),
-            ori_button(
+            print_seg(
                 t,
                 t.lang.pick("Retrato", "Portrait"),
-                PrintOrientation::Portrait,
-                dialog,
-                busy
+                dialog.orientation == PrintOrientation::Portrait,
+                (!busy).then_some(Message::PrintSetOrientation(PrintOrientation::Portrait)),
             ),
-            ori_button(
+            print_seg(
                 t,
                 t.lang.pick("Paisagem", "Landscape"),
-                PrintOrientation::Landscape,
-                dialog,
-                busy
+                dialog.orientation == PrintOrientation::Landscape,
+                (!busy).then_some(Message::PrintSetOrientation(PrintOrientation::Landscape)),
+            ),
+        ],
+    );
+    let orientation_block = column![
+        print_field_label(t.lang.pick("Orientação", "Orientation"), t),
+        orientation_group
+    ]
+    .spacing(8);
+
+    let controls = column![printer_block, pages_block, copies_block, orientation_block]
+        .spacing(16)
+        .width(Length::Fill);
+    controls.into()
+}
+
+/// Resumo do que será enviado — ou o erro do intervalo, no lugar do resumo.
+fn print_summary(
+    dialog: &PrintDialog,
+    pages: usize,
+    range_error: Option<String>,
+    t: Tokens,
+) -> Element<'static, Message> {
+    if let Some(error) = range_error {
+        return styled(error, kiri::TextKind::Callout, false, t.danger);
+    }
+    let copies = dialog.copies;
+    let pages_label = if pages == 1 {
+        t.lang.pick("página", "page")
+    } else {
+        t.lang.pick("páginas", "pages")
+    };
+    let copies_label = if copies == 1 {
+        t.lang.pick("cópia", "copy")
+    } else {
+        t.lang.pick("cópias", "copies")
+    };
+    let mut summary = format!("{pages} {pages_label} · {copies} {copies_label}");
+    if copies > 1 {
+        summary.push_str(&format!(
+            " · {} {}",
+            pages * copies as usize,
+            t.lang.pick("no total", "in total")
+        ));
+    }
+    styled(summary, kiri::TextKind::Callout, false, t.muted)
+}
+
+fn print_banner(message: &str, t: Tokens) -> Element<'static, Message> {
+    container(
+        row![
+            kiri::ori_icon("x", 14.0, t.danger),
+            styled(
+                format!(
+                    "{}: {message}",
+                    t.lang.pick("Não foi possível imprimir", "Could not print")
+                ),
+                kiri::TextKind::Callout,
+                false,
+                t.ink
             ),
         ]
-        .spacing(4),
-    );
-    col.width(Length::Fill).into()
+        .spacing(8)
+        .align_y(Alignment::Center),
+    )
+    .width(Length::Fill)
+    .padding(Padding::from([8, 10]))
+    .style(move |_| container::Style {
+        background: Some(Background::Color(Color {
+            a: 0.10,
+            ..t.danger
+        })),
+        border: Border {
+            color: t.danger,
+            width: 1.0,
+            radius: 8.0.into(),
+        },
+        ..container::Style::default()
+    })
+    .into()
 }
 
-fn seg_button(
-    t: Tokens,
-    label: &'static str,
-    mode: RangeMode,
+fn print_footer(
     dialog: &PrintDialog,
-    busy: bool,
-) -> Element<'static, Message> {
-    button(text(label).size(13))
-        .style(kiri::ibtn_style(t, dialog.range_mode == mode))
-        .on_press_maybe((!busy).then_some(Message::PrintSetRangeMode(mode)))
-        .into()
-}
-
-fn ori_button(
+    card_w: f32,
+    can_submit: bool,
     t: Tokens,
-    label: &'static str,
-    orientation: PrintOrientation,
-    dialog: &PrintDialog,
-    busy: bool,
 ) -> Element<'static, Message> {
-    button(text(label).size(13))
-        .style(kiri::ibtn_style(t, dialog.orientation == orientation))
-        .on_press_maybe((!busy).then_some(Message::PrintSetOrientation(orientation)))
-        .into()
-}
-
-fn print_footer(dialog: &PrintDialog, t: Tokens) -> Element<'static, Message> {
     let busy = dialog.busy;
     let primary: Element<'static, Message> = if busy {
         // Rótulo com o modelo `text-dots` (loading-ui): um ponto acende por
@@ -1639,23 +2018,31 @@ fn print_footer(dialog: &PrintDialog, t: Tokens) -> Element<'static, Message> {
         Space::with_width(Length::Fill),
         secondary(t.lang.pick("Abrir PDF", "Open PDF"), Message::PrintOpenPdf),
         secondary(t.lang.pick("Cancelar", "Cancel"), Message::ClosePrintDialog),
-        // Busy → status `Disabled` (o estilo dim os 40%): o botão parece
-        // desligado em vez de só trocar de rótulo.
+        // Sem impressora ou com intervalo inválido o botão não age: sai do
+        // acento para superfície neutra, para não parecer o CTA da tela.
         button(primary)
             .padding(Padding::from([8, 12]))
-            .style(kiri::hud_primary_style(t))
-            .on_press_maybe((!busy).then_some(Message::PrintSubmit)),
+            .style(kiri::panel_primary_style(t, busy))
+            .on_press_maybe((!busy && can_submit).then_some(Message::PrintSubmit)),
     ]
     .spacing(8)
     .align_y(Alignment::Center);
+    let separator = container(Space::with_width(Length::Fill))
+        .width(Length::Fill)
+        .height(Length::Fixed(1.0))
+        .style(move |_| container::Style {
+            background: Some(Background::Color(t.hairline_soft)),
+            ..container::Style::default()
+        });
     if !busy {
-        return actions.into();
+        return column![separator, actions].spacing(12).into();
     }
     // Envio (issue #204): barra indeterminada sob as ações — não há fração
     // honesta do job, que depende do documento e da impressora. Aqui ela usa
     // o passo com `ease-in-out`, não o linear da abertura (#41).
-    let track = PRINT_CARD_W - 2.0 * PRINT_CARD_PAD;
+    let track = card_w - 2.0 * PRINT_CARD_PAD;
     column![
+        separator,
         actions,
         loading_bar_x(sweep_x_eased(dialog.sending_phase, track), track, t),
     ]
@@ -4965,10 +5352,132 @@ fn pager_widths(pages: u32) -> (f32, f32) {
 #[cfg(test)]
 mod tests {
     use super::{
-        dot_alpha, outline_title, pager_widths, sweep_x, sweep_x_eased, LOADING_BAR_W,
-        LOADING_SEG_W, LOADING_STEPS, PRINT_CARD_PAD, PRINT_CARD_W, SENDING_DOT_CYCLE,
+        dot_alpha, outline_title, pager_widths, print_layout, sweep_x, sweep_x_eased,
+        LOADING_BAR_W, LOADING_SEG_W, LOADING_STEPS, PRINT_CARD_MIN_W, PRINT_CARD_PAD,
+        PRINT_CARD_W, PRINT_CHROME_H, PRINT_CONTROLS_H, PRINT_CONTROLS_MIN_W, PRINT_GAP,
+        PRINT_MARGIN, PRINT_PAGER_H, PRINT_PAGE_MAX_H, PRINT_PREVIEW_INSET, PRINT_PREVIEW_MIN_W,
+        SENDING_DOT_CYCLE,
     };
     use crate::i18n::Lang;
+    use crate::page::Viewport;
+
+    /// O painel de impressão nunca cresce além da janela: o rodapé e o banner
+    /// de erro ficam dentro da tela em qualquer tamanho razoável.
+    #[test]
+    fn print_layout_fits_the_window() {
+        let a4 = 0.707;
+        let wide = print_layout(
+            Viewport {
+                width: 1440.0,
+                height: 900.0,
+            },
+            a4,
+        );
+        assert_eq!(wide.card_w, PRINT_CARD_W);
+        assert!(wide.preview);
+        assert!(wide.page_w >= 280.0, "prévia grande: {wide:?}");
+        assert!((wide.page_w / wide.page_h - a4).abs() < 0.01);
+
+        for (width, height) in [
+            (1440.0, 900.0),
+            (1040.0, 800.0),
+            (900.0, 620.0),
+            (760.0, 560.0),
+        ] {
+            let layout = print_layout(Viewport { width, height }, a4);
+            assert!(
+                layout.card_w <= width - 2.0 * PRINT_MARGIN,
+                "{width}x{height}: cartão {layout:?}"
+            );
+            // O corpo é o que sobra da janela descontado o chrome do cartão.
+            assert!(
+                PRINT_CHROME_H + layout.body_h <= height - 2.0 * PRINT_MARGIN + 0.01,
+                "{width}x{height}: corpo {layout:?}"
+            );
+            // A prévia cabe no corpo, com o pager.
+            if layout.preview {
+                assert!(layout.page_h + PRINT_PAGER_H <= layout.body_h + 0.01);
+                let inner = layout.card_w - 2.0 * PRINT_CARD_PAD;
+                let preview_w = layout.page_w + 2.0 * PRINT_PREVIEW_INSET;
+                assert!(preview_w + PRINT_GAP + PRINT_CONTROLS_MIN_W <= inner + 0.01);
+            }
+        }
+
+        // Janela estreita: a prévia cede espaço antes do formulário.
+        let narrow = print_layout(
+            Viewport {
+                width: 620.0,
+                height: 600.0,
+            },
+            a4,
+        );
+        assert!(narrow.card_w >= PRINT_CARD_MIN_W);
+        assert!(narrow.preview, "prévia sobrevive a 620: {narrow:?}");
+        assert!(narrow.page_w < wide.page_w);
+
+        // Janela baixa: os controles rolam dentro do corpo orçado.
+        let short = print_layout(
+            Viewport {
+                width: 1024.0,
+                height: 500.0,
+            },
+            a4,
+        );
+        assert!(short.body_h < PRINT_CONTROLS_H, "{short:?}");
+        assert!(PRINT_CHROME_H + short.body_h <= 500.0 - 2.0 * PRINT_MARGIN + 0.01);
+    }
+
+    /// Janela alta não estica o cartão: o corpo para na coluna mais alta.
+    #[test]
+    fn print_layout_stops_growing_past_the_content() {
+        let a4 = 0.707;
+        let tall = print_layout(
+            Viewport {
+                width: 1440.0,
+                height: 1400.0,
+            },
+            a4,
+        );
+        let normal = print_layout(
+            Viewport {
+                width: 1440.0,
+                height: 900.0,
+            },
+            a4,
+        );
+        assert_eq!(tall.body_h, normal.body_h, "{tall:?} vs {normal:?}");
+        assert!(tall.page_h <= PRINT_PAGE_MAX_H + 0.01, "{tall:?}");
+        // O corpo é a prévia com o pager, que aqui é a coluna mais alta.
+        assert_eq!(
+            tall.body_h,
+            (tall.page_h + PRINT_PAGER_H).max(PRINT_CONTROLS_H)
+        );
+        assert!(PRINT_CHROME_H + tall.body_h <= 1400.0 - 2.0 * PRINT_MARGIN);
+    }
+
+    /// O piso útil da prévia é o breakpoint: acima dele a folha fica e nunca
+    /// desce do mínimo; abaixo, a coluna sai e a largura vai para o formulário.
+    #[test]
+    fn print_layout_drops_the_preview_below_the_useful_floor() {
+        let a4 = 0.707;
+        for (width, height) in [(1040.0, 807.0), (900.0, 620.0), (780.0, 600.0)] {
+            let layout = print_layout(Viewport { width, height }, a4);
+            assert!(layout.preview, "{width}x{height}: {layout:?}");
+            assert!(
+                layout.page_w >= PRINT_PREVIEW_MIN_W,
+                "{width}x{height}: {layout:?}"
+            );
+        }
+        for (width, height) in [(1024.0, 500.0), (1040.0, 540.0)] {
+            let layout = print_layout(Viewport { width, height }, a4);
+            assert!(!layout.preview, "{width}x{height}: {layout:?}");
+            assert_eq!(layout.page_w, 0.0, "{width}x{height}: {layout:?}");
+            assert!(
+                layout.body_h < PRINT_CONTROLS_H,
+                "{width}x{height}: {layout:?}"
+            );
+        }
+    }
 
     #[test]
     fn pager_widths_fit_the_document_page_count() {
