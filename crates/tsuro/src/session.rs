@@ -4168,6 +4168,7 @@ impl Session {
                             ready.press_anchor = None;
                         }
                         ready.print_dialog = None;
+                        ready.print_preview = None;
                     }
                 }
                 Task::none()
@@ -4331,6 +4332,7 @@ impl Session {
                         match result {
                             Ok(job) => {
                                 ready.print_dialog = None;
+                                ready.print_preview = None;
                                 ready.print_status = Some(format!(
                                     "{} {printer} (job {job})",
                                     ready.lang.pick("Enviado para", "Sent to")
@@ -7641,6 +7643,11 @@ impl Ready {
             thumb_keep.insert(page.index());
         }
         self.thumbs.retain_pages(&thumb_keep);
+        // A folha da prévia vive fora do `thumbs`; sem diálogo aberto não há
+        // por que segurar o bitmap.
+        if self.print_dialog.is_none() {
+            self.print_preview = None;
+        }
     }
 
     fn request_visible_render(&mut self) -> Option<Task<Message>> {
@@ -7741,7 +7748,15 @@ impl Ready {
         }
         for (page, scale) in wanted {
             let key = render_key(page, scale, 0);
-            if self.thumbs.get(page, scale).is_some() || self.failed.contains(&key) {
+            // A folha da prévia não mora no `thumbs`: sem consultá-la aqui o
+            // alvo seria re-renderizado sem parar enquanto o diálogo estivesse
+            // aberto.
+            let cached = self.thumbs.get(page, scale).is_some()
+                || self
+                    .print_preview
+                    .as_ref()
+                    .is_some_and(|(previewed, at, _)| *previewed == page && *at == scale);
+            if cached || self.failed.contains(&key) {
                 continue;
             }
             self.track_render(key);
@@ -14663,6 +14678,57 @@ mod tests {
         // A miniatura do rail e a folha da prévia dividem a página sem se apagar.
         assert!(ready.thumb_surface(page).is_some());
         assert!(ready.print_preview_surface(page).is_some());
+    }
+
+    #[test]
+    fn preview_surface_stops_the_render_loop() {
+        let Some(mut session) = open_dialog() else {
+            return;
+        };
+        let Session::Ready(ready) = &mut session else {
+            panic!("expected Ready");
+        };
+        // Documento já lido: a visível tem superfície, então o rail não pede nada.
+        let visible = ready.visible;
+        let scale = ready.page_scale(visible);
+        ready
+            .surfaces
+            .insert(visible, scale, 0, fake_surface(visible, scale));
+        let target = ready.print_preview_target().expect("alvo do preview");
+        let media = ready.loaded_media(target).expect("media");
+        let preview_scale = ready.print_preview_scale(media);
+        ready.print_preview = Some((
+            target,
+            preview_scale,
+            CachedSurface::from_page(fake_surface(target, preview_scale), 0),
+        ));
+        ready.render_inflight.clear();
+        let _ = ready.request_thumb_render();
+        // Sem esta guarda o alvo seria re-renderizado sem parar: nada em voo.
+        assert!(ready.render_inflight.is_empty());
+    }
+
+    #[test]
+    fn closing_the_dialog_drops_the_preview_surface() {
+        let Some(mut session) = open_dialog() else {
+            return;
+        };
+        let page = PageNo::first();
+        let Session::Ready(ready) = &mut session else {
+            panic!("expected Ready");
+        };
+        let media = ready.loaded_media(page).expect("media");
+        let scale = ready.print_preview_scale(media);
+        ready.print_preview = Some((
+            page,
+            scale,
+            CachedSurface::from_page(fake_surface(page, scale), 0),
+        ));
+        apply(&mut session, Message::ClosePrintDialog);
+        let Session::Ready(ready) = &session else {
+            panic!("expected Ready");
+        };
+        assert!(ready.print_preview.is_none());
     }
 
     #[test]
