@@ -2159,8 +2159,6 @@ pub struct Ready {
     print_marks_building: bool,
     /// Folha marcada em render (`page`, `scale`), fora dos caches do documento.
     print_preview_inflight: Option<(PageNo, Scale)>,
-    /// Par (página, escala) da folha marcada que falhou — não pede de novo.
-    print_preview_failed: Option<(PageNo, Scale)>,
     render_inflight: HashSet<(u32, u16, u8)>,
     render_inflight_gen: HashMap<(u32, u16, u8), u64>,
     render_inflight_doc: HashMap<(u32, u16, u8), u64>,
@@ -3031,6 +3029,18 @@ impl OpenError {
 }
 
 impl Session {
+    /// Aba e geração que uma resposta do preparo da cópia marcada ainda serve.
+    /// `None` para diálogo fechado, documento trocado ou política já mudada —
+    /// quem chamou descarta o que veio (issue #148).
+    fn print_marks_target(&mut self, doc_gen: u64, gen: u64) -> Option<&mut Ready> {
+        match self {
+            Session::Ready(tabs) => tabs
+                .by_gen(doc_gen)
+                .filter(|ready| ready.print_marks_gen == gen),
+            _ => None,
+        }
+    }
+
     pub fn empty() -> Self {
         let (pref, theme) = boot_theme();
         Session::Empty(EmptyState {
@@ -3802,21 +3812,22 @@ impl Session {
                         }
                     }
                 }
-                Task::none()
+                // Apagar pode ter invalidado a cópia marcada da impressão.
+                self.schedule_work()
             }
             Message::AnnotUndo => {
                 if let Session::Ready(ready) = self {
                     ready.overflow_open = false;
                     ready.annot_undo_once();
                 }
-                Task::none()
+                self.schedule_work()
             }
             Message::AnnotRedo => {
                 if let Session::Ready(ready) = self {
                     ready.overflow_open = false;
                     ready.annot_redo_once();
                 }
-                Task::none()
+                self.schedule_work()
             }
             Message::NoteEdit(action) => {
                 if let Session::Ready(ready) = self {
@@ -4281,28 +4292,31 @@ impl Session {
                 gen,
                 result,
             } => {
-                if let Session::Ready(tabs) = self {
-                    if let Some(ready) = tabs.by_gen(doc_gen) {
-                        if ready.print_marks_gen == gen {
-                            ready.print_marks_building = false;
-                            match result {
-                                Ok(engine) => ready.print_marks = Some(engine),
-                                Err(err) => {
-                                    // Sem a cópia não há como incluir: a
-                                    // política volta a omitir, o diálogo diz
-                                    // por quê e a prévia e a saída concordam.
-                                    if let Some(dialog) = ready.print_dialog.as_mut() {
-                                        dialog.marks = PrintMarks::Omit;
-                                        dialog.error = Some(format!(
-                                            "{}: {err}",
-                                            dialog.lang.pick(
-                                                "não foi possível preparar as marcações — a impressão sai sem elas",
-                                                "could not prepare the marks — printing continues without them"
-                                            )
-                                        ));
-                                    }
-                                }
-                            }
+                // Um preparo já superado (diálogo fechado, política nova) ainda
+                // traz um documento aberto na worker: fechá-lo aqui é o que
+                // impede cada ciclo de vazar uma cópia inteira do PDF.
+                let Some(ready) = self.print_marks_target(doc_gen, gen) else {
+                    if let Ok(engine) = result {
+                        engine.close();
+                    }
+                    return self.schedule_work();
+                };
+                ready.print_marks_building = false;
+                match result {
+                    Ok(engine) => ready.print_marks = Some(engine),
+                    Err(err) => {
+                        // Sem a cópia não há como incluir: a política volta a
+                        // omitir, o diálogo diz por quê e a prévia e a saída
+                        // concordam.
+                        if let Some(dialog) = ready.print_dialog.as_mut() {
+                            dialog.marks = PrintMarks::Omit;
+                            dialog.error = Some(format!(
+                                "{}: {err}",
+                                dialog.lang.pick(
+                                    "não foi possível preparar as marcações — a impressão sai sem elas",
+                                    "could not prepare the marks — printing continues without them"
+                                )
+                            ));
                         }
                     }
                 }
@@ -4315,18 +4329,32 @@ impl Session {
                 scale,
                 surface,
             } => {
-                if let Session::Ready(tabs) = self {
-                    if let Some(ready) = tabs.by_gen(doc_gen) {
-                        if ready.print_marks_gen == gen {
-                            ready.print_preview_inflight = None;
-                            match surface {
-                                Some(surface) => {
-                                    ready.print_preview =
-                                        Some((page, scale, CachedSurface::from_page(surface, 0)));
-                                }
-                                None => ready.print_preview_failed = Some((page, scale)),
-                            }
+                let Some(ready) = self.print_marks_target(doc_gen, gen) else {
+                    return self.schedule_work();
+                };
+                ready.print_preview_inflight = None;
+                match surface {
+                    Some(surface) => {
+                        ready.print_preview =
+                            Some((page, scale, CachedSurface::from_page(surface, 0)));
+                    }
+                    None => {
+                        // A folha marcada não rasterizou: o estado real é
+                        // omitir, com o motivo no banner, em vez de deixar a
+                        // prévia em «Gerando prévia…» para sempre.
+                        if let Some(dialog) = ready.print_dialog.as_mut() {
+                            dialog.marks = PrintMarks::Omit;
+                            dialog.error = Some(
+                                dialog
+                                    .lang
+                                    .pick(
+                                        "não foi possível gerar a prévia com as marcações — prévia e impressão seguem sem elas",
+                                        "could not render the marked preview — preview and print continue without them",
+                                    )
+                                    .into(),
+                            );
                         }
+                        ready.drop_print_marks();
                     }
                 }
                 self.schedule_work()
@@ -6622,7 +6650,6 @@ impl Ready {
         self.print_marks_building = false;
         self.print_preview = None;
         self.print_preview_inflight = None;
-        self.print_preview_failed = None;
     }
 
     /// Prepara a cópia marcada quando a política a pede e ela ainda não existe.
@@ -7291,6 +7318,11 @@ impl Ready {
                 }
             }
             AnnotAction::Remove(a) => self.annotations.retain(|e| e.id != a.id),
+        }
+        // Desfazer, refazer e apagar funcionam com o diálogo de impressão
+        // aberto: a cópia marcada virou retrato e não vale mais (issue #148).
+        if self.print_dialog.is_some() {
+            self.drop_print_marks();
         }
     }
 
@@ -8038,7 +8070,6 @@ impl Ready {
             .print_preview
             .as_ref()
             .is_some_and(|(previewed, at, _)| *previewed == page && *at == scale)
-            || self.print_preview_failed == Some((page, scale))
         {
             return None;
         }
@@ -8138,7 +8169,6 @@ impl Document {
             print_marks_gen: 0,
             print_marks_building: false,
             print_preview_inflight: None,
-            print_preview_failed: None,
             render_inflight: HashSet::new(),
             render_inflight_gen: HashMap::new(),
             render_inflight_doc: HashMap::new(),
@@ -15379,6 +15409,87 @@ mod tests {
         assert!(ready.annotations.is_empty());
         assert!(!ready.print_marks_pending(), "sem marcações não há preparo");
         assert!(ready.print_marks.is_none());
+    }
+
+    #[test]
+    fn editing_marks_with_the_dialog_open_invalidates_the_marked_copy() {
+        let Some(mut ready) = sample_ready() else {
+            return;
+        };
+        let Some(mark) = page_zero_mark(&ready, 1) else {
+            return;
+        };
+        ready.annotations.push(mark.clone());
+        let doc_gen = ready.open_gen;
+        let mut session = Session::Ready(Tabs::single(ready));
+        apply(&mut session, Message::OpenPrintDialog);
+        let Session::Ready(ready) = &mut session else {
+            panic!("expected Ready");
+        };
+        ready.print_marks =
+            Some(marked_print_engine(&ready.engine, &ready.annotations).expect("cópia marcada"));
+        assert!(ready.print_marks.is_some());
+        // Desfazer, apagar e a nota removida passam todos por este funil com o
+        // diálogo aberto: a cópia marcada virou retrato e não pode continuar
+        // servindo prévia e saída.
+        let Session::Ready(ready) = &mut session else {
+            panic!("expected Ready");
+        };
+        ready.apply_annot_action(AnnotAction::Remove(mark));
+        apply(&mut session, Message::AnnotUndo);
+        let Session::Ready(ready) = &session else {
+            panic!("expected Ready");
+        };
+        assert!(ready.annotations.is_empty());
+        assert!(ready.print_marks.is_none());
+        assert!(ready.print_preview.is_none());
+        let _ = doc_gen;
+    }
+
+    #[test]
+    fn marked_sheet_failure_omits_them_and_says_so() {
+        let Some(mut ready) = sample_ready() else {
+            return;
+        };
+        let Some(mark) = page_zero_mark(&ready, 1) else {
+            return;
+        };
+        ready.annotations.push(mark);
+        let doc_gen = ready.open_gen;
+        let mut session = Session::Ready(Tabs::single(ready));
+        apply(&mut session, Message::OpenPrintDialog);
+        let Session::Ready(ready) = &mut session else {
+            panic!("expected Ready");
+        };
+        ready.print_marks =
+            Some(marked_print_engine(&ready.engine, &ready.annotations).expect("cópia marcada"));
+        let page = PageNo::first();
+        let scale = ready.print_preview_scale(ready.loaded_media(page).expect("media"));
+        let gen = ready.print_marks_gen;
+        ready.print_preview_inflight = Some((page, scale));
+        apply(
+            &mut session,
+            Message::PrintMarksRendered {
+                doc_gen,
+                gen,
+                page,
+                scale,
+                surface: None,
+            },
+        );
+        let Session::Ready(ready) = &session else {
+            panic!("expected Ready");
+        };
+        // Sem raster não há como incluir: o estado real é omitir, com motivo,
+        // e não a prévia presa em «Gerando prévia…».
+        assert_eq!(dialog(&session).marks, PrintMarks::Omit);
+        assert!(dialog(&session)
+            .error
+            .as_deref()
+            .is_some_and(|error| error.contains("prévia com as marcações")));
+        assert!(ready.print_marks.is_none());
+        assert!(ready.print_preview_inflight.is_none());
+        assert!(!ready.print_marks_pending());
     }
 
     #[test]
