@@ -14748,20 +14748,29 @@ mod tests {
             panic!("expected Ready");
         };
         let page = ready.print_preview_target().expect("alvo do preview");
-        let media = ready.loaded_media(page).expect("media");
+        // Documento largo o bastante para as duas escalas caírem no mesmo piso.
+        let media = MediaBox {
+            width: 8000.0,
+            height: 6000.0,
+        };
+        ready.pages.media[page.index() as usize] = Some(media);
         let thumb = ready.thumb_scale_for(media);
-        // Num documento largo as duas escalas ficam presas no mesmo fator: a
-        // folha da prévia é a da miniatura, e o rail a mostra sem pedir cópia.
+        assert_eq!(thumb, ready.print_preview_scale(media));
+        ready.pages_open = true;
+        ready.pages_scroll_y = 0.0;
+        // Só a folha da prévia existe: o rail e o skip de render a leem de lá,
+        // senão o rail pediria para sempre um render que cai no mesmo lugar.
         ready.print_preview = Some((
             page,
             thumb,
             CachedSurface::from_page(fake_surface(page, thumb), 0),
         ));
         ready.thumbs.clear();
+        ready.surfaces = SurfaceCache::default();
         assert!(ready.thumb_surface(page).is_some());
         ready.render_inflight.clear();
         let _ = ready.request_thumb_render();
-        assert!(!ready.render_inflight.contains(&render_key(page, thumb, 0)));
+        assert!(ready.render_inflight.is_empty());
     }
 
     #[test]
