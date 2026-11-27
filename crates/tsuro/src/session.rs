@@ -7643,9 +7643,9 @@ impl Ready {
             thumb_keep.insert(page.index());
         }
         self.thumbs.retain_pages(&thumb_keep);
-        // A folha da prévia vive fora do `thumbs`; sem diálogo aberto não há
-        // por que segurar o bitmap.
-        if self.print_dialog.is_none() {
+        // A folha da prévia vive fora do `thumbs`; sem alvo não há por que
+        // segurar o bitmap.
+        if self.print_preview_target().is_none() {
             self.print_preview = None;
         }
     }
