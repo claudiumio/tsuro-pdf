@@ -2057,8 +2057,12 @@ pub enum Signatures {
     Read(PdfAnalysis),
     Unreadable {
         reason: String,
-        /// Os bytes carregam `/ByteRange`: há assinatura que o parser não leu,
-        /// então a cópia marcada pode invalidá-la e o aviso vale.
+        /// Os bytes carregam `/ByteRange`, o marcador que os produtores comuns
+        /// deixam em claro na assinatura: a cópia marcada pode invalidá-la, e o
+        /// aviso vale. `/ObjStm` foi recusado como gatilho porque quase todo PDF
+        /// moderno o tem, e o aviso afirmaria uma assinatura que talvez não exista.
+        /// Não cobre o arquivo assinado com dicionário em object stream e xref
+        /// quebrado, que salva cópia sem aviso.
         maybe_signed: bool,
     },
 }
