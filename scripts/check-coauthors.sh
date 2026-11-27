@@ -11,7 +11,7 @@
 set -eu
 
 base="${1:-origin/main}"
-allowed='^(noreply@agentes\.chat|noreply@anthropic\.com|noreply@openai\.com)$'
+allowed='^(noreply@agentes\.chat|noreply@anthropic\.com|noreply@openai\.com|[0-9]+\+capy-ai\[bot\]@users\.noreply\.github\.com)$'
 failed=0
 
 for sha in $(git rev-list "$base..HEAD"); do
