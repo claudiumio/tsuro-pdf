@@ -23,8 +23,9 @@ use crate::session::PermissionsState;
 use crate::session::{
     display_pt, display_rect, marker_side, page_pt_at, AnnotKind, AnnotationRow, Message, NavCmd,
     NoteDraft, OpenSource, PaletteItem, PaletteState, PanelKey, PanelTab, PrintDialog, RangeMode,
-    Ready, RecoveryState, Session, SettingsPanel, Tabs, UpdateState, ViewMode, Zoom, ZoomFactor,
-    ANNOT_ROW, DOC_PAD_BOTTOM, DOC_PAD_TOP, DOC_PAD_X, PAGES_PANEL_W, SIG_PANEL_W, THUMB_ROW,
+    Ready, RecoveryState, Session, SettingsPanel, Signatures, Tabs, UpdateState, ViewMode, Zoom,
+    ZoomFactor, ANNOT_ROW, DOC_PAD_BOTTOM, DOC_PAD_TOP, DOC_PAD_X, PAGES_PANEL_W, SIG_PANEL_W,
+    THUMB_ROW,
 };
 
 /// Altura da faixa de ferramentas (spec §5). No macOS é a barra unificada,
@@ -829,14 +830,16 @@ fn topbar(session: &Session, t: Tokens) -> Element<'_, Message> {
         // Copiar/fechar/fit-page vivem no menu ⋯ (`overflow_menu`).
         let shield =
             bar_button(t, "shield", ready.signatures_open).on_press(Message::ToggleSignatures);
-        let dot = kiri::worst_check_color(
-            t,
-            ready
-                .signatures
-                .signatures
-                .iter()
-                .flat_map(|s| sig_rows(s, t.lang).map(|r| r.severity)),
-        );
+        let dot = match &ready.signatures {
+            Signatures::Read(analysis) => kiri::worst_check_color(
+                t,
+                analysis
+                    .signatures
+                    .iter()
+                    .flat_map(|s| sig_rows(s, t.lang).map(|r| r.severity)),
+            ),
+            Signatures::Unreadable(_) => None,
+        };
         let shield_el: Element<'_, Message> = match dot {
             Some(dot) => tip(
                 t,
@@ -4722,42 +4725,57 @@ fn stroke_selected(frame: &mut Frame, rect: &Path) {
 
 fn signatures_panel(ready: &Ready, t: Tokens) -> Element<'_, Message> {
     let mut col = column![section_title(t.lang.pick("Assinaturas", "Signatures"), t)].spacing(8);
-    if ready.signatures.signatures.is_empty() {
-        col = col.push(
-            text(t.lang.pick(
-                "Nenhuma assinatura neste arquivo.",
-                "No signatures in this file.",
-            ))
-            .size(12)
-            .color(t.muted),
-        );
-    } else {
-        for sig in &ready.signatures.signatures {
-            let name = signer_title(sig, t.lang);
-            let mut card = column![text(name).size(13).color(t.ink)].spacing(8);
-            for check in sig_rows(sig, t.lang) {
-                card = card.push(
-                    column![
-                        text(check.title).size(10).color(t.muted),
-                        row![
-                            status_dot(kiri::check_color(t, check.severity)),
-                            text(check.text).size(12).color(t.ink).width(Length::Fill),
+    match &ready.signatures {
+        Signatures::Unreadable(reason) => {
+            col = col
+                .push(
+                    text(t.lang.pick(
+                        "As assinaturas não puderam ser lidas neste arquivo.",
+                        "Signatures could not be read in this file.",
+                    ))
+                    .size(12)
+                    .color(t.ink),
+                )
+                .push(text(reason).size(10).color(t.muted));
+        }
+        Signatures::Read(analysis) if analysis.signatures.is_empty() => {
+            col = col.push(
+                text(t.lang.pick(
+                    "Nenhuma assinatura neste arquivo.",
+                    "No signatures in this file.",
+                ))
+                .size(12)
+                .color(t.muted),
+            );
+        }
+        Signatures::Read(analysis) => {
+            for sig in &analysis.signatures {
+                let name = signer_title(sig, t.lang);
+                let mut card = column![text(name).size(13).color(t.ink)].spacing(8);
+                for check in sig_rows(sig, t.lang) {
+                    card = card.push(
+                        column![
+                            text(check.title).size(10).color(t.muted),
+                            row![
+                                status_dot(kiri::check_color(t, check.severity)),
+                                text(check.text).size(12).color(t.ink).width(Length::Fill),
+                            ]
+                            .spacing(8)
+                            .align_y(Alignment::Start),
                         ]
-                        .spacing(8)
-                        .align_y(Alignment::Start),
-                    ]
-                    .spacing(2),
+                        .spacing(2),
+                    );
+                }
+                for fact in sig_facts(sig, t.lang) {
+                    card = card.push(text(fact).size(11).color(t.muted));
+                }
+                col = col.push(
+                    container(card)
+                        .width(Length::Fill)
+                        .padding(12)
+                        .style(kiri::panel_card_style(t)),
                 );
             }
-            for fact in sig_facts(sig, t.lang) {
-                card = card.push(text(fact).size(11).color(t.muted));
-            }
-            col = col.push(
-                container(card)
-                    .width(Length::Fill)
-                    .padding(12)
-                    .style(kiri::panel_card_style(t)),
-            );
         }
     }
     container(scrollable(col).height(Length::Fill))
