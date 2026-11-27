@@ -6384,7 +6384,13 @@ impl Ready {
 
     pub(crate) fn thumb_surface(&self, page: PageNo) -> Option<&CachedSurface> {
         let media = self.loaded_media(page)?;
-        self.thumbs.get(page, self.thumb_scale_for(media))
+        let scale = self.thumb_scale_for(media);
+        self.thumbs
+            .get(page, scale)
+            // Em rotação 0 a folha é a mesma do documento: quando a escala da
+            // miniatura coincide com a da página na tela, o render cai no cache
+            // de páginas e o rail lê dali em vez de pedir outro.
+            .or_else(|| self.surfaces.get(page, scale, 0))
     }
 
     /// Folha da prévia de impressão na escala própria do painel.
@@ -7753,18 +7759,17 @@ impl Ready {
         }
         for (page, scale, in_preview) in wanted {
             let key = render_key(page, scale, 0);
-            // A folha da prévia não mora no `thumbs`: sem consultá-la aqui o
-            // alvo seria re-renderizado sem parar enquanto o diálogo estivesse
-            // aberto. Quando a escala coincide com a da página na tela, o render
-            // cai no cache de páginas em rotação 0 — é a mesma folha que o
-            // painel mostra. O rail não usa esse atalho: ele lê só `thumbs`.
+            // Em rotação 0 a folha é a mesma em qualquer lugar que a mostre, e
+            // quando a escala coincide com a da página na tela o render cai no
+            // cache de páginas. Nem a prévia nem o rail olham só o próprio
+            // cache: sem `surfaces` aqui o pedido voltaria para sempre.
             let cached = self.thumbs.get(page, scale).is_some()
+                || self.surfaces.get(page, scale, 0).is_some()
                 || in_preview
-                    && (self
+                    && self
                         .print_preview
                         .as_ref()
-                        .is_some_and(|(previewed, at, _)| *previewed == page && *at == scale)
-                        || self.surfaces.get(page, scale, 0).is_some());
+                        .is_some_and(|(previewed, at, _)| *previewed == page && *at == scale);
             if cached || self.failed.contains(&key) {
                 continue;
             }
@@ -14763,7 +14768,7 @@ mod tests {
     }
 
     #[test]
-    fn rail_thumb_still_renders_when_the_page_surface_matches_its_scale() {
+    fn rail_thumb_reads_the_page_surface_at_a_coincident_scale() {
         let Some(mut session) = open_dialog() else {
             return;
         };
@@ -14776,17 +14781,16 @@ mod tests {
         let visible = ready.visible;
         let media = ready.loaded_media(visible).expect("media");
         let thumb = ready.thumb_scale_for(media);
-        // A página visível já tem superfície justo na escala da miniatura, mas
-        // o rail lê só `thumbs`: o atalho da prévia não pode valer para ele.
+        // A página visível já tem superfície justo na escala da miniatura: o
+        // rail mostra essa folha e não pede um render que cairia no mesmo cache.
         ready
             .surfaces
             .insert(visible, thumb, 0, fake_surface(visible, thumb));
         ready.thumbs.clear();
         ready.render_inflight.clear();
+        assert!(ready.thumb_surface(visible).is_some());
         let _ = ready.request_thumb_render();
-        assert!(ready
-            .render_inflight
-            .contains(&render_key(visible, thumb, 0)));
+        assert!(ready.render_inflight.is_empty());
     }
 
     #[test]
