@@ -1681,10 +1681,14 @@ fn print_seg<'a>(
     active: bool,
     on_press: Option<Message>,
 ) -> Element<'a, Message> {
+    // O rótulo toma a altura da pílula e se centra nos dois eixos: sem o
+    // `Fill` de altura ele encosta no topo e o texto sobe em relação à pílula.
     button(
         container(styled(label, kiri::TextKind::Body, active, t.ink))
             .width(Length::Fill)
-            .align_x(Alignment::Center),
+            .height(Length::Fill)
+            .align_x(Alignment::Center)
+            .align_y(Alignment::Center),
     )
     .width(Length::Fill)
     .height(Length::Fixed(kiri::Metrics::current().control))
