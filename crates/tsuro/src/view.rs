@@ -838,7 +838,7 @@ fn topbar(session: &Session, t: Tokens) -> Element<'_, Message> {
                     .iter()
                     .flat_map(|s| sig_rows(s, t.lang).map(|r| r.severity)),
             ),
-            Signatures::Unreadable(_) => None,
+            Signatures::Unreadable { .. } => None,
         };
         let shield_el: Element<'_, Message> = match dot {
             Some(dot) => tip(
@@ -4726,7 +4726,7 @@ fn stroke_selected(frame: &mut Frame, rect: &Path) {
 fn signatures_panel(ready: &Ready, t: Tokens) -> Element<'_, Message> {
     let mut col = column![section_title(t.lang.pick("Assinaturas", "Signatures"), t)].spacing(8);
     match &ready.signatures {
-        Signatures::Unreadable(reason) => {
+        Signatures::Unreadable { reason, .. } => {
             col = col
                 .push(
                     text(t.lang.pick(

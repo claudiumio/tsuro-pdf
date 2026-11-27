@@ -2055,7 +2055,21 @@ impl SettingsPanel {
 #[derive(Debug, Clone)]
 pub enum Signatures {
     Read(PdfAnalysis),
-    Unreadable(String),
+    Unreadable {
+        reason: String,
+        /// Os bytes carregam `/ByteRange`: há assinatura que o parser não leu,
+        /// então a cópia marcada pode invalidá-la e o aviso vale.
+        maybe_signed: bool,
+    },
+}
+
+impl Signatures {
+    fn unreadable(reason: String, bytes: &[u8]) -> Self {
+        Signatures::Unreadable {
+            reason,
+            maybe_signed: bytes.windows(10).any(|w| w == b"/ByteRange"),
+        }
+    }
 }
 
 #[derive(Clone)]
@@ -2299,10 +2313,13 @@ fn print_job_title(ready: &Ready) -> String {
 }
 
 /// Puro: o documento tem assinatura digital que a cópia marcada invalidaria?
-/// (Decisão separada do modal para poder testar sem rfd.) Assinaturas ilegíveis
-/// não avisam: não se sabe se há assinatura a invalidar.
+/// (Decisão separada do modal para poder testar sem rfd.) Com assinaturas
+/// ilegíveis, o aviso depende de os bytes carregarem `/ByteRange`.
 fn needs_sign_warning(signatures: &Signatures) -> bool {
-    matches!(signatures, Signatures::Read(analysis) if !analysis.signatures.is_empty())
+    match signatures {
+        Signatures::Read(analysis) => !analysis.signatures.is_empty(),
+        Signatures::Unreadable { maybe_signed, .. } => *maybe_signed,
+    }
 }
 
 /// Puro: o destino é o próprio original? O original nunca é sobrescrito.
@@ -7813,7 +7830,7 @@ impl Document {
         let pages = PageCatalog::extract_first(&engine)?;
         let signatures = match analyze_pdf(bytes.as_ref()) {
             Ok(analysis) => Signatures::Read(analysis),
-            Err(err) => Signatures::Unreadable(err.to_string()),
+            Err(err) => Signatures::unreadable(err.to_string(), bytes.as_ref()),
         };
         let content = ContentId {
             hash: recovery::content_hash(&bytes),
@@ -8083,7 +8100,10 @@ mod tests {
         };
         assert!(ready.pages.total > 0);
         match &ready.signatures {
-            Signatures::Unreadable(reason) => assert!(!reason.is_empty()),
+            Signatures::Unreadable {
+                reason,
+                maybe_signed: false,
+            } => assert!(!reason.is_empty()),
             other => panic!("esperava assinaturas não lidas, veio {other:?}"),
         }
     }
@@ -15097,7 +15117,14 @@ mod tests {
         };
         assert!(!needs_sign_warning(&analysis(Vec::new())));
         assert!(needs_sign_warning(&analysis(vec![one_signature()])));
-        assert!(!needs_sign_warning(&Signatures::Unreadable("xref".into())));
+        assert!(!needs_sign_warning(&Signatures::unreadable(
+            "xref".into(),
+            b"%PDF"
+        )));
+        assert!(needs_sign_warning(&Signatures::unreadable(
+            "xref".into(),
+            b"/Type /Sig /ByteRange [0 120 900 100]"
+        )));
     }
 
     #[test]
