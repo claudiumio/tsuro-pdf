@@ -420,10 +420,11 @@ pub(crate) fn encode(cp: &Checkpoint) -> String {
     );
     for annot in &cp.annotations {
         body.push_str(&format!(
-            "annot {} {} {} {} {} {} {} {}\n",
+            "annot {} {} {} {} {} {} {} {} {}\n",
             annot.id,
             annot.page.index(),
             kind_token(annot.kind),
+            annot.color.as_str(),
             annot.range.start,
             annot.range.end,
             encode_marker(annot.marker),
@@ -466,12 +467,36 @@ pub(crate) fn decode(raw: &str) -> Option<Checkpoint> {
 }
 
 fn decode_annot(line: &str) -> Option<Annotation> {
+    // Formato atual (10 campos): annot id page kind color start end marker quads text
+    if let Some([tag, id, page, kind, color_raw, start, end, marker, quads, text]) =
+        split_fields(line)
+    {
+        if tag != "annot" {
+            return None;
+        }
+        let annot_kind = kind_from_token(kind)?;
+        let color = crate::session::AnnotColor::from_str(color_raw);
+        return Some(Annotation {
+            id: id.parse().ok()?,
+            page: PageNo::from_index(page.parse().ok()?),
+            range: TextRange {
+                start: start.parse().ok()?,
+                end: end.parse().ok()?,
+            },
+            quads: decode_quads(quads)?,
+            kind: annot_kind,
+            color,
+            text: unescape_field(text),
+            marker: decode_marker(marker)?,
+        });
+    }
+    // Formato antigo (9 campos, pré-#132): annot id page kind start end marker quads text
     let [tag, id, page, kind, start, end, marker, quads, text] = split_fields(line)?;
     if tag != "annot" {
         return None;
     }
     let annot_kind = kind_from_token(kind)?;
-    // Anotações antigas sem cor persistida usam o default do tipo (#132).
+    // Entrada antiga sem cor: fallback para default do tipo.
     let color = crate::session::AnnotColor::default_for(annot_kind);
     Some(Annotation {
         id: id.parse().ok()?,
@@ -799,6 +824,26 @@ mod tests {
             float_bits(&cp),
             "floats bit a bit, -0.0 incluso"
         );
+    }
+
+    /// Cor não-default sobrevive ao encode/decode do journal (#132).
+    #[test]
+    fn annot_color_survives_recovery_roundtrip() {
+        use crate::session::AnnotColor;
+        let mut cp = checkpoint(&["verde"]);
+        cp.annotations[0].color = AnnotColor::Green;
+        let back = decode(&encode(&cp)).expect("checkpoint com cor decodifica");
+        assert_eq!(back.annotations[0].color, AnnotColor::Green);
+    }
+
+    /// Entrada antiga (9 campos, sem cor) cai no default do tipo.
+    #[test]
+    fn legacy_annot_without_color_defaults_to_kind() {
+        use crate::session::AnnotColor;
+        // Linha no formato antigo (separada por espaços): annot id page kind start end marker quads text
+        let line = "annot 1 0 highlight 0 4 - - texto";
+        let annot = super::decode_annot(line).expect("linha antiga válida");
+        assert_eq!(annot.color, AnnotColor::default_for(AnnotKind::Highlight));
     }
 
     #[test]
