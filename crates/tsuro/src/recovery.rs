@@ -467,30 +467,40 @@ pub(crate) fn decode(raw: &str) -> Option<Checkpoint> {
 }
 
 fn decode_annot(line: &str) -> Option<Annotation> {
-    // Formato atual (10 campos): annot id page kind color start end marker quads text
-    if let Some([tag, id, page, kind, color_raw, start, end, marker, quads, text]) =
-        split_fields(line)
-    {
-        if tag != "annot" {
-            return None;
-        }
-        let annot_kind = kind_from_token(kind)?;
-        let color = crate::session::AnnotColor::from_str(color_raw);
-        return Some(Annotation {
-            id: id.parse().ok()?,
-            page: PageNo::from_index(page.parse().ok()?),
-            range: TextRange {
-                start: start.parse().ok()?,
-                end: end.parse().ok()?,
-            },
-            quads: decode_quads(quads)?,
-            kind: annot_kind,
-            color,
-            text: unescape_field(text),
-            marker: decode_marker(marker)?,
-        });
+    parse_annot_v2(line).or_else(|| parse_annot_v1(line))
+}
+
+/// Formato atual (10 campos): annot id page kind color start end marker quads text.
+fn parse_annot_v2(line: &str) -> Option<Annotation> {
+    let [tag, id, page, kind, color_raw, start, end, marker, quads, text] = split_fields(line)?;
+    if tag != "annot" {
+        return None;
     }
-    // Formato antigo (9 campos, pré-#132): annot id page kind start end marker quads text
+    let annot_kind = kind_from_token(kind)?;
+    Some(Annotation {
+        id: id.parse().ok()?,
+        page: PageNo::from_index(page.parse().ok()?),
+        range: TextRange {
+            start: start.parse().ok()?,
+            end: end.parse().ok()?,
+        },
+        quads: decode_quads(quads)?,
+        kind: annot_kind,
+        // Cor ausente ou desconhecida → default do tipo, nunca cor inventada.
+        color: crate::session::AnnotColor::parse(color_raw)
+            .unwrap_or_else(|| crate::session::AnnotColor::default_for(annot_kind)),
+        text: unescape_field(text),
+        marker: decode_marker(marker)?,
+    })
+}
+
+/// Formato de antes do #132 (9 campos): annot id page kind start end marker
+/// quads text. `split_fields` corta em espaço e o texto da nota não escapa
+/// espaço, então uma linha antiga com texto de duas palavras casa os dez
+/// campos por acidente — e é por isso que o formato novo devolve `None` em
+/// vez de propagar a falha: quem chama cai aqui, e o checkpoint inteiro
+/// (`decode`) não se perde por causa de uma linha.
+fn parse_annot_v1(line: &str) -> Option<Annotation> {
     let [tag, id, page, kind, start, end, marker, quads, text] = split_fields(line)?;
     if tag != "annot" {
         return None;
@@ -844,6 +854,30 @@ mod tests {
         let line = "annot 1 0 highlight 0 4 - - texto";
         let annot = super::decode_annot(line).expect("linha antiga válida");
         assert_eq!(annot.color, AnnotColor::default_for(AnnotKind::Highlight));
+    }
+
+    /// Linha antiga cujo texto de nota tem espaço casa os dez campos por
+    /// acidente (o espaço não é escapado); antes do fallback isso rejeitava o
+    /// checkpoint inteiro, porque `decode` é tudo-ou-nada.
+    #[test]
+    fn legacy_annot_with_spaced_text_falls_back_to_nine_fields() {
+        use crate::session::AnnotColor;
+        let line = "annot 7 0 note 3 17 - - abc texto com espaco";
+        let annot = super::decode_annot(line).expect("linha antiga com espaço decodifica");
+        assert_eq!(annot.text, "abc texto com espaco");
+        assert_eq!(annot.range.start, 3);
+        assert_eq!(annot.range.end, 17);
+        assert_eq!(annot.color, AnnotColor::default_for(AnnotKind::Note));
+    }
+
+    /// Cor desconhecida no formato novo cai no default do tipo, não numa cor
+    /// inventada.
+    #[test]
+    fn unknown_color_token_defaults_to_kind() {
+        use crate::session::AnnotColor;
+        let line = "annot 1 0 underline purple 0 4 - - texto";
+        let annot = super::decode_annot(line).expect("linha com cor desconhecida decodifica");
+        assert_eq!(annot.color, AnnotColor::default_for(AnnotKind::Underline));
     }
 
     #[test]

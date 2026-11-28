@@ -8,6 +8,7 @@ use iced::widget::{button, container, svg, text_input, Space};
 use iced::{Background, Border, Color, Length, Shadow, Vector};
 
 use crate::i18n::Lang;
+use crate::session::AnnotColor;
 
 /// Tema do chrome. Vive no estado da app, não no `Theme` global do iced.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
@@ -822,6 +823,68 @@ pub fn worst_check_color(
     severities: impl IntoIterator<Item = CheckSeverity>,
 ) -> Option<Color> {
     severities.into_iter().max().map(|s| check_color(tokens, s))
+}
+
+/// Paleta das cores nomeadas de marcação (#132, F-MARC-05). Fonte única para
+/// a tela (`annot_fill`, `annot_stroke`, `annot_swatch`) e para a cópia salva
+/// (`annot_pdf_fill`, `annot_pdf_stroke`), para o PDF sair na cor escolhida.
+pub fn annot_fill(color: AnnotColor) -> Color {
+    let (r, g, b) = annot_fill_rgb(color);
+    let alpha = match color {
+        AnnotColor::Yellow | AnnotColor::Blue => 0.45,
+        AnnotColor::Green | AnnotColor::Red | AnnotColor::Orange => 0.40,
+    };
+    Color::from_rgba(r, g, b, alpha)
+}
+
+/// Traço de sublinhado, riscado e âncora de nota. O amarelo de traço é mais
+/// escuro que o de preenchimento: sobre a folha branca o tom original ficava
+/// em 2,37:1, abaixo dos 3:1 que a WCAG 1.4.11 pede para elemento gráfico.
+pub fn annot_stroke(color: AnnotColor) -> Color {
+    let (r, g, b) = annot_stroke_rgb(color);
+    Color::from_rgb(r, g, b)
+}
+
+/// Swatch do seletor: a cor de preenchimento sem transparência.
+pub fn annot_swatch(color: AnnotColor) -> Color {
+    let (r, g, b) = annot_fill_rgb(color);
+    Color::from_rgb(r, g, b)
+}
+
+/// Cor do PDF salvo para highlight e ícone de nota. O arquivo não guarda o
+/// alpha da tela — o leitor aplica a própria transparência — então vai opaco.
+pub fn annot_pdf_fill(color: AnnotColor) -> (u8, u8, u8) {
+    annot_pdf_rgb(annot_fill_rgb(color))
+}
+
+/// Cor do PDF salvo para as linhas (`/C` de sublinhado e riscado).
+pub fn annot_pdf_stroke(color: AnnotColor) -> (u8, u8, u8) {
+    annot_pdf_rgb(annot_stroke_rgb(color))
+}
+
+fn annot_fill_rgb(color: AnnotColor) -> (f32, f32, f32) {
+    match color {
+        AnnotColor::Yellow => (1.0, 0.85, 0.25),
+        AnnotColor::Blue => (0.1, 0.35, 0.9),
+        AnnotColor::Green => (0.2, 0.75, 0.3),
+        AnnotColor::Red => (0.85, 0.15, 0.2),
+        AnnotColor::Orange => (0.95, 0.55, 0.1),
+    }
+}
+
+fn annot_stroke_rgb(color: AnnotColor) -> (f32, f32, f32) {
+    match color {
+        AnnotColor::Yellow => (0.7, 0.5, 0.0),
+        AnnotColor::Blue => (0.1, 0.35, 0.9),
+        AnnotColor::Green => (0.15, 0.6, 0.25),
+        AnnotColor::Red => (0.85, 0.15, 0.2),
+        AnnotColor::Orange => (0.9, 0.45, 0.05),
+    }
+}
+
+fn annot_pdf_rgb((r, g, b): (f32, f32, f32)) -> (u8, u8, u8) {
+    let byte = |c: f32| (c.clamp(0.0, 1.0) * 255.0).round() as u8;
+    (byte(r), byte(g), byte(b))
 }
 
 /// Superfície elevada (spec §4/§5): fundo `elevated`, hairline `line` e a

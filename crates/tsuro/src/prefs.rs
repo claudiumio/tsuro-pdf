@@ -114,7 +114,7 @@ pub fn read_annot_color_pref() -> Option<crate::session::AnnotColor> {
     pairs()
         .into_iter()
         .find(|(k, _)| k == "annot_color")
-        .map(|(_, v)| crate::session::AnnotColor::from_str(&v))
+        .and_then(|(_, v)| crate::session::AnnotColor::parse(&v))
 }
 
 pub fn save_annot_color_pref(color: crate::session::AnnotColor) -> std::io::Result<()> {
@@ -220,6 +220,29 @@ mod tests {
             std::fs::write(&path, "theme=light\n").unwrap();
             assert_eq!(read_theme_pref(), ThemePref::Light);
             assert_eq!(read_lang(), Lang::Pt);
+        });
+        let _ = std::fs::remove_file(&path);
+    }
+
+    #[test]
+    fn annot_color_pref_roundtrips_and_unknown_reads_as_unset() {
+        let path = temp_prefs("annot-color");
+        let _ = std::fs::remove_file(&path);
+        with_prefs_path(path.clone(), || {
+            use crate::session::AnnotColor;
+            assert_eq!(read_annot_color_pref(), None, "sem chave, sem preferência");
+            save_annot_color_pref(AnnotColor::Orange).unwrap();
+            assert_eq!(read_annot_color_pref(), Some(AnnotColor::Orange));
+            // Valor desconhecido não vira uma cor: quem chama cai no default
+            // do tipo, e o prefs não força Amarelo em sublinhado/riscado.
+            std::fs::write(&path, "theme=dark\nlang=pt\nannot_color=purple\n").unwrap();
+            assert_eq!(read_annot_color_pref(), None);
+            std::fs::write(&path, "theme=dark\nlang=pt\nannot_color=\n").unwrap();
+            assert_eq!(read_annot_color_pref(), None);
+            // Trocar tema não perde a cor já escolhida.
+            save_annot_color_pref(AnnotColor::Green).unwrap();
+            save_theme_pref(ThemePref::Light).unwrap();
+            assert_eq!(read_annot_color_pref(), Some(AnnotColor::Green));
         });
         let _ = std::fs::remove_file(&path);
     }

@@ -632,10 +632,12 @@ pub enum AnnotKind {
 
 /// Cor nomeada de marcação (#132, F-MARC-05). Conjunto fechado sem semântica
 /// imposta (sem "importante" ou "dúvida"); o usuário escolhe pela cor, não
-/// pelo significado. Cada variante mapeia para tokens Kiri em `kiri.rs`.
+/// pelo significado.
 ///
-/// Persistida como string no arquivo de prefs (`annot_color=`); variantes
-/// desconhecidas caem em `Yellow` (default histórica do highlight).
+/// O estado é o nome; a paleta de tela e a do PDF salvo vivem em `kiri.rs`
+/// (`annot_fill`, `annot_stroke`, `annot_pdf_fill`, `annot_pdf_stroke`), para
+/// não haver duas tabelas de cor. Persistida como string no arquivo de prefs
+/// (`annot_color=`); valor desconhecido → sem preferência (`parse` = `None`).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum AnnotColor {
     /// Amarelo — default histórico do highlight.
@@ -671,14 +673,17 @@ impl AnnotColor {
         }
     }
 
-    /// Deserializa de prefs; valor desconhecido → `Yellow`.
-    pub fn from_str(raw: &str) -> Self {
+    /// Deserializa de prefs e do diário; `None` = valor desconhecido, quem
+    /// chamou decide o default (`default_for`). Não é `std::str::FromStr`:
+    /// a cor é um nome fechado, não texto livre.
+    pub fn parse(raw: &str) -> Option<Self> {
         match raw {
-            "blue" => AnnotColor::Blue,
-            "green" => AnnotColor::Green,
-            "red" => AnnotColor::Red,
-            "orange" => AnnotColor::Orange,
-            _ => AnnotColor::Yellow,
+            "yellow" => Some(AnnotColor::Yellow),
+            "blue" => Some(AnnotColor::Blue),
+            "green" => Some(AnnotColor::Green),
+            "red" => Some(AnnotColor::Red),
+            "orange" => Some(AnnotColor::Orange),
+            _ => None,
         }
     }
 
@@ -691,27 +696,17 @@ impl AnnotColor {
         AnnotColor::Orange,
     ];
 
-    /// Cor de renderização para highlight/fill (com alpha). Mapeia para tokens
-    /// Kiri quando disponíveis; fallback para as cores históricas hardcoded.
-    pub fn fill_color(self) -> iced::Color {
-        match self {
-            AnnotColor::Yellow => iced::Color::from_rgba(1.0, 0.85, 0.25, 0.45),
-            AnnotColor::Blue => iced::Color::from_rgba(0.1, 0.35, 0.9, 0.45),
-            AnnotColor::Green => iced::Color::from_rgba(0.2, 0.75, 0.3, 0.40),
-            AnnotColor::Red => iced::Color::from_rgba(0.85, 0.15, 0.2, 0.40),
-            AnnotColor::Orange => iced::Color::from_rgba(0.95, 0.55, 0.1, 0.40),
-        }
-    }
-
-    /// Cor de stroke para underline/strikeout/note (opaca).
-    pub fn stroke_color(self) -> iced::Color {
-        match self {
-            AnnotColor::Yellow => iced::Color::from_rgb(0.85, 0.62, 0.05),
-            AnnotColor::Blue => iced::Color::from_rgb(0.1, 0.35, 0.9),
-            AnnotColor::Green => iced::Color::from_rgb(0.15, 0.6, 0.25),
-            AnnotColor::Red => iced::Color::from_rgb(0.85, 0.15, 0.2),
-            AnnotColor::Orange => iced::Color::from_rgb(0.9, 0.45, 0.05),
-        }
+    /// Atalho de teclado do seletor: `1`–`5` na ordem de `ALL`.
+    pub fn from_digit(digit: &str) -> Option<Self> {
+        let index = match digit {
+            "1" => 0,
+            "2" => 1,
+            "3" => 2,
+            "4" => 3,
+            "5" => 4,
+            _ => return None,
+        };
+        AnnotColor::ALL.get(index).copied()
     }
 
     /// Rótulo acessível bilíngue (sem impor semântica).
@@ -6154,6 +6149,11 @@ pub(crate) fn keyboard_message(
         // N abre o rascunho de nota da seleção (handler ignora sem seleção
         // com texto; com draft já aberto é no-op para não apagar o digitado).
         Key::Character("n" | "N") => Some(Message::Annotate(AnnotKind::Note)),
+        // 1–5 escolhem a cor nomeada da próxima marcação (#132), na ordem de
+        // `AnnotColor::ALL`: teclado alcança o seletor sem clique.
+        Key::Character(digit @ ("1" | "2" | "3" | "4" | "5")) => {
+            AnnotColor::from_digit(digit).map(Message::SetAnnotColor)
+        }
         // M copia os destaques como Markdown (o handler ignora sem anotações).
         Key::Character("m" | "M") => Some(Message::CopyAnnotations),
         Key::Named(Named::Delete | Named::Backspace) => Some(Message::DeleteSelectedAnnot),
@@ -10984,6 +10984,72 @@ mod tests {
             }
             _ => unreachable!(),
         }
+    }
+
+    /// Preferência de cor (#132): vale para marcações novas, não mexe nas
+    /// anteriores, e desfazer/refazer devolve a cor da operação original.
+    #[test]
+    fn annot_color_pref_applies_to_new_marks_and_survives_undo() {
+        let Some(mut ready) = sample_ready() else {
+            return;
+        };
+        select_first_glyphs(&mut ready, 0, 2);
+        let mut session = Session::Ready(Tabs::single(ready));
+        // Sem preferência salva: o tipo manda (Underline = Azul).
+        apply(&mut session, Message::Annotate(AnnotKind::Underline));
+        apply(&mut session, Message::SetAnnotColor(AnnotColor::Green));
+        match &mut session {
+            Session::Ready(ready) => select_first_glyphs(ready, 2, 4),
+            _ => unreachable!(),
+        }
+        apply(&mut session, Message::Annotate(AnnotKind::Underline));
+        match &session {
+            Session::Ready(ready) => {
+                assert_eq!(ready.annotations.len(), 2);
+                assert_eq!(
+                    ready.annotations[0].color,
+                    AnnotColor::Blue,
+                    "marcação anterior não muda de cor"
+                );
+                assert_eq!(ready.annotations[1].color, AnnotColor::Green);
+            }
+            _ => unreachable!(),
+        }
+        apply(&mut session, Message::AnnotUndo);
+        apply(&mut session, Message::AnnotRedo);
+        match &session {
+            Session::Ready(ready) => {
+                assert_eq!(ready.annotations.len(), 2);
+                assert_eq!(
+                    ready.annotations[1].color,
+                    AnnotColor::Green,
+                    "desfazer e refazer devolve a cor da operação"
+                );
+            }
+            _ => unreachable!(),
+        }
+    }
+
+    /// Nota nova herda a preferência; nota editada mantém a cor que já tinha.
+    #[test]
+    fn note_takes_pref_color_and_editing_keeps_it() {
+        let Some(mut ready) = sample_ready() else {
+            return;
+        };
+        ready.annot_color_pref = Some(AnnotColor::Green);
+        let note = note_on_selection(&mut ready, "verde");
+        assert_eq!(note.color, AnnotColor::Green);
+        ready.annot_color_pref = Some(AnnotColor::Orange);
+        assert!(ready.open_note_draft_for_id(note.id));
+        ready.note_draft.as_mut().unwrap().content = text_editor::Content::with_text("editada");
+        assert!(ready.save_note_draft());
+        let edited = ready.annotations.last().expect("nota editada");
+        assert_eq!(edited.text, "editada");
+        assert_eq!(
+            edited.color,
+            AnnotColor::Green,
+            "editar texto não troca a cor da nota"
+        );
     }
 
     #[test]
