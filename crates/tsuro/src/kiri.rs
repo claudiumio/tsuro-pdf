@@ -1124,6 +1124,37 @@ pub fn hud_primary_style(tokens: Tokens) -> impl Fn(&iced::Theme, button::Status
     }
 }
 
+/// Ação primária de painel (spec §5): acento cheio enquanto disponível e
+/// superfície neutra com texto terciário quando desligada por indisponibilidade
+/// — um CTA que não age não pode competir com o acento do resto da tela. Em
+/// envio o botão também está desligado, mas ali o trabalho está em curso: o
+/// acento fica, porque é status e não indisponibilidade.
+pub fn panel_primary_style(
+    tokens: Tokens,
+    busy: bool,
+) -> impl Fn(&iced::Theme, button::Status) -> button::Style {
+    move |_theme, status| {
+        let unavailable = matches!(status, button::Status::Disabled) && !busy;
+        let background = if unavailable {
+            tokens.track
+        } else {
+            match status {
+                button::Status::Hovered | button::Status::Pressed => lift(tokens.accent, 0.08),
+                _ => tokens.accent,
+            }
+        };
+        button::Style {
+            background: Some(Background::Color(background)),
+            text_color: if unavailable { tokens.faint } else { tokens.bg },
+            border: Border {
+                radius: 99.0.into(),
+                ..Border::default()
+            },
+            shadow: Shadow::default(),
+        }
+    }
+}
+
 /// Ação secundária ghost do HUD/overlays (Stitch): só texto `muted`, que
 /// sobe para `ink` com fundo `hover`.
 pub fn hud_ghost_style(tokens: Tokens) -> impl Fn(&iced::Theme, button::Status) -> button::Style {
@@ -1931,5 +1962,34 @@ pub fn sheet_action_style(
             },
             ..button::Style::default()
         }
+    }
+}
+
+#[cfg(test)]
+mod print_panel_tests {
+    use super::*;
+
+    /// Ação primária do painel: ligada é acento, indisponível é superfície
+    /// neutra com texto terciário — o CTA desligado não disputa com o acento.
+    #[test]
+    fn panel_primary_reads_disabled_as_absent_not_dimmed() {
+        let tokens = Tokens::for_theme(Theme::Dark, Lang::Pt);
+        let active = panel_primary_style(tokens, false)(&iced::Theme::Dark, button::Status::Active);
+        assert_eq!(
+            active.background,
+            Some(Background::Color(tokens.accent)),
+            "disponível usa o acento"
+        );
+        let off = panel_primary_style(tokens, false)(&iced::Theme::Dark, button::Status::Disabled);
+        assert_eq!(
+            off.background,
+            Some(Background::Color(tokens.track)),
+            "indisponível sai do acento"
+        );
+        assert_eq!(off.text_color, tokens.faint);
+        // Em envio o botão está desligado, mas o acento fica: é status.
+        let sending =
+            panel_primary_style(tokens, true)(&iced::Theme::Dark, button::Status::Disabled);
+        assert_eq!(sending.background, Some(Background::Color(tokens.accent)));
     }
 }
