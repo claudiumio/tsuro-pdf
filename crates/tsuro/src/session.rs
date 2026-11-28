@@ -2049,12 +2049,39 @@ impl SettingsPanel {
     }
 }
 
+/// Assinaturas do documento. A leitura roda no `tsuro-sign` (lopdf) e pode
+/// recusar um arquivo que o pdfium pagina; nesse caso o documento abre e o
+/// painel declara que as assinaturas não puderam ser lidas.
+#[derive(Debug, Clone)]
+pub enum Signatures {
+    Read(PdfAnalysis),
+    Unreadable {
+        reason: String,
+        /// Os bytes carregam `/ByteRange`, o marcador que os produtores comuns
+        /// deixam em claro na assinatura: a cópia marcada pode invalidá-la, e o
+        /// aviso vale. `/ObjStm` foi recusado como gatilho porque quase todo PDF
+        /// moderno o tem, e o aviso afirmaria uma assinatura que talvez não exista.
+        /// Não cobre o arquivo assinado com dicionário em object stream e xref
+        /// quebrado, que salva cópia sem aviso.
+        maybe_signed: bool,
+    },
+}
+
+impl Signatures {
+    fn unreadable(reason: String, bytes: &[u8]) -> Self {
+        Signatures::Unreadable {
+            reason,
+            maybe_signed: bytes.windows(10).any(|w| w == b"/ByteRange"),
+        }
+    }
+}
+
 #[derive(Clone)]
 pub struct Ready {
     pub source: OpenSource,
     engine: PdfiumEngine,
     pages: PageCatalog,
-    pub signatures: PdfAnalysis,
+    pub signatures: Signatures,
     pub zoom: Zoom,
     pub visible: PageNo,
     /// Histórico voltar/avançar; `current()` acompanha `visible` (página alcançada
@@ -2302,9 +2329,13 @@ fn print_job_title(ready: &Ready) -> String {
 }
 
 /// Puro: o documento tem assinatura digital que a cópia marcada invalidaria?
-/// (Decisão separada do modal para poder testar sem rfd.)
-fn needs_sign_warning(signatures: &PdfAnalysis) -> bool {
-    !signatures.signatures.is_empty()
+/// (Decisão separada do modal para poder testar sem rfd.) Com assinaturas
+/// ilegíveis, o aviso depende de os bytes carregarem `/ByteRange`.
+fn needs_sign_warning(signatures: &Signatures) -> bool {
+    match signatures {
+        Signatures::Read(analysis) => !analysis.signatures.is_empty(),
+        Signatures::Unreadable { maybe_signed, .. } => *maybe_signed,
+    }
 }
 
 /// Puro: o destino é o próprio original? O original nunca é sobrescrito.
@@ -2982,7 +3013,6 @@ pub enum Message {
 pub enum OpenError {
     Io(String),
     Engine(String),
-    Sign(String),
 }
 
 impl OpenError {
@@ -3023,7 +3053,6 @@ impl OpenError {
                     lang.pick("não foi possível abrir o PDF", "could not open the PDF")
                 ),
             },
-            OpenError::Sign(err) => format!("{}: {err}", lang.pick("assinaturas", "signatures")),
         }
     }
 }
@@ -8103,7 +8132,10 @@ impl Document {
         let engine =
             PdfiumEngine::open(bytes.clone()).map_err(|e| OpenError::Engine(e.to_string()))?;
         let pages = PageCatalog::extract_first(&engine)?;
-        let signatures = analyze_pdf(bytes.as_ref()).map_err(|e| OpenError::Sign(e.to_string()))?;
+        let signatures = match analyze_pdf(bytes.as_ref()) {
+            Ok(analysis) => Signatures::Read(analysis),
+            Err(err) => Signatures::unreadable(err.to_string(), bytes.as_ref()),
+        };
         let content = ContentId {
             hash: recovery::content_hash(&bytes),
             len: bytes.len() as u64,
@@ -8330,6 +8362,58 @@ mod tests {
     fn open_error_engine_full_sentence_is_not_double_prefixed() {
         let err = OpenError::Engine("não foi possível abrir o PDF".into());
         assert_eq!(err.message(Lang::Pt), "não foi possível abrir o PDF");
+    }
+
+    /// PDF que o pdfium pagina e o lopdf recusa: o `startxref` do trailer
+    /// aponta para um byte antes da tabela. É a forma que um gerador com
+    /// offset errado (ou um checkout que converte o arquivo para CRLF) deixa.
+    fn broken_xref_bytes() -> Option<Vec<u8>> {
+        let path =
+            PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../public/samples/guia-folio.pdf");
+        let mut bytes = std::fs::read(&path).ok()?;
+        let key = b"startxref";
+        let key_at = bytes.windows(key.len()).rposition(|w| w == key)?;
+        let rest = key_at + key.len();
+        let digits_at = rest + bytes[rest..].iter().position(u8::is_ascii_digit)?;
+        let width = bytes[digits_at..]
+            .iter()
+            .take_while(|b| b.is_ascii_digit())
+            .count();
+        let offset: usize = std::str::from_utf8(&bytes[digits_at..digits_at + width])
+            .ok()?
+            .parse()
+            .ok()?;
+        assert_eq!(&bytes[offset..offset + 4], b"xref");
+        let wrong = format!("{:0width$}", offset - 1);
+        bytes[digits_at..digits_at + width].copy_from_slice(wrong.as_bytes());
+        Some(bytes)
+    }
+
+    #[test]
+    fn open_degrades_signatures_when_lopdf_refuses_the_xref() {
+        let Some(bytes) = broken_xref_bytes() else {
+            return;
+        };
+        assert!(
+            analyze_pdf(&bytes).is_err(),
+            "o lopdf aceitou o xref quebrado; a fixture do teste não reproduz o defeito"
+        );
+        let path =
+            PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../public/samples/guia-folio.pdf");
+        let ready = match Document::from_bytes(OpenSource::Path(path), Arc::<[u8]>::from(bytes)) {
+            Ok(ready) => ready,
+            // Só o motor depende da libpdfium; sem ela o resto não roda.
+            Err(OpenError::Engine(err)) if err.contains("Pdfium") => return,
+            Err(err) => panic!("o documento não abriu: {}", err.message(Lang::Pt)),
+        };
+        assert!(ready.pages.total > 0);
+        match &ready.signatures {
+            Signatures::Unreadable {
+                reason,
+                maybe_signed: false,
+            } => assert!(!reason.is_empty()),
+            other => panic!("esperava assinaturas não lidas, veio {other:?}"),
+        }
     }
     use crate::page::Glyph;
 
@@ -15659,13 +15743,23 @@ mod tests {
 
     #[test]
     fn sign_warning_only_for_signed_documents() {
-        let analysis = |signatures| PdfAnalysis {
-            page_count_hint: Some(1),
-            has_acro_form: false,
-            signatures,
+        let analysis = |signatures| {
+            Signatures::Read(PdfAnalysis {
+                page_count_hint: Some(1),
+                has_acro_form: false,
+                signatures,
+            })
         };
         assert!(!needs_sign_warning(&analysis(Vec::new())));
         assert!(needs_sign_warning(&analysis(vec![one_signature()])));
+        assert!(!needs_sign_warning(&Signatures::unreadable(
+            "xref".into(),
+            b"%PDF"
+        )));
+        assert!(needs_sign_warning(&Signatures::unreadable(
+            "xref".into(),
+            b"/Type /Sig /ByteRange [0 120 900 100]"
+        )));
     }
 
     #[test]
