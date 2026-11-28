@@ -17,8 +17,8 @@ use std::path::{Path, PathBuf};
 use crate::page::PageNo;
 use crate::positions::{escape_field, escape_path, file_identity, unescape_field, unescape_path};
 
-/// Entradas guardadas por arquivo (cap LRU).
-pub const MAX_BOOKMARKS: usize = 50;
+/// Marcadores guardados no arquivo, todos os documentos somados (cap LRU).
+const MAX_BOOKMARKS: usize = 50;
 
 /// Um marcador pessoal: página + nota opcional.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -58,7 +58,7 @@ pub fn with_bookmarks_path<R>(path: PathBuf, f: impl FnOnce() -> R) -> R {
     }
 }
 
-pub fn bookmarks_file() -> PathBuf {
+fn bookmarks_file() -> PathBuf {
     #[cfg(test)]
     {
         if let Some(p) = BOOKMARKS_PATH.with(|slot| slot.borrow().clone()) {
@@ -133,12 +133,17 @@ fn decode_entry(line: &str) -> Option<BookmarkEntry> {
     })
 }
 
-/// Lê todas as entradas (mais recente primeiro); erro ou lixo → ignora.
-pub fn read_bookmarks() -> Vec<BookmarkEntry> {
-    let Ok(raw) = std::fs::read_to_string(bookmarks_file()) else {
-        return Vec::new();
+/// Lê todas as entradas (mais recente primeiro). Arquivo ausente é lista
+/// vazia; qualquer outro erro de leitura sobe para o chamador, que não pode
+/// reescrever a lista a partir de algo que não conseguiu ler. Linha malformada
+/// é ignorada.
+pub fn read_bookmarks() -> std::io::Result<Vec<BookmarkEntry>> {
+    let raw = match std::fs::read_to_string(bookmarks_file()) {
+        Ok(raw) => raw,
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(Vec::new()),
+        Err(e) => return Err(e),
     };
-    raw.lines().filter_map(decode_entry).collect()
+    Ok(raw.lines().filter_map(decode_entry).collect())
 }
 
 pub fn save_bookmarks(entries: &[BookmarkEntry]) -> std::io::Result<()> {
@@ -158,7 +163,7 @@ pub fn save_bookmarks(entries: &[BookmarkEntry]) -> std::io::Result<()> {
 fn identity_matches(entry: &BookmarkEntry, current: Option<(u64, u64)>) -> bool {
     match current {
         Some((size, mtime)) => {
-            entry.size == size && crate::positions::mtime_matches_pub(entry.mtime, mtime)
+            entry.size == size && crate::positions::mtime_matches(entry.mtime, mtime)
         }
         None => false,
     }
@@ -174,14 +179,6 @@ pub fn find_bookmarks<'a>(entries: &'a [BookmarkEntry], path: &Path) -> Vec<&'a 
         .collect()
 }
 
-/// Verifica se já existe marcador para esta página neste arquivo.
-pub fn has_bookmark_at(entries: &[BookmarkEntry], path: &Path, page: PageNo) -> bool {
-    let identity = file_identity(path);
-    entries
-        .iter()
-        .any(|e| e.path == path && e.bookmark.page == page && identity_matches(e, identity))
-}
-
 /// Toggle: adiciona se não existe, remove se já existe na mesma página.
 /// Retorna `true` se adicionou, `false` se removeu.
 pub fn toggle_bookmark(
@@ -190,9 +187,12 @@ pub fn toggle_bookmark(
     bookmark: Bookmark,
     identity: (u64, u64),
 ) -> (Vec<BookmarkEntry>, bool) {
-    // Remove entrada existente na mesma página e mesmo arquivo (toggle).
+    // Só a entrada com a identidade atual conta como o marcador desta página:
+    // uma linha de quando o arquivo era outro não bloqueia a criação.
     let before = entries.len();
-    entries.retain(|e| !(e.path == path && e.bookmark.page == bookmark.page));
+    entries.retain(|e| {
+        !(e.path == path && e.bookmark.page == bookmark.page && identity_matches(e, Some(identity)))
+    });
     let removed = entries.len() < before;
 
     if removed {
@@ -213,16 +213,6 @@ pub fn toggle_bookmark(
         entries.truncate(MAX_BOOKMARKS);
         (entries, true)
     }
-}
-
-/// Remove marcador específico por página. Retorna as entradas atualizadas.
-pub fn remove_bookmark(
-    mut entries: Vec<BookmarkEntry>,
-    path: &Path,
-    page: PageNo,
-) -> Vec<BookmarkEntry> {
-    entries.retain(|e| !(e.path == path && e.bookmark.page == page));
-    entries
 }
 
 #[cfg(test)]
@@ -257,9 +247,9 @@ mod tests {
         let path = temp_bookmarks("missing");
         let _ = std::fs::remove_file(&path);
         with_bookmarks_path(path.clone(), || {
-            assert!(read_bookmarks().is_empty());
+            assert!(read_bookmarks().unwrap().is_empty());
             std::fs::write(&path, "lixo\n1\t\n").unwrap();
-            assert!(read_bookmarks().is_empty());
+            assert!(read_bookmarks().unwrap().is_empty());
         });
         let _ = std::fs::remove_file(&path);
     }
@@ -274,7 +264,7 @@ mod tests {
                 entry("/doc/b.pdf", 0, None),
             ];
             save_bookmarks(&entries).unwrap();
-            let back = read_bookmarks();
+            let back = read_bookmarks().unwrap();
             assert_eq!(back.len(), 2);
             assert_eq!(back[0].bookmark.page, PageNo::from_index(5));
             assert_eq!(
@@ -341,7 +331,7 @@ mod tests {
             }
             assert_eq!(entries.len(), MAX_BOOKMARKS);
             save_bookmarks(&entries).unwrap();
-            let back = read_bookmarks();
+            let back = read_bookmarks().unwrap();
             assert_eq!(back.len(), MAX_BOOKMARKS);
         });
         let _ = std::fs::remove_file(&path);
@@ -369,7 +359,7 @@ mod tests {
                 },
             }];
             save_bookmarks(&entries).unwrap();
-            let back = read_bookmarks();
+            let back = read_bookmarks().unwrap();
             assert_eq!(back.len(), 1);
             assert_eq!(
                 back[0].bookmark.note.as_deref(),
@@ -386,7 +376,7 @@ mod tests {
         let _ = std::fs::remove_file(&path);
         with_bookmarks_path(path.clone(), || {
             save_bookmarks(&[entry("/doc/a.pdf", 1, None)]).unwrap();
-            assert_eq!(read_bookmarks().len(), 1);
+            assert_eq!(read_bookmarks().unwrap().len(), 1);
             let tmp = path.with_file_name(format!(
                 "{}.tmp",
                 path.file_name().unwrap().to_string_lossy()
@@ -394,5 +384,34 @@ mod tests {
             assert!(!tmp.exists());
         });
         let _ = std::fs::remove_file(&path);
+    }
+
+    #[test]
+    fn read_error_is_not_an_empty_store() {
+        let path = temp_bookmarks("dir");
+        let _ = std::fs::remove_file(&path);
+        std::fs::create_dir_all(&path).unwrap();
+        with_bookmarks_path(path.clone(), || {
+            assert!(read_bookmarks().is_err(), "diretório não é lista vazia");
+        });
+        let _ = std::fs::remove_dir(&path);
+    }
+
+    #[test]
+    fn stale_entry_does_not_block_a_new_toggle() {
+        let stale = entry("/doc/a.pdf", 3, None);
+        let (result, added) = toggle_bookmark(
+            vec![stale.clone()],
+            PathBuf::from("/doc/a.pdf"),
+            Bookmark {
+                page: PageNo::from_index(3),
+                note: None,
+            },
+            (999, 888),
+        );
+        assert!(added, "identidade antiga não é o marcador desta página");
+        assert_eq!(result.len(), 2);
+        assert_eq!(result[0].size, 999);
+        assert_eq!(result[1], stale);
     }
 }

@@ -1022,8 +1022,7 @@ pub(crate) enum PaletteItem {
     /// Marcador pessoal do documento ativo (#134, F-MARC-07).
     BookmarkHit {
         page: PageNo,
-        note: Option<String>,
-        /// "Marcador · 5" — pré-formatado porque subtitle() retorna &str.
+        /// "Marcador · 5" — a linha única do item, sem segunda linha.
         label: String,
     },
 }
@@ -1078,7 +1077,7 @@ impl PaletteItem {
             Self::AnnotHit { note, excerpt, .. } => {
                 note.as_deref().or(excerpt.as_deref()).unwrap_or("")
             }
-            Self::BookmarkHit { note, .. } => note.as_deref().unwrap_or(""),
+            Self::BookmarkHit { label, .. } => label,
         }
     }
 
@@ -1086,8 +1085,9 @@ impl PaletteItem {
         match self {
             Self::Action { hint, .. } => *hint,
             Self::GlobalHit { path, .. } => path.file_name().and_then(|name| name.to_str()),
-            Self::AnnotHit { label, .. } | Self::BookmarkHit { label, .. } => Some(label.as_str()),
-            Self::DocHit { .. }
+            Self::AnnotHit { label, .. } => Some(label.as_str()),
+            Self::BookmarkHit { .. }
+            | Self::DocHit { .. }
             | Self::OutlineRow { .. }
             | Self::Recent { .. }
             | Self::File { .. } => None,
@@ -1451,11 +1451,7 @@ impl PaletteContext {
                     (
                         s,
                         SourceRank::Bookmark,
-                        PaletteItem::BookmarkHit {
-                            page: *page,
-                            note: note.clone(),
-                            label,
-                        },
+                        PaletteItem::BookmarkHit { page: *page, label },
                     )
                 })
             })
@@ -3576,24 +3572,43 @@ impl Session {
                     let ready = tabs.active_mut();
                     let page = ready.visible;
                     let path = ready.source.path().to_path_buf();
-                    let identity = crate::positions::file_identity(&path);
-                    let all = crate::bookmarks::read_bookmarks();
+                    // Sem identidade não há marcador que volte a casar na
+                    // reabertura: recusar é melhor que gravar uma linha morta.
+                    let Some(identity) = crate::positions::file_identity(&path) else {
+                        ready.save_status = Some(
+                            ready
+                                .lang
+                                .pick("Arquivo indisponível", "File unavailable")
+                                .to_string(),
+                        );
+                        return Task::none();
+                    };
+                    // Falha de leitura não é "sem marcadores": gravar daqui
+                    // apagaria a lista inteira, então a alteração não é tentada.
+                    let all = match crate::bookmarks::read_bookmarks() {
+                        Ok(all) => all,
+                        Err(e) => {
+                            ready.save_status = Some(format!(
+                                "{}: {e}",
+                                ready
+                                    .lang
+                                    .pick("Erro ao ler marcador", "Failed to read bookmark")
+                            ));
+                            return Task::none();
+                        }
+                    };
                     let (updated, added) = crate::bookmarks::toggle_bookmark(
                         all,
                         path.clone(),
                         crate::bookmarks::Bookmark { page, note: None },
-                        identity.unwrap_or((0, 0)),
+                        identity,
                     );
                     match crate::bookmarks::save_bookmarks(&updated) {
                         Ok(()) => {
-                            let current_identity = crate::positions::file_identity(&path);
                             ready.bookmarks = crate::bookmarks::find_bookmarks(&updated, &path)
                                 .into_iter()
                                 .cloned()
                                 .collect();
-                            // Revalida identidade: se o arquivo mudou entre toggle e reload,
-                            // find_bookmarks já filtra; aqui só garantimos consistência.
-                            let _ = current_identity;
                             ready.save_status = Some(if added {
                                 ready
                                     .lang
@@ -7889,7 +7904,8 @@ impl Document {
             doc_scroll_y: 0.0,
             recents: Vec::new(),
             bookmarks: {
-                let all = crate::bookmarks::read_bookmarks();
+                // Store ilegível não impede abrir o PDF: só some a lista.
+                let all = crate::bookmarks::read_bookmarks().unwrap_or_default();
                 crate::bookmarks::find_bookmarks(&all, &doc_path)
                     .into_iter()
                     .cloned()
@@ -15749,6 +15765,38 @@ mod tests {
         assert_eq!(global.title(), "achado");
         assert_eq!(global.subtitle(), Some("guia-folio.pdf"));
         assert_eq!(global.icon(), "pages");
+    }
+
+    #[test]
+    fn bookmark_palette_row_titles_from_its_label() {
+        let item = PaletteItem::BookmarkHit {
+            page: PageNo::from_index(4),
+            label: "Marcador · 5".into(),
+        };
+        assert_eq!(item.title(), "Marcador · 5", "sem nota, a linha tem título");
+        assert_eq!(item.subtitle(), None, "o rótulo não se repete embaixo");
+        assert_eq!(item.icon(), "pages");
+    }
+
+    #[test]
+    fn toggle_bookmark_reports_read_failure_without_rewriting_the_store() {
+        let Some(ready) = sample_ready() else {
+            return;
+        };
+        let store =
+            std::env::temp_dir().join(format!("tsuro-bookmarks-unit-{}-dir", std::process::id()));
+        let _ = std::fs::remove_file(&store);
+        std::fs::create_dir_all(&store).unwrap();
+        let mut session = Session::Ready(Tabs::single(ready));
+        crate::bookmarks::with_bookmarks_path(store.clone(), || {
+            apply(&mut session, Message::ToggleBookmark);
+            let doc = active_ready(&session);
+            assert!(doc.bookmarks.is_empty());
+            let status = doc.save_status.clone().unwrap_or_default();
+            assert!(status.contains("Erro ao ler marcador"), "{status}");
+        });
+        assert!(store.is_dir(), "o store não virou arquivo");
+        let _ = std::fs::remove_dir(&store);
     }
 
     #[test]
