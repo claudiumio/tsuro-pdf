@@ -420,10 +420,11 @@ pub(crate) fn encode(cp: &Checkpoint) -> String {
     );
     for annot in &cp.annotations {
         body.push_str(&format!(
-            "annot {} {} {} {} {} {} {} {}\n",
+            "annot {} {} {} {} {} {} {} {} {}\n",
             annot.id,
             annot.page.index(),
             kind_token(annot.kind),
+            annot.color.as_str(),
             annot.range.start,
             annot.range.end,
             encode_marker(annot.marker),
@@ -466,10 +467,16 @@ pub(crate) fn decode(raw: &str) -> Option<Checkpoint> {
 }
 
 fn decode_annot(line: &str) -> Option<Annotation> {
-    let [tag, id, page, kind, start, end, marker, quads, text] = split_fields(line)?;
+    parse_annot_v2(line).or_else(|| parse_annot_v1(line))
+}
+
+/// Formato atual (10 campos): annot id page kind color start end marker quads text.
+fn parse_annot_v2(line: &str) -> Option<Annotation> {
+    let [tag, id, page, kind, color_raw, start, end, marker, quads, text] = split_fields(line)?;
     if tag != "annot" {
         return None;
     }
+    let annot_kind = kind_from_token(kind)?;
     Some(Annotation {
         id: id.parse().ok()?,
         page: PageNo::from_index(page.parse().ok()?),
@@ -478,7 +485,39 @@ fn decode_annot(line: &str) -> Option<Annotation> {
             end: end.parse().ok()?,
         },
         quads: decode_quads(quads)?,
-        kind: kind_from_token(kind)?,
+        kind: annot_kind,
+        // Cor ausente ou desconhecida → default do tipo, nunca cor inventada.
+        color: crate::session::AnnotColor::parse(color_raw)
+            .unwrap_or_else(|| crate::session::AnnotColor::default_for(annot_kind)),
+        text: unescape_field(text),
+        marker: decode_marker(marker)?,
+    })
+}
+
+/// Formato de antes do #132 (9 campos): annot id page kind start end marker
+/// quads text. `split_fields` corta em espaço e o texto da nota não escapa
+/// espaço, então uma linha antiga com texto de duas palavras casa os dez
+/// campos por acidente — e é por isso que o formato novo devolve `None` em
+/// vez de propagar a falha: quem chama cai aqui, e o checkpoint inteiro
+/// (`decode`) não se perde por causa de uma linha.
+fn parse_annot_v1(line: &str) -> Option<Annotation> {
+    let [tag, id, page, kind, start, end, marker, quads, text] = split_fields(line)?;
+    if tag != "annot" {
+        return None;
+    }
+    let annot_kind = kind_from_token(kind)?;
+    // Entrada antiga sem cor: fallback para default do tipo.
+    let color = crate::session::AnnotColor::default_for(annot_kind);
+    Some(Annotation {
+        id: id.parse().ok()?,
+        page: PageNo::from_index(page.parse().ok()?),
+        range: TextRange {
+            start: start.parse().ok()?,
+            end: end.parse().ok()?,
+        },
+        quads: decode_quads(quads)?,
+        kind: annot_kind,
+        color,
         text: unescape_field(text),
         marker: decode_marker(marker)?,
     })
@@ -716,6 +755,7 @@ mod tests {
             range: TextRange { start: 3, end: 17 },
             quads: vec![Quad::from_rect(10.0, 20.0, 110.0, 32.5)],
             kind,
+            color: crate::session::AnnotColor::default_for(kind),
             text: text.to_string(),
             marker: None,
         }
@@ -794,6 +834,50 @@ mod tests {
             float_bits(&cp),
             "floats bit a bit, -0.0 incluso"
         );
+    }
+
+    /// Cor não-default sobrevive ao encode/decode do journal (#132).
+    #[test]
+    fn annot_color_survives_recovery_roundtrip() {
+        use crate::session::AnnotColor;
+        let mut cp = checkpoint(&["verde"]);
+        cp.annotations[0].color = AnnotColor::Green;
+        let back = decode(&encode(&cp)).expect("checkpoint com cor decodifica");
+        assert_eq!(back.annotations[0].color, AnnotColor::Green);
+    }
+
+    /// Entrada antiga (9 campos, sem cor) cai no default do tipo.
+    #[test]
+    fn legacy_annot_without_color_defaults_to_kind() {
+        use crate::session::AnnotColor;
+        // Linha no formato antigo (separada por espaços): annot id page kind start end marker quads text
+        let line = "annot 1 0 highlight 0 4 - - texto";
+        let annot = super::decode_annot(line).expect("linha antiga válida");
+        assert_eq!(annot.color, AnnotColor::default_for(AnnotKind::Highlight));
+    }
+
+    /// Linha antiga cujo texto de nota tem espaço casa os dez campos por
+    /// acidente (o espaço não é escapado); antes do fallback isso rejeitava o
+    /// checkpoint inteiro, porque `decode` é tudo-ou-nada.
+    #[test]
+    fn legacy_annot_with_spaced_text_falls_back_to_nine_fields() {
+        use crate::session::AnnotColor;
+        let line = "annot 7 0 note 3 17 - - abc texto com espaco";
+        let annot = super::decode_annot(line).expect("linha antiga com espaço decodifica");
+        assert_eq!(annot.text, "abc texto com espaco");
+        assert_eq!(annot.range.start, 3);
+        assert_eq!(annot.range.end, 17);
+        assert_eq!(annot.color, AnnotColor::default_for(AnnotKind::Note));
+    }
+
+    /// Cor desconhecida no formato novo cai no default do tipo, não numa cor
+    /// inventada.
+    #[test]
+    fn unknown_color_token_defaults_to_kind() {
+        use crate::session::AnnotColor;
+        let line = "annot 1 0 underline purple 0 4 - - texto";
+        let annot = super::decode_annot(line).expect("linha com cor desconhecida decodifica");
+        assert_eq!(annot.color, AnnotColor::default_for(AnnotKind::Underline));
     }
 
     #[test]

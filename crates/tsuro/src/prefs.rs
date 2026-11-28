@@ -89,7 +89,7 @@ pub fn read_theme_pref() -> ThemePref {
 }
 
 pub fn save_theme_pref(pref: ThemePref) -> std::io::Result<()> {
-    write_prefs(pref, read_lang())
+    write_prefs(pref, read_lang(), read_annot_color_pref())
 }
 
 pub fn read_lang() -> Lang {
@@ -105,7 +105,26 @@ pub fn read_lang() -> Lang {
 }
 
 pub fn save_lang(lang: Lang) -> std::io::Result<()> {
-    write_prefs(read_theme_pref(), lang)
+    write_prefs(read_theme_pref(), lang, read_annot_color_pref())
+}
+
+/// Cor preferida para novas marcações (#132, F-MARC-05). `None` = sem
+/// preferência salva (usa default por tipo). Valor desconhecido → `None`.
+pub fn read_annot_color_pref() -> Option<crate::session::AnnotColor> {
+    pairs()
+        .into_iter()
+        .find(|(k, _)| k == "annot_color")
+        .and_then(|(_, v)| crate::session::AnnotColor::parse(&v))
+}
+
+pub fn save_annot_color_pref(color: crate::session::AnnotColor) -> std::io::Result<()> {
+    write_prefs(read_theme_pref(), read_lang(), Some(color))
+}
+
+/// "Padrão" no seletor de cor (#132): apaga a chave `annot_color` do prefs,
+/// para a próxima sessão voltar aos defaults por tipo.
+pub fn clear_annot_color_pref() -> std::io::Result<()> {
+    write_prefs(read_theme_pref(), read_lang(), None)
 }
 
 fn pairs() -> Vec<(String, String)> {
@@ -120,7 +139,11 @@ fn pairs() -> Vec<(String, String)> {
         .collect()
 }
 
-fn write_prefs(pref: ThemePref, lang: Lang) -> std::io::Result<()> {
+fn write_prefs(
+    pref: ThemePref,
+    lang: Lang,
+    annot_color: Option<crate::session::AnnotColor>,
+) -> std::io::Result<()> {
     let file = prefs_file();
     if let Some(parent) = file.parent() {
         std::fs::create_dir_all(parent)?;
@@ -134,7 +157,11 @@ fn write_prefs(pref: ThemePref, lang: Lang) -> std::io::Result<()> {
         Lang::Pt => "pt",
         Lang::En => "en",
     };
-    crate::io_atomic::write_file(&file, format!("theme={theme}\nlang={lang}\n"))
+    let mut body = format!("theme={theme}\nlang={lang}\n");
+    if let Some(color) = annot_color {
+        body.push_str(&format!("annot_color={}\n", color.as_str()));
+    }
+    crate::io_atomic::write_file(&file, body)
 }
 
 #[cfg(test)]
@@ -199,6 +226,39 @@ mod tests {
             std::fs::write(&path, "theme=light\n").unwrap();
             assert_eq!(read_theme_pref(), ThemePref::Light);
             assert_eq!(read_lang(), Lang::Pt);
+        });
+        let _ = std::fs::remove_file(&path);
+    }
+
+    #[test]
+    fn annot_color_pref_roundtrips_and_unknown_reads_as_unset() {
+        let path = temp_prefs("annot-color");
+        let _ = std::fs::remove_file(&path);
+        with_prefs_path(path.clone(), || {
+            use crate::session::AnnotColor;
+            assert_eq!(read_annot_color_pref(), None, "sem chave, sem preferência");
+            save_annot_color_pref(AnnotColor::Orange).unwrap();
+            assert_eq!(read_annot_color_pref(), Some(AnnotColor::Orange));
+            // Valor desconhecido não vira uma cor: quem chama cai no default
+            // do tipo, e o prefs não força Amarelo em sublinhado/riscado.
+            std::fs::write(&path, "theme=dark\nlang=pt\nannot_color=purple\n").unwrap();
+            assert_eq!(read_annot_color_pref(), None);
+            std::fs::write(&path, "theme=dark\nlang=pt\nannot_color=\n").unwrap();
+            assert_eq!(read_annot_color_pref(), None);
+            // Trocar tema não perde a cor já escolhida.
+            save_annot_color_pref(AnnotColor::Green).unwrap();
+            save_theme_pref(ThemePref::Light).unwrap();
+            assert_eq!(read_annot_color_pref(), Some(AnnotColor::Green));
+            // "Padrão" no seletor apaga a chave: a próxima sessão volta aos
+            // defaults por tipo em vez de herdar a última cor.
+            clear_annot_color_pref().unwrap();
+            assert_eq!(read_annot_color_pref(), None);
+            let saved = std::fs::read_to_string(&path).unwrap();
+            assert!(
+                !saved.contains("annot_color"),
+                "prefs sem a chave depois do padrão: {saved:?}"
+            );
+            assert_eq!(read_theme_pref(), ThemePref::Light, "tema fica: {saved:?}");
         });
         let _ = std::fs::remove_file(&path);
     }

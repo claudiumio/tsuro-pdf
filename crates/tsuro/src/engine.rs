@@ -766,6 +766,13 @@ fn save_copy_from_doc(
                         annotation
                             .set_bounds(pdf_rect(bounds.0, bounds.1, bounds.2, bounds.3))
                             .map_err(mark_error)?;
+                        // A cor nomeada da marcação vai para o arquivo (#132):
+                        // sem isto a cópia sai com o amarelo default do Pdfium.
+                        // `/IC` e `/C` iguais: leitores divergem sobre qual dos
+                        // dois pintam a faixa do highlight.
+                        let color = pdf_annot_color(crate::kiri::annot_pdf_fill(mark.color));
+                        annotation.set_fill_color(color).map_err(mark_error)?;
+                        annotation.set_stroke_color(color).map_err(mark_error)?;
                         append_attachment_points(annotation.attachment_points_mut(), &mark.quads)?;
                     }
                     AnnotKind::Underline => {
@@ -777,6 +784,11 @@ fn save_copy_from_doc(
                         annotation
                             .set_bounds(pdf_rect(bounds.0, bounds.1, bounds.2, bounds.3))
                             .map_err(mark_error)?;
+                        annotation
+                            .set_stroke_color(pdf_annot_color(crate::kiri::annot_pdf_stroke(
+                                mark.color,
+                            )))
+                            .map_err(mark_error)?;
                         append_attachment_points(annotation.attachment_points_mut(), &mark.quads)?;
                     }
                     AnnotKind::Strikeout => {
@@ -787,6 +799,11 @@ fn save_copy_from_doc(
                             target.create_strikeout_annotation().map_err(mark_error)?;
                         annotation
                             .set_bounds(pdf_rect(bounds.0, bounds.1, bounds.2, bounds.3))
+                            .map_err(mark_error)?;
+                        annotation
+                            .set_stroke_color(pdf_annot_color(crate::kiri::annot_pdf_stroke(
+                                mark.color,
+                            )))
                             .map_err(mark_error)?;
                         append_attachment_points(annotation.attachment_points_mut(), &mark.quads)?;
                     }
@@ -812,6 +829,13 @@ fn save_copy_from_doc(
                                 top,
                             ))
                             .map_err(mark_error)?;
+                        // Ícone do `/Text` na cor nomeada da nota (#132). O
+                        // ISO 32000 define `/C` como a cor do ícone e não
+                        // define `/IC` para este subtipo; os dois vão iguais
+                        // porque leitores divergem sobre qual pintam.
+                        let color = pdf_annot_color(crate::kiri::annot_pdf_fill(mark.color));
+                        annotation.set_stroke_color(color).map_err(mark_error)?;
+                        annotation.set_fill_color(color).map_err(mark_error)?;
                     }
                 }
             }
@@ -838,6 +862,10 @@ pub(crate) struct StoredAnnotation {
     text: String,
     /// `(left, bottom, right, top)` do `/Rect`, em espaço PDF.
     bounds: (f32, f32, f32, f32),
+    /// `/IC` e `/C` como o leitor os lê: a prova de que a cor nomeada entrou
+    /// no arquivo (#132). `None` quando a anotação não expõe a cor.
+    fill: Option<(u8, u8, u8)>,
+    stroke: Option<(u8, u8, u8)>,
 }
 
 #[cfg(test)]
@@ -885,6 +913,14 @@ fn annotations_from_doc(
                 rect.right().value,
                 rect.top().value,
             ),
+            fill: annotation
+                .fill_color()
+                .ok()
+                .map(|c| (c.red(), c.green(), c.blue())),
+            stroke: annotation
+                .stroke_color()
+                .ok()
+                .map(|c| (c.red(), c.green(), c.blue())),
         });
     }
     Ok(out)
@@ -892,6 +928,12 @@ fn annotations_from_doc(
 
 fn mark_error(e: PdfiumError) -> EngineError {
     EngineError(format!("{ANNOT_MARK_FAILED}: {e}"))
+}
+
+/// `(r, g, b)` da paleta de `kiri.rs` → `PdfColor` opaco. A cópia salva não
+/// guarda o alpha da tela: a transparência é do leitor.
+fn pdf_annot_color((r, g, b): (u8, u8, u8)) -> PdfColor {
+    PdfColor::new(r, g, b, 255)
 }
 
 /// Um ponto de anexo por `Quad` da sessão, na ordem — um retângulo por linha
@@ -1344,9 +1386,11 @@ mod tests {
     }
 
     /// Salva uma cópia com um highlight e uma nota reais (quads do text layer)
-    /// e confere o read-back: mesmas coordenadas do texto, sem flip de Y.
+    /// e confere o read-back: mesmas coordenadas do texto, sem flip de Y, e a
+    /// cor nomeada de cada marcação dentro do arquivo (#132).
     #[test]
     fn save_copy_writes_markup_and_note_in_session_coordinates() {
+        use crate::session::AnnotColor;
         let Some(bytes) = sample_pdf_bytes() else {
             return;
         };
@@ -1369,6 +1413,7 @@ mod tests {
                 },
                 quads: quads.clone(),
                 kind: AnnotKind::Highlight,
+                color: crate::session::AnnotColor::Green,
                 text: String::new(),
                 marker: None,
             },
@@ -1378,7 +1423,28 @@ mod tests {
                 range: TextRange { start: 0, end: 1 },
                 quads: vec![first],
                 kind: AnnotKind::Note,
+                color: crate::session::AnnotColor::Orange,
                 text: "nota do teste".into(),
+                marker: None,
+            },
+            Annotation {
+                id: 3,
+                page,
+                range: TextRange { start: 0, end: 1 },
+                quads: vec![first],
+                kind: AnnotKind::Underline,
+                color: crate::session::AnnotColor::Blue,
+                text: String::new(),
+                marker: None,
+            },
+            Annotation {
+                id: 4,
+                page,
+                range: TextRange { start: 0, end: 1 },
+                quads: vec![first],
+                kind: AnnotKind::Strikeout,
+                color: crate::session::AnnotColor::Red,
+                text: String::new(),
                 marker: None,
             },
         ];
@@ -1400,7 +1466,7 @@ mod tests {
         assert!((re_media.height - media.height).abs() < 0.5);
 
         let stored = reopened.annotations(page).expect("anotações da cópia");
-        assert_eq!(stored.len(), 2);
+        assert_eq!(stored.len(), 4);
         let highlight = &stored[0];
         assert!(matches!(highlight.kind, AnnotKind::Highlight));
         assert_eq!(highlight.quads.len(), quads.len(), "um ponto por quad");
@@ -1423,6 +1489,40 @@ mod tests {
         let (left, _, _, top) = quad_bounds(&first);
         assert!((note.bounds.0 - left).abs() < 0.05);
         assert!((note.bounds.3 - top).abs() < 0.05);
+
+        // A cor nomeada precisa estar no arquivo: é o critério do F-MARC-05
+        // que só o PDF salvo prova (a tela pode pintar de um lado e o
+        // `save_copy` gravar outro).
+        assert_eq!(
+            highlight.fill,
+            Some(crate::kiri::annot_pdf_fill(AnnotColor::Green)),
+            "highlight grava a cor escolhida em /IC"
+        );
+        assert_eq!(
+            highlight.stroke,
+            Some(crate::kiri::annot_pdf_fill(AnnotColor::Green)),
+            "highlight grava a cor escolhida em /C"
+        );
+        assert_eq!(
+            stored[2].stroke,
+            Some(crate::kiri::annot_pdf_stroke(AnnotColor::Blue)),
+            "sublinhado grava a cor escolhida em /C"
+        );
+        assert_eq!(
+            stored[3].stroke,
+            Some(crate::kiri::annot_pdf_stroke(AnnotColor::Red)),
+            "riscado grava a cor escolhida em /C"
+        );
+        assert_eq!(
+            note.fill,
+            Some(crate::kiri::annot_pdf_fill(AnnotColor::Orange)),
+            "nota grava a cor escolhida no ícone"
+        );
+        assert_eq!(
+            note.stroke,
+            Some(crate::kiri::annot_pdf_fill(AnnotColor::Orange)),
+            "nota grava a cor escolhida em /C, a que o ISO define para o ícone"
+        );
     }
 
     /// O `/Highlight` salvo pinta a linha marcada como um marcador: faixa
@@ -1469,6 +1569,7 @@ mod tests {
             range,
             quads,
             kind: AnnotKind::Highlight,
+            color: crate::session::AnnotColor::Yellow,
             text: String::new(),
             marker: None,
         }];
@@ -1545,6 +1646,7 @@ mod tests {
             },
             quads,
             kind: AnnotKind::Note,
+            color: crate::session::AnnotColor::Yellow,
             text: "nota movida".into(),
             marker: Some(marker),
         }];
@@ -1603,6 +1705,7 @@ mod tests {
                 range: TextRange { start: 0, end: 1 },
                 quads: Vec::new(),
                 kind: AnnotKind::Highlight,
+                color: crate::session::AnnotColor::Yellow,
                 text: String::new(),
                 marker: None,
             }])
@@ -1633,6 +1736,7 @@ mod tests {
             },
             quads,
             kind: AnnotKind::Highlight,
+            color: crate::session::AnnotColor::Yellow,
             text: String::new(),
             marker: None,
         }];

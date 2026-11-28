@@ -21,11 +21,11 @@ use crate::search::Search;
 #[cfg(target_os = "macos")]
 use crate::session::PermissionsState;
 use crate::session::{
-    display_pt, display_rect, marker_side, page_pt_at, AnnotKind, AnnotationRow, Message, NavCmd,
-    NoteDraft, OpenSource, PaletteItem, PaletteState, PanelKey, PanelTab, PrintDialog, RangeMode,
-    Ready, RecoveryState, Session, SettingsPanel, Signatures, Tabs, UpdateState, ViewMode, Zoom,
-    ZoomFactor, ANNOT_ROW, DOC_PAD_BOTTOM, DOC_PAD_TOP, DOC_PAD_X, PAGES_PANEL_W, SIG_PANEL_W,
-    THUMB_ROW,
+    display_pt, display_rect, marker_side, page_pt_at, AnnotColor, AnnotKind, AnnotationRow,
+    Message, NavCmd, NoteDraft, OpenSource, PaletteItem, PaletteState, PanelKey, PanelTab,
+    PrintDialog, RangeMode, Ready, RecoveryState, Session, SettingsPanel, Signatures, Tabs,
+    UpdateState, ViewMode, Zoom, ZoomFactor, ANNOT_ROW, DOC_PAD_BOTTOM, DOC_PAD_TOP, DOC_PAD_X,
+    PAGES_PANEL_W, SIG_PANEL_W, THUMB_ROW,
 };
 
 /// Altura da faixa de ferramentas (spec §5). No macOS é a barra unificada,
@@ -975,6 +975,77 @@ fn topbar(session: &Session, t: Tokens) -> Element<'_, Message> {
                         ),
                         t.lang.pick("Nota (N)", "Note (N)")
                     ),
+                    // Cores nomeadas (#132, F-MARC-05): cinco swatches
+                    // explícitos em vez de um botão que cicla, mais "padrão",
+                    // que apaga a preferência e devolve o default de cada tipo.
+                    // O anel marca a escolha — reconhecer sem distinguir matiz
+                    // — e 0–5 escolhem pelo teclado. Sem preferência o anel
+                    // fica em "padrão", então o indicador nunca mente sobre a
+                    // cor que a próxima marcação vai receber.
+                    {
+                        let ring = t.ink;
+                        let is_default = ready.annot_color_pref.is_none();
+                        let default_style =
+                            move |_: &iced::Theme, _: button::Status| button::Style {
+                                background: None,
+                                border: Border {
+                                    color: if is_default {
+                                        ring
+                                    } else {
+                                        Color::from_rgba(0.0, 0.0, 0.0, 0.25)
+                                    },
+                                    width: if is_default { 2.0 } else { 1.0 },
+                                    radius: 3.0.into(),
+                                },
+                                text_color: ring,
+                                ..button::Style::default()
+                            };
+                        let mut swatches = row![].spacing(2).align_y(Alignment::Center);
+                        swatches = swatches.push(tip_owned(
+                            t,
+                            button(text(t.lang.pick("padrão", "default")).size(11))
+                                .padding(Padding::from([1, 4]))
+                                .style(default_style)
+                                .on_press(Message::SetAnnotColor(None)),
+                            format!("{} (0)", t.lang.pick("padrão do tipo", "type default")),
+                        ));
+                        for (index, color) in AnnotColor::ALL.iter().copied().enumerate() {
+                            let chosen = ready.annot_color_pref == Some(color);
+                            let fill = kiri::annot_swatch(color);
+                            let swatch_style =
+                                move |_: &iced::Theme, _: button::Status| button::Style {
+                                    background: Some(Background::Color(fill)),
+                                    border: Border {
+                                        color: if chosen {
+                                            ring
+                                        } else {
+                                            Color::from_rgba(0.0, 0.0, 0.0, 0.25)
+                                        },
+                                        width: if chosen { 2.0 } else { 1.0 },
+                                        radius: 3.0.into(),
+                                    },
+                                    ..button::Style::default()
+                                };
+                            swatches = swatches.push(tip_owned(
+                                t,
+                                button(Space::with_width(Length::Fixed(14.0)))
+                                    .height(Length::Fixed(14.0))
+                                    .padding(0)
+                                    .style(swatch_style)
+                                    .on_press(Message::SetAnnotColor(Some(color))),
+                                format!("{} ({})", color.label(t.lang), index + 1),
+                            ));
+                        }
+                        if wide {
+                            let name = ready.annot_color_pref.map_or_else(
+                                || t.lang.pick("padrão", "default"),
+                                |c| c.label(t.lang),
+                            );
+                            swatches =
+                                swatches.push(text(format!("  {name}")).size(11).color(t.muted));
+                        }
+                        container(swatches).padding(Padding::from([2, 4]))
+                    },
                 ]
                 .spacing(0)
                 .align_y(Alignment::Center),
@@ -4410,6 +4481,8 @@ struct DrawMark {
     w: f32,
     h: f32,
     kind: Option<AnnotKind>,
+    /// Cor nomeada da marcação (#132); `None` = seleção ou busca (sem cor própria).
+    color: Option<crate::session::AnnotColor>,
     marker: bool,
     /// Candidato do arrasto de nota: contorno claro pontilhado (o original
     /// segue sólido até o soltar).
@@ -4547,14 +4620,21 @@ impl Program<Message> for MarkLayer {
                 );
                 continue;
             }
-            // Nota: amarelo fixo — a folha é sempre branca, o tema não se aplica.
+            // Nota: o papel continua amarelo — a folha é sempre branca e o
+            // texto do post-it precisa de tinta escura sobre fundo claro — mas
+            // a borda assume a cor nomeada da nota (#132), para o marcador
+            // acompanhar o sublinhado de ancoragem em vez de ficar de fora.
             if m.marker {
                 frame.fill(&rect, STICKY);
+                let ink = m.color.map_or_else(
+                    || kiri::annot_stroke(AnnotColor::Yellow),
+                    kiri::annot_stroke,
+                );
                 frame.stroke(
                     &rect,
                     Stroke {
-                        style: Style::Solid(STICKY_INK),
-                        width: 1.0,
+                        style: Style::Solid(ink),
+                        width: 1.5,
                         ..Stroke::default()
                     },
                 );
@@ -4575,45 +4655,66 @@ impl Program<Message> for MarkLayer {
                 );
                 continue;
             }
+            // Cor da marcação: usa a cor nomeada (#132) quando disponível;
+            // seleção e busca mantêm as cores históricas (sem AnnotColor).
+            let annot_color = m.color;
             match m.kind {
                 None => frame.fill(&rect, Color::from_rgba(0.25, 0.45, 1.0, 0.30)),
                 Some(AnnotKind::Highlight) => {
-                    frame.fill(&rect, Color::from_rgba(1.0, 0.85, 0.25, 0.45))
+                    let fill = annot_color
+                        .map_or_else(|| kiri::annot_fill(AnnotColor::Yellow), kiri::annot_fill);
+                    frame.fill(&rect, fill)
                 }
-                Some(AnnotKind::Underline) => frame.stroke(
-                    &Path::line(
-                        Point::new(m.x, m.y + m.h - 1.0),
-                        Point::new(m.x + m.w, m.y + m.h - 1.0),
-                    ),
-                    Stroke {
-                        style: Style::Solid(Color::from_rgb(0.1, 0.35, 0.9)),
-                        width: 2.0,
-                        ..Stroke::default()
-                    },
-                ),
+                Some(AnnotKind::Underline) => {
+                    let stroke = annot_color
+                        .map_or_else(|| kiri::annot_stroke(AnnotColor::Blue), kiri::annot_stroke);
+                    frame.stroke(
+                        &Path::line(
+                            Point::new(m.x, m.y + m.h - 1.0),
+                            Point::new(m.x + m.w, m.y + m.h - 1.0),
+                        ),
+                        Stroke {
+                            style: Style::Solid(stroke),
+                            width: 2.0,
+                            ..Stroke::default()
+                        },
+                    )
+                }
                 // Nota: sublinhado sutil só para ancorar o trecho na folha.
-                Some(AnnotKind::Note) => frame.stroke(
-                    &Path::line(
-                        Point::new(m.x, m.y + m.h - 1.0),
-                        Point::new(m.x + m.w, m.y + m.h - 1.0),
-                    ),
-                    Stroke {
-                        style: Style::Solid(Color::from_rgba(0.85, 0.62, 0.05, 0.75)),
-                        width: 1.5,
-                        ..Stroke::default()
-                    },
-                ),
-                Some(AnnotKind::Strikeout) => frame.stroke(
-                    &Path::line(
-                        Point::new(m.x, m.y + m.h * 0.5),
-                        Point::new(m.x + m.w, m.y + m.h * 0.5),
-                    ),
-                    Stroke {
-                        style: Style::Solid(Color::from_rgb(0.85, 0.15, 0.2)),
-                        width: 2.0,
-                        ..Stroke::default()
-                    },
-                ),
+                Some(AnnotKind::Note) if !m.marker => {
+                    let stroke = annot_color.map_or_else(
+                        || kiri::annot_stroke(AnnotColor::Yellow),
+                        kiri::annot_stroke,
+                    );
+                    frame.stroke(
+                        &Path::line(
+                            Point::new(m.x, m.y + m.h - 1.0),
+                            Point::new(m.x + m.w, m.y + m.h - 1.0),
+                        ),
+                        Stroke {
+                            style: Style::Solid(stroke),
+                            width: 1.5,
+                            ..Stroke::default()
+                        },
+                    )
+                }
+                Some(AnnotKind::Strikeout) => {
+                    let stroke = annot_color
+                        .map_or_else(|| kiri::annot_stroke(AnnotColor::Red), kiri::annot_stroke);
+                    frame.stroke(
+                        &Path::line(
+                            Point::new(m.x, m.y + m.h * 0.5),
+                            Point::new(m.x + m.w, m.y + m.h * 0.5),
+                        ),
+                        Stroke {
+                            style: Style::Solid(stroke),
+                            width: 2.0,
+                            ..Stroke::default()
+                        },
+                    )
+                }
+                // Nota marker: renderizado separadamente abaixo.
+                _ => {}
             }
             if m.selected {
                 stroke_selected(&mut frame, &rect);
@@ -4688,6 +4789,7 @@ fn with_marks<'a>(
             w,
             h,
             kind: None,
+            color: None,
             marker: false,
             ghost: false,
             selected: false,
@@ -4705,6 +4807,7 @@ fn with_marks<'a>(
                     w,
                     h,
                     kind: None,
+                    color: None,
                     marker: false,
                     ghost: false,
                     selected: false,
@@ -4724,6 +4827,7 @@ fn with_marks<'a>(
                 w,
                 h,
                 kind: Some(a.kind),
+                color: Some(a.color),
                 marker: false,
                 ghost: false,
                 selected,
@@ -4741,6 +4845,7 @@ fn with_marks<'a>(
                     w: side,
                     h: side,
                     kind: Some(AnnotKind::Note),
+                    color: Some(a.color),
                     marker: true,
                     ghost: false,
                     selected,
@@ -4762,6 +4867,7 @@ fn with_marks<'a>(
                 w: side,
                 h: side,
                 kind: Some(AnnotKind::Note),
+                color: Some(note.color),
                 marker: true,
                 ghost: true,
                 selected: false,
