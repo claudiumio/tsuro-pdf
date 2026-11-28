@@ -2911,7 +2911,8 @@ pub enum Message {
     /// Marca a seleção atual (H/U/S ou menu ⋯); ignora sem seleção.
     Annotate(AnnotKind),
     /// Escolhe a cor nomeada para novas marcações (#132, F-MARC-05).
-    SetAnnotColor(AnnotColor),
+    /// `None` = "padrão": limpa a preferência e cada tipo volta ao seu default.
+    SetAnnotColor(Option<AnnotColor>),
     /// Janela perdeu o foco no meio do drag: o Up nunca chega, então a
     /// âncora morre aqui (senão o hover passa a estender a seleção).
     DragCancelled,
@@ -3930,9 +3931,14 @@ impl Session {
             }
             Message::SetAnnotColor(color) => {
                 if let Session::Ready(ready) = self {
-                    ready.annot_color_pref = Some(color);
-                    // Persiste a preferência para futuras sessões (#132).
-                    let _ = crate::prefs::save_annot_color_pref(color);
+                    ready.annot_color_pref = color;
+                    // Persiste a escolha para futuras sessões (#132). "Padrão"
+                    // apaga a chave, para a próxima sessão voltar aos defaults
+                    // por tipo em vez de herdar a última cor escolhida.
+                    let _ = match color {
+                        Some(color) => crate::prefs::save_annot_color_pref(color),
+                        None => crate::prefs::clear_annot_color_pref(),
+                    };
                 }
                 Task::none()
             }
@@ -6389,10 +6395,11 @@ pub(crate) fn keyboard_message(
         // com texto; com draft já aberto é no-op para não apagar o digitado).
         Key::Character("n" | "N") => Some(Message::Annotate(AnnotKind::Note)),
         // 1–5 escolhem a cor nomeada da próxima marcação (#132), na ordem de
-        // `AnnotColor::ALL`: teclado alcança o seletor sem clique.
+        // `AnnotColor::ALL`; 0 volta ao "padrão" (default de cada tipo).
         Key::Character(digit @ ("1" | "2" | "3" | "4" | "5")) => {
-            AnnotColor::from_digit(digit).map(Message::SetAnnotColor)
+            AnnotColor::from_digit(digit).map(|color| Message::SetAnnotColor(Some(color)))
         }
+        Key::Character("0") => Some(Message::SetAnnotColor(None)),
         // M copia os destaques como Markdown (o handler ignora sem anotações).
         Key::Character("m" | "M") => Some(Message::CopyAnnotations),
         Key::Named(Named::Delete | Named::Backspace) => Some(Message::DeleteSelectedAnnot),
@@ -11466,7 +11473,10 @@ mod tests {
         let mut session = Session::Ready(Tabs::single(ready));
         // Sem preferência salva: o tipo manda (Underline = Azul).
         apply(&mut session, Message::Annotate(AnnotKind::Underline));
-        apply(&mut session, Message::SetAnnotColor(AnnotColor::Green));
+        apply(
+            &mut session,
+            Message::SetAnnotColor(Some(AnnotColor::Green)),
+        );
         match &mut session {
             Session::Ready(ready) => select_first_glyphs(ready, 2, 4),
             _ => unreachable!(),
@@ -11493,6 +11503,48 @@ mod tests {
                     ready.annotations[1].color,
                     AnnotColor::Green,
                     "desfazer e refazer devolve a cor da operação"
+                );
+            }
+            _ => unreachable!(),
+        }
+    }
+
+    /// "Padrão" no seletor (#132): limpa a preferência e a próxima marcação
+    /// volta ao default do tipo.
+    #[test]
+    fn default_color_clears_pref_and_restores_type_default() {
+        let Some(mut ready) = sample_ready() else {
+            return;
+        };
+        select_first_glyphs(&mut ready, 0, 2);
+        ready.annot_color_pref = Some(AnnotColor::Green);
+        let mut session = Session::Ready(Tabs::single(ready));
+        apply(&mut session, Message::SetAnnotColor(None));
+        match &mut session {
+            Session::Ready(ready) => {
+                assert_eq!(ready.annot_color_pref, None, "padrão limpa a preferência");
+                select_first_glyphs(ready, 0, 2);
+            }
+            _ => unreachable!(),
+        }
+        apply(&mut session, Message::Annotate(AnnotKind::Underline));
+        apply(&mut session, Message::SetAnnotColor(None));
+        match &mut session {
+            Session::Ready(ready) => select_first_glyphs(ready, 2, 4),
+            _ => unreachable!(),
+        }
+        apply(&mut session, Message::Annotate(AnnotKind::Strikeout));
+        match &session {
+            Session::Ready(ready) => {
+                assert_eq!(
+                    ready.annotations[0].color,
+                    AnnotColor::Blue,
+                    "sublinhado volta ao default do tipo"
+                );
+                assert_eq!(
+                    ready.annotations[1].color,
+                    AnnotColor::Red,
+                    "riscado volta ao default do tipo"
                 );
             }
             _ => unreachable!(),

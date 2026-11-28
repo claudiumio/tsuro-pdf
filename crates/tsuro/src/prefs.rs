@@ -121,6 +121,12 @@ pub fn save_annot_color_pref(color: crate::session::AnnotColor) -> std::io::Resu
     write_prefs(read_theme_pref(), read_lang(), Some(color))
 }
 
+/// "Padrão" no seletor de cor (#132): apaga a chave `annot_color` do prefs,
+/// para a próxima sessão voltar aos defaults por tipo.
+pub fn clear_annot_color_pref() -> std::io::Result<()> {
+    write_prefs(read_theme_pref(), read_lang(), None)
+}
+
 fn pairs() -> Vec<(String, String)> {
     let Ok(raw) = std::fs::read_to_string(prefs_file()) else {
         return Vec::new();
@@ -243,6 +249,16 @@ mod tests {
             save_annot_color_pref(AnnotColor::Green).unwrap();
             save_theme_pref(ThemePref::Light).unwrap();
             assert_eq!(read_annot_color_pref(), Some(AnnotColor::Green));
+            // "Padrão" no seletor apaga a chave: a próxima sessão volta aos
+            // defaults por tipo em vez de herdar a última cor.
+            clear_annot_color_pref().unwrap();
+            assert_eq!(read_annot_color_pref(), None);
+            let saved = std::fs::read_to_string(&path).unwrap();
+            assert!(
+                !saved.contains("annot_color"),
+                "prefs sem a chave depois do padrão: {saved:?}"
+            );
+            assert_eq!(read_theme_pref(), ThemePref::Light, "tema fica: {saved:?}");
         });
         let _ = std::fs::remove_file(&path);
     }

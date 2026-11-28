@@ -976,17 +976,42 @@ fn topbar(session: &Session, t: Tokens) -> Element<'_, Message> {
                         t.lang.pick("Nota (N)", "Note (N)")
                     ),
                     // Cores nomeadas (#132, F-MARC-05): cinco swatches
-                    // explícitos em vez de um botão que cicla. O anel marca a
-                    // escolha — reconhecer sem distinguir matiz — e 1–5
-                    // escolhem pelo teclado. Sem escolha salva nenhum fica
-                    // marcado e o rótulo diz "padrão": cada tipo usa o seu
-                    // default, sem indicador mentindo sobre o que vai sair.
+                    // explícitos em vez de um botão que cicla, mais "padrão",
+                    // que apaga a preferência e devolve o default de cada tipo.
+                    // O anel marca a escolha — reconhecer sem distinguir matiz
+                    // — e 0–5 escolhem pelo teclado. Sem preferência o anel
+                    // fica em "padrão", então o indicador nunca mente sobre a
+                    // cor que a próxima marcação vai receber.
                     {
+                        let ring = t.ink;
+                        let is_default = ready.annot_color_pref.is_none();
+                        let default_style =
+                            move |_: &iced::Theme, _: button::Status| button::Style {
+                                background: None,
+                                border: Border {
+                                    color: if is_default {
+                                        ring
+                                    } else {
+                                        Color::from_rgba(0.0, 0.0, 0.0, 0.25)
+                                    },
+                                    width: if is_default { 2.0 } else { 1.0 },
+                                    radius: 3.0.into(),
+                                },
+                                text_color: ring,
+                                ..button::Style::default()
+                            };
                         let mut swatches = row![].spacing(2).align_y(Alignment::Center);
+                        swatches = swatches.push(tip_owned(
+                            t,
+                            button(text(t.lang.pick("padrão", "default")).size(11))
+                                .padding(Padding::from([1, 4]))
+                                .style(default_style)
+                                .on_press(Message::SetAnnotColor(None)),
+                            format!("{} (0)", t.lang.pick("padrão do tipo", "type default")),
+                        ));
                         for (index, color) in AnnotColor::ALL.iter().copied().enumerate() {
                             let chosen = ready.annot_color_pref == Some(color);
                             let fill = kiri::annot_swatch(color);
-                            let ring = t.ink;
                             let swatch_style =
                                 move |_: &iced::Theme, _: button::Status| button::Style {
                                     background: Some(Background::Color(fill)),
@@ -1007,14 +1032,15 @@ fn topbar(session: &Session, t: Tokens) -> Element<'_, Message> {
                                     .height(Length::Fixed(14.0))
                                     .padding(0)
                                     .style(swatch_style)
-                                    .on_press(Message::SetAnnotColor(color)),
+                                    .on_press(Message::SetAnnotColor(Some(color))),
                                 format!("{} ({})", color.label(t.lang), index + 1),
                             ));
                         }
-                        let name = ready
-                            .annot_color_pref
-                            .map_or_else(|| t.lang.pick("padrão", "default"), |c| c.label(t.lang));
                         if wide {
+                            let name = ready.annot_color_pref.map_or_else(
+                                || t.lang.pick("padrão", "default"),
+                                |c| c.label(t.lang),
+                            );
                             swatches =
                                 swatches.push(text(format!("  {name}")).size(11).color(t.muted));
                         }
