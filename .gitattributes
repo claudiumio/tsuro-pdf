@@ -1,0 +1,3 @@
+# PDFs são binários: os offsets do xref contam bytes exatos e a conversão
+# LF→CRLF de um checkout com core.autocrlf=true invalida o arquivo.
+*.pdf binary

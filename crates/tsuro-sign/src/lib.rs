@@ -1239,13 +1239,13 @@ startxref
         der_tlv(0x02, &value)
     }
 
-    fn rsa_spki(public: &rsa::RsaPublicKey) -> Vec<u8> {
+    fn rsa_spki(public: &rsa::PublicKey) -> Vec<u8> {
         use rsa::traits::PublicKeyParts;
         let key = der_tlv(
             0x30,
             &der_cat(&[
-                &der_uint(&public.n().to_bytes_be()),
-                &der_uint(&public.e().to_bytes_be()),
+                &der_uint(&public.n().to_be_bytes_trimmed_vartime()),
+                &der_uint(&public.e().to_be_bytes_trimmed_vartime()),
             ]),
         );
         let bits = der_tlv(0x03, &der_cat(&[&[0u8], &key]));
@@ -1317,16 +1317,70 @@ startxref
         )
     }
 
-    fn rsa_keypair() -> (rsa::RsaPrivateKey, rsa::RsaPublicKey) {
-        let private =
-            rsa::RsaPrivateKey::new(&mut rsa::rand_core::OsRng, 1024).expect("generate RSA key");
+    /// Fixed RSA keys for these tests (PKCS#8 DER, base64). Generated once and
+    /// pinned here so signing tests need no OS entropy source: the dependency
+    /// graph has none left, and a fixed key keeps the fixtures reproducible.
+    const TEST_KEY_PKCS8: &str = concat!(
+        "MIICdQIBADANBgkqhkiG9w0BAQEFAASCAl8wggJbAgEAAoGBALt2kZyZDa+aXlecUZYOwzYjPJ11",
+        "hhfjc+emLTAzXF23yrIBQ87WkTQ2zCDMXVqP+jw0ZNNxnTVDsT0OVvpMv49b8iBtYIw6g7ogzVcE",
+        "LWBJhX/CfnLUQVLH1B3mrg2CYE8s06/fIgipMk3eyYauWeYUyupeG+sZ4lk52AGF3qrNAgMBAAEC",
+        "gYBoOxHVR0hTxfoErnayf3zM4iS2y/yF1cLBHyVq8nO97A34kTl5jNXpeTpgViDl1L3msZ8J7dbi",
+        "IcQvVYTI4Nl00aee9G1QEvwVFMT662FwpneoHE8ZZ0/ipVIzTcG6rqhi5SpmdGk+KQ2qKFQxUDuH",
+        "9g4udRET4BFw0FVU8liqZQJBANtUs/xDjUFXUFz5a9Fz7iMEFdwlRfrsZumdiTQ7SQNzVfK+316g",
+        "3+yGur6g+XIQRsQE2yipk93juSfYZj9898cCQQDaze/fmbjdSAll5bH+lgmXaMHhLuQeY8fMR0E9",
+        "/pBO4NKaqjvzS5ml1OzKlgnmIPGUTRsYFWUEagYk/oXM6FDLAkAUMZ5IsaeFxpY9mTFWHYhlbPDe",
+        "Tgg9bBqlk72YM4UrbikRqoVCXyl+y4DSIFwXJmx9i7zp54MXwOnBQ2lWmxjtAkAZU7Eqbr7JTmdY",
+        "FihuUau2jPe0OxtIsUAVU0IoDOljV/7IzF+4H84fNfBa2tc2fiW4htxWA1P4GNWxPoz6VQHVAkAt",
+        "IZNBAglQ46C61ZxN8OrHIgig+jPEiuPnGujoo4Qy8kW4OZYVTO3Q3EsOtJ2lZll44sG7uw1ejM+/",
+        "jv8FnHrf",
+    );
+
+    /// A second 1024-bit key, so a test can prove a mismatched signer key fails.
+    const DECOY_KEY_PKCS8: &str = concat!(
+        "MIICdgIBADANBgkqhkiG9w0BAQEFAASCAmAwggJcAgEAAoGBAOT6gg2rJH1B2Hhe4boq7d60wrQi",
+        "u9VXzqiqr0GzgrNsI29kLS+CJM9+JQc/Y/z2xvUozOsm7FI7FEFdaWkAB/+wPPo7G33gb/RmeFbi",
+        "mW2tiz/Cp2EWceHGSO4OO0qcCmSHiJdCTcW+6B3ZmYslLJQ6nvUiXWimXnFHplaU9YJfAgMBAAEC",
+        "gYEAsRAdvWAYKVvffsUwG/vSUSLKZO1u/jyWK8tBFrcvXHtEs4BtiI1E1caf74jPUu+pTi6stzI0",
+        "ECprMViAiJdjlpfkJCKy9CyI6Uj2OjwElJX+K0SGePQCUisvSkjedWwo/BoMyxosVyjwBslQY63t",
+        "mBD90wlMQclc8JVuzFZLw1ECQQD9iPHbZmHLEKWSYyWZSDeaB28eXBGy7cQagIZ6FCXeevHFrjsj",
+        "LclHzNpCDgBUbSm2KGVoBBCJ0W3sei+Xi6P7AkEA5zRxFlV9j1H2d91yvhVolAgJaDPsno01LFDj",
+        "hYUexDdWsisoaNbamoggErmd9YGQxkjlTgc2Hek7zLu8wuqp7QJAb85FghCLTcagjYbFnOwZAQcI",
+        "PKYzc+mgkmNdalaaQJuNJTTphWD6o3w2P+z2vkSJoXf9CDrKpExEIoXbmQQOowJAcdcbe6C6gzAb",
+        "SGfMUJXf+Ut/vkQa1PK4ZMqrTJoATSLmWDHx4rUvy/kMucuVYEXckBVieqoIVm/51tP1nI/I/QJA",
+        "G9r5r9hPXbGcWxZ3+HiEGP9XGAwOEriu8B5deNc11L5VYsBsSQBxiLChRUkL8AWhZ0DO7g5+nH4O",
+        "25z7eKbowQ==",
+    );
+
+    /// A 512-bit key, below the smallest modulus the RSA crate accepts.
+    const SMALL_KEY_PKCS8: &str = concat!(
+        "MIIBVAIBADANBgkqhkiG9w0BAQEFAASCAT4wggE6AgEAAkEA0USkeKCMMhiZBKb7qiUqxtUDVoJ9",
+        "T876URkh3GQlK4zDpALQVVg9UjXlnP9eQlrTptIo6Ke9HDsmqtpfuQyAgQIDAQABAkBLYvgBAI0g",
+        "qt3M4D6+7362fBwkuQNdkcl5F52sIGOHiRmy7hrLToJK/CwFtBm4p0nXeC5AJsppNSWWQVu17YWx",
+        "AiEA/N5kgQUVn1ha9BE30NFCCCDSuKQJQTIEvGc+aCgeF8UCIQDT3Aie6O5Qidl6x8vEFX4LajeL",
+        "gLvoHtRDeSHqPJFVjQIgaXVGbRh1wBLVO9zCbnAXHdSyjRa8VVhK6VgVitLQWhECIQCScXUQCyi4",
+        "SSEoarTiHI0c7NXqOxkoUS8eWLvlwuoe/QIgL5gEGLFBRBxtOiO122o0drJqL7FgO3mH/XR2JsrF",
+        "H8Y=",
+    );
+
+    fn keypair_from(pkcs8_b64: &str) -> (rsa::PrivateKey, rsa::PublicKey) {
+        use rsa::pkcs8::DecodePrivateKey as _;
+        let der = B64.decode(pkcs8_b64).expect("test key base64");
+        let private = rsa::PrivateKey::from_pkcs8_der(&der).expect("test key der");
         let public = private.to_public_key();
         (private, public)
     }
 
+    fn rsa_keypair() -> (rsa::PrivateKey, rsa::PublicKey) {
+        keypair_from(TEST_KEY_PKCS8)
+    }
+
+    fn decoy_keypair() -> (rsa::PrivateKey, rsa::PublicKey) {
+        keypair_from(DECOY_KEY_PKCS8)
+    }
+
     /// Signs the DER `SET OF Attribute` form, which is what the verifier feeds
     /// to RSA after rewriting the IMPLICIT tag.
-    fn sign_attrs(private: &rsa::RsaPrivateKey, attrs_inner: &[u8]) -> Vec<u8> {
+    fn sign_attrs(private: &rsa::PrivateKey, attrs_inner: &[u8]) -> Vec<u8> {
         use rsa::signature::{SignatureEncoding, Signer};
         let key = rsa::pkcs1v15::SigningKey::<Sha256>::new(private.clone());
         key.sign(&der_tlv(0x31, attrs_inner)).to_vec()
@@ -1470,12 +1524,7 @@ startxref
         pdf.bytes
     }
 
-    fn signed_pdf_by(
-        private: &rsa::RsaPrivateKey,
-        cert: &[u8],
-        sid: &[u8],
-        tail: &[u8],
-    ) -> Vec<u8> {
+    fn signed_pdf_by(private: &rsa::PrivateKey, cert: &[u8], sid: &[u8], tail: &[u8]) -> Vec<u8> {
         pdf_signed_by(
             |digest| {
                 let attrs = message_digest_attrs(digest);
@@ -1519,7 +1568,7 @@ startxref
     /// in the set (#161 defect 4).
     #[test]
     fn signer_identifier_selects_the_matching_certificate() {
-        let (_decoy_private, decoy_public) = rsa_keypair();
+        let (_decoy_private, decoy_public) = decoy_keypair();
         let (private, public) = rsa_keypair();
         let decoy = generate_cert(
             &rsa_spki(&decoy_public),
@@ -1615,7 +1664,7 @@ startxref
     #[test]
     fn rsa_mismatch_reports_a_failed_check() {
         let (private, _public) = rsa_keypair();
-        let (_other_private, other_public) = rsa_keypair();
+        let (_other_private, other_public) = decoy_keypair();
         let cert = generate_cert(
             &rsa_spki(&other_public),
             45,
@@ -1638,6 +1687,35 @@ startxref
         assert_eq!(info.status, SignatureStatus::Invalid);
         assert_eq!(info.rsa, RsaCheck::Failed);
         assert_eq!(info.status_detail, "signature_mismatch");
+    }
+
+    /// A certificate whose modulus is below the RSA crate floor (1024 bits)
+    /// reports an unavailable key instead of attempting a verification.
+    #[test]
+    fn undersized_rsa_modulus_reports_an_unavailable_key() {
+        let (private, public) = keypair_from(SMALL_KEY_PKCS8);
+        let cert = generate_cert(
+            &rsa_spki(&public),
+            48,
+            "Chave Curta",
+            CERT_VALID_FROM,
+            CERT_VALID_TO,
+            None,
+        );
+        let digest = [0x51u8; 32];
+        let attrs = message_digest_attrs(&digest);
+        let signature = sign_attrs(&private, &attrs);
+        let cms = build_cms(
+            &[cert],
+            &signer_id_issuer_serial("Test CA", 48),
+            Some(&attrs),
+            &signature,
+        );
+        let info = verify_cms(&cms, Some(&digest), None).expect("cms parses");
+        assert_eq!(info.digest, DigestCheck::Matched);
+        assert_eq!(info.status, SignatureStatus::Invalid);
+        assert_eq!(info.rsa, RsaCheck::KeyUnavailable);
+        assert_eq!(info.status_detail, "rsa_key_unavailable");
     }
 
     #[test]

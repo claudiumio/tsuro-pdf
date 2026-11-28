@@ -52,6 +52,17 @@ pub struct PdfiumEngine {
     page_count: u32,
 }
 
+// Handles do Pdfium não são Debug; o id do documento e a contagem bastam para
+// o `Message` do iced, que carrega um motor preparado (issue #148).
+impl std::fmt::Debug for PdfiumEngine {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("PdfiumEngine")
+            .field("doc_id", &self.doc_id)
+            .field("page_count", &self.page_count)
+            .finish()
+    }
+}
+
 struct Shared {
     requests: mpsc::Sender<Request>,
 }
@@ -384,7 +395,7 @@ impl PdfiumEngine {
     #[cfg(test)]
     /// Lê as anotações de uma página, como dados puros. Read-only sobre
     /// `PdfDocument`; serve ao teste de `save_copy` (ver `Request::Annotations`).
-    pub fn annotations(&self, page: PageNo) -> Result<Vec<StoredAnnotation>, EngineError> {
+    pub(crate) fn annotations(&self, page: PageNo) -> Result<Vec<StoredAnnotation>, EngineError> {
         self.call(|reply| Request::Annotations {
             doc_id: self.doc_id,
             page,
