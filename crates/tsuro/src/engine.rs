@@ -829,12 +829,13 @@ fn save_copy_from_doc(
                                 top,
                             ))
                             .map_err(mark_error)?;
-                        // Ícone do `/Text` na cor nomeada da nota (#132).
-                        annotation
-                            .set_fill_color(pdf_annot_color(crate::kiri::annot_pdf_fill(
-                                mark.color,
-                            )))
-                            .map_err(mark_error)?;
+                        // Ícone do `/Text` na cor nomeada da nota (#132). O
+                        // ISO 32000 define `/C` como a cor do ícone e não
+                        // define `/IC` para este subtipo; os dois vão iguais
+                        // porque leitores divergem sobre qual pintam.
+                        let color = pdf_annot_color(crate::kiri::annot_pdf_fill(mark.color));
+                        annotation.set_stroke_color(color).map_err(mark_error)?;
+                        annotation.set_fill_color(color).map_err(mark_error)?;
                     }
                 }
             }
@@ -1516,6 +1517,11 @@ mod tests {
             note.fill,
             Some(crate::kiri::annot_pdf_fill(AnnotColor::Orange)),
             "nota grava a cor escolhida no ícone"
+        );
+        assert_eq!(
+            note.stroke,
+            Some(crate::kiri::annot_pdf_fill(AnnotColor::Orange)),
+            "nota grava a cor escolhida em /C, a que o ISO define para o ícone"
         );
     }
 
